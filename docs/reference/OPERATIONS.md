@@ -1,4 +1,4 @@
-# AgentVisor AI Operations Guide
+# ProofVisor Operations Guide
 
 This document is the operator's tour of the harness. It covers boot,
 health probes, upgrade, key rotation, spool recovery, and the metrics
@@ -6,9 +6,9 @@ you should alert on.
 
 ## Boot
 
-`agentvisord` reads its TOML from `$AV_CONFIG` (if set), then
-`./agentvisor.toml`, `./config/harness.toml`, and
-`$HOME/.agentvisor/agentvisor.toml`. The example file
+`proofvisord` reads its TOML from `$PV_CONFIG` (if set), then
+`./proofvisor.toml`, `./config/harness.toml`, and
+`$HOME/.proofvisor/proofvisor.toml`. The example file
 (`config/harness.example.toml`) is NOT searched.
 
 On boot the harness logs a dedicated event on the `trust_anchor`
@@ -50,7 +50,7 @@ last 5 seconds of traffic drop off before the process actually
 terminates.
 
 The included Kubernetes manifest at
-`deploy/kubernetes/agentvisor-ai.yaml` wires **liveness and readiness**
+`deploy/kubernetes/proofvisor.yaml` wires **liveness and readiness**
 (via `startupProbe`, `readinessProbe`, and `livenessProbe` against
 `/livez` and `/readyz`) and uses the daemon's own readiness-controlled
 pre-drain window (ConfigMap key `shutdown_ready_drain_s = 5`) instead
@@ -64,7 +64,7 @@ deployments and mirrors `/livez` — new deployments should probe
 
 ## Shutdown
 
-`agentvisord` shuts down cleanly on SIGTERM. The order is:
+`proofvisord` shuts down cleanly on SIGTERM. The order is:
 
 1. Set the `draining` flag → `/readyz` starts returning 503.
 2. If `shutdown_ready_drain_s > 0` (default 0), keep ACCEPTING
@@ -84,7 +84,7 @@ deployments and mirrors `/livez` — new deployments should probe
 5. Flush and close the state store, broker, and Bridge.
 
 Step-3 tail latency that exhausts the drain budget shows up as
-`av_http_shutdown_drain_timeouts_total`. Alert on any increase — it
+`pv_http_shutdown_drain_timeouts_total`. Alert on any increase — it
 usually means a request was stuck waiting on the upstream and the
 worker pool couldn't drain before the timeout. The pre-drain window
 counts against the orchestrator's kill grace period ON TOP of the
@@ -92,15 +92,15 @@ drain budget.
 
 ## Key rotation
 
-1. Generate a new seed: `avctl keygen --output signer.new.seed`.
+1. Generate a new seed: `pvctl keygen --output signer.new.seed`.
 2. Publish its public key to your downstream trust store BEFORE the
-   next step. Use `avctl pubkey --seed signer.new.seed` to derive
+   next step. Use `pvctl pubkey --seed signer.new.seed` to derive
    `public_key_hex` and `key_id` without exposing the seed.
 3. Replace the running seed file atomically (`mv`, not `cp`).
 4. `SIGHUP` is **not** wired for reloading; you must restart the
    process. Rolling restarts across a fleet are fine — each pod
    emits a startup log with the new key id.
-5. The `av_receipts::keys::Keyring` on the verifier side must have
+5. The `pv_receipts::keys::Keyring` on the verifier side must have
    the new key added; old receipts continue to verify against the
    old key until they age past your retention.
 
@@ -121,7 +121,7 @@ The reconciler runs every `reconcile_tick_s` seconds and handles:
 * **Sealed pair retention (round 51 §8.1):** when
   `atif_retention_days` is set, sealed pairs are pruned every hour.
   Unpaired remnants are LEFT for the orphan sweep. The same sweep is
-  available manually as `avctl spool-prune --spool <atif_spool_dir>
+  available manually as `pvctl spool-prune --spool <atif_spool_dir>
   --retention-days N` (external cron, one-off reclaims).
 * **Signed-workflow recovery:** if a signed session's receipt is
   missing but its journal is intact, recovery re-signs and emits.
@@ -131,7 +131,7 @@ does the same work each tick without duplicating events.
 
 ## Console sync
 
-`avctl console-sync` uploads durable local spool evidence to the hosted
+`pvctl console-sync` uploads durable local spool evidence to the hosted
 console ingest API. It reads ATIF trajectories from `atif_spool_dir`
 (default `spool/atif`), skips archived collision artifacts, posts one
 session upsert plus ordered event batches of at most 500 events, then
@@ -141,24 +141,24 @@ workflow sessions (which have receipts but no ATIF trajectory) publish
 their durable OCSF events.
 
 ```
-avctl console-sync --spool-dir /var/lib/agentvisor/spool/atif \
-  --bridge-dir /var/lib/agentvisor/data/bridge \
+pvctl console-sync --spool-dir /var/lib/proofvisor/spool/atif \
+  --bridge-dir /var/lib/proofvisor/data/bridge \
   --console-url https://console.example.com \
   --deployment dep_123 \
-  --token-file /run/secrets/av-console-token
+  --token-file /run/secrets/pv-console-token
 ```
 
-Configuration precedence is CLI flags, then `AV_CONSOLE_URL`,
-`AV_CONSOLE_DEPLOYMENT`, `AV_CONSOLE_TOKEN`,
-`AV_CONSOLE_BRIDGE_DIR`, then an optional `~/.agentvisor/console.toml`
-file (or legacy `[console]` table in the effective `agentvisor.toml`):
+Configuration precedence is CLI flags, then `PV_CONSOLE_URL`,
+`PV_CONSOLE_DEPLOYMENT`, `PV_CONSOLE_TOKEN`,
+`PV_CONSOLE_BRIDGE_DIR`, then an optional `~/.proofvisor/console.toml`
+file (or legacy `[console]` table in the effective `proofvisor.toml`):
 
 ```toml
 [console]
 url = "https://console.example.com"
 deployment = "dep_123"
-token_file = "/run/secrets/av-console-token"
-bridge_dir = "/var/lib/agentvisor/data/bridge"
+token_file = "/run/secrets/pv-console-token"
+bridge_dir = "/var/lib/proofvisor/data/bridge"
 ```
 
 The token is never printed; token files are read with trailing
@@ -186,12 +186,12 @@ Bridge OCSF topics map to ingest events as follows:
 | `agent.identity` | `audit` | Identity validation evidence. |
 | `agent.receipt` | skipped | Receipts are uploaded separately from the receipt spool. |
 
-`avctl setup` can create the console config for you. At the end of the
+`pvctl setup` can create the console config for you. At the end of the
 guided setup, answer yes to "Connect to the hosted console?", accept or
 enter the console URL, paste the deployment id and ingest token, then run:
 
 ```sh
-avctl console-sync --watch
+pvctl console-sync --watch
 ```
 
 ### Releasing a quarantined session id
@@ -232,42 +232,42 @@ interaction.
 
 | Metric | Alert condition | What it means |
 | --- | --- | --- |
-| `av_atif_retention_pruned_total` | Sudden increase | Retention sweep ran (usually just noise, but confirm the `atif_retention_days` you set). |
-| `av_reconciler_last_tick_completed_seconds` | `time() - value > 5 × tick interval` | The reconciler tick is stalled (hung filesystem, lifecycle-lock deadlock) or has never completed since boot. Closes, promotion retries, idle finalization and outbox replay are all stopped with it. The series exists from boot and reads 0 until the first tick completes. |
-| `av_atif_recovery_skipped_total{reason="unauthenticated"}` | Rate > 0 sustained | Someone/something is planting sidecar-less .json files. Escalate. |
-| `av_atif_recovery_skipped_total{reason="too_large"}` | Rate > 0 | Adversarial ATIF payload attempts (> `MAX_ATIF_RECOVERY_BYTES`). Investigate the spool contents. |
-| `av_atif_recovery_skipped_total{reason="read_error"}` | Rate > 0 sustained | Recovery failed to open a spool file after `MAX_ATIF_RECOVERY_BYTES` metadata pre-check — disk / permission fault, or a symlink-plant beat the pre-check. Investigate the disk. |
-| `av_atif_recovery_skipped_total{reason="invalid_json"}` | Any occurrence | ATIF file bytes could not parse as JSON. Adversarial payload or bit-rot. Escalate. |
-| `av_atif_recovery_skipped_total{reason="nonconformant"}` | Any occurrence | ATIF parsed as JSON but failed strict-mode structural validation. Same class as `invalid_json` — either a hostile plant or a schema-version mismatch that the operator needs to reconcile. Escalate. |
-| `av_atif_recovery_skipped_total{reason="provenance"}` | Any occurrence | `.atif-auth` sidecar HMAC failed to verify against the current signer key. This is a cryptographic integrity failure — either a key rotation that missed the retirement window, or a tampered/planted trajectory. **Escalate immediately.** |
-| `av_incomplete_sessions_total` | Sudden increase | Sessions where `capture_failed` was set on the audit chain. After round 51 §6.2 (D7) this is genuinely rare and represents unrecoverable pipeline state, not client disconnects. Escalate. |
-| `av_events_dropped_total{stage="response_slot"}` | Rate > 0 sustained | Response capture backpressure — the worker pool is saturated or the state store is slow. Scale up workers or investigate the state backend. |
-| `av_http_shutdown_drain_timeouts_total` | Any increase | A graceful drain hit its timeout with requests still in flight; usually upstream latency. |
-| `av_ephemeral_close_failures_total` | Any increase | The auto-close spawned for a stock-SDK one-shot session (no `X-AV-Session` header — the OpenAI-compatibility contract auto-closes it after the response) failed. The session is stranded open until the idle sweeper (`session_idle_close_s`) reaps it, delaying the receipt. If this fires steadily, the finalizer is unhealthy — investigate. |
-| `av_stream_abort_close_failures_total` | Any increase | A background close spawned from a stream-abort drop path failed. Same class as ephemeral-close: the session is left open until the idle sweeper. Steady-state 0 on healthy nodes. |
-| `av_stream_abort_no_runtime_total` | Any increase | A stream-abort drop path ran with no live Tokio runtime (harness shutdown, blocking-thread drop). Capture is marked failed so the reconciler retries on next tick. Any increase after boot suggests unclean shutdown ordering. |
-| `av_reconciler_panics_total` | Any increase | The reconciler tick body panicked and was caught. The reconciler continues on the next tick, but a panic here indicates a bug or an environmental fault (allocator OOM, disk corruption); investigate the coincident logs. |
-| `av_worker_shard_panics_total` | Any increase | A worker shard job body panicked and was caught. The shard continues serving subsequent jobs, but any occurrence is a bug or a hostile input that reached beyond the parser guards; capture the coincident session for triage. |
-| `av_bridge_maintenance_panics_total` | Any increase | The bridge maintenance loop tick body panicked. The loop continues on the next interval. Same triage class as reconciler panics. |
-| `av_bridge_maintenance_errors_total` | Rate > 0 sustained | The bridge maintenance loop tick returned an error (retention rewrite failed, cold-outbox stage failed). Steady errors indicate a persistent broker/disk fault. |
-| `av_bridge_maintenance_join_errors_total` | Any increase | The bridge maintenance loop's spawned task failed to join (panic or cancellation). Any increase after boot is a signal of shutdown-ordering issues or a hostile panic in the maintenance body. |
-| `av_atif_retention_panics_total` | Any increase | The hourly ATIF retention sweep tick body panicked and was caught. The loop continues on the next hour, but retention is the ONLY in-process reclaim path — a repeated firing lets the spool grow unbounded until the disk fills. Same triage class as `av_bridge_maintenance_panics_total`. |
-| `av_atif_retention_errors_total` | Rate > 0 sustained | The hourly ATIF retention sweep returned an error (permission drift on the spool subtree, a corrupt sidecar the pass keeps re-tripping on). Steady errors here mean the spool is not being reclaimed; investigate before the disk fills. |
-| `av_tcp_nodelay_failures_total` | Sustained rate > 0 | TCP_NODELAY setsockopt failed on an accepted connection. Single events are noise (ECONNRESET race between accept and setsockopt); a sustained rate is either (a) a client half-open flood / SYN flood exhausting sockets before setsockopt runs, or (b) an embedded target without full socket-option support. Under (a) the log is rate-limited to one `warn!` per process to avoid a log storm — this counter is the primary observability signal instead. |
-| `av_http_accept_failures_total` | Sustained rate > 0 | `accept()` on the front-door listener failed (EMFILE/ENFILE fd exhaustion, aborted handshakes). The accept loop sleeps 50 ms and continues, so a sustained rate means the daemon is refusing new connections — check `ulimit -n`, connection leaks, or an active slowloris flood. Like `av_tcp_nodelay_failures_total`, the log line is rate-limited to one `warn!` per process (under EMFILE this arm loops at ~20 Hz for the whole incident); this counter is the primary observability signal instead. |
-| `av_stream_abort_panics_total` | Any increase | A background close spawned from the stream-abort drop path PANICKED (caught). The session is left open until the idle sweeper. Same class as `av_stream_abort_close_failures_total` but for panics rather than returned errors. |
-| `av_ephemeral_close_panics_total` | Any increase | Same as `av_ephemeral_close_failures_total` but for panics rather than returned errors — the auto-close of a completed one-shot ephemeral session panicked in a Drop-spawned task. |
-| `av_admission_refund_panics_total` | Any increase | The admission-debit refund closure panicked inside its Drop-spawned `spawn_blocking` refund. The session and principal ledgers RETAIN the debit; a repeated firing drains the principal budget under real load. Investigate the state backend (Redis) and the store trait implementors' allocator health. |
-| `av_idle_close_timeouts_total` | Any sustained rate > 0 | The reconciler's idle-close sweep hit its 90 s per-session deadline. The session is deferred to the next tick. A steady rate > 0 indicates a session with a lease that never drops (stuck stream, hung worker, unresponsive bridge) — inspect the coincident tracing warn line for the session id. |
-| `av_shutdown_session_close_timeouts_total` | Any occurrence during a rollout | The shutdown-time per-session close hit its 3 s deadline. The session's finalize is deferred to the daemon's next-boot spool recovery (idempotent, no receipts lost). Distinct from `av_http_shutdown_drain_timeouts_total` which fires on the OUTER phase timeout. Any occurrence on a rollout indicates a class of sessions that hang close — leaked SessionLease, dropped worker permit, unresponsive bridge publish. Inspect the coincident tracing warn line for the session id. |
-| `av_shutdown_mcp_drain_timeouts_total` | Any occurrence during a rollout | The shutdown MCP-inflight drain hit its 5 s deadline before every detached `mcp_call_inner` spawn completed. `mcp_call` decouples the tool-execution body from axum's per-connection cancellation to keep durable state consistent under client disconnect; the drain waits for those bodies between HTTP graceful drain and `worker.wait_idle` so a late worker submission can't race the per-session close deadline. On drain timeout, shutdown still proceeds; sessions whose detached body was interrupted may be quarantined at restart-time recovery. Any occurrence on a rollout indicates a class of tool calls that regularly outlive the drain window (long-running upstream tool, hung sandbox). Distinct from `av_shutdown_session_close_timeouts_total` (per-session close deadline) and `av_http_shutdown_drain_timeouts_total` (outer HTTP-drain phase). |
-| `av_lifecycle_outbox_pending` (gauge) | Sustained > 0, or growth rate | Count of unacked lifecycle outbox files (RECEIPT + SESSION_CLOSE) sitting in the spool at the last reconciler tick. Steady-state 0 on a healthy node. A rising baseline is the earliest signal of a broker outage — outboxes persist across restarts, so the disk-bounded queue grows until the bridge is reachable again. Investigate the bridge/broker health when this alerts. |
-| `av_recovery_scan_capped_total{pass="…"}` | Any sustained rate > 0 | A recovery pass hit its per-tick entry-scan cap (10 000 entries) and returned early. The next tick re-opens the directory and resumes. A steady rate > 0 indicates a POISONED SPOOL (millions of stale files) that will starve legitimate recovery work until an operator quarantines the offending files. The `pass` label identifies which pass hit the cap: `adopt_strict_atif`, `recover_signed_journals`, `consolidate_step_journals`, `retry_marked_promotions`, `remove_acked_outboxes`, `replay_lifecycle_outboxes`, or `quarantine_orphan_json`. |
-| `av_authzen_decisions_total{decision="error"}` | Any sustained rate > 0 | The external AuthZEN policy decision point timed out, answered a non-200 status, or returned no boolean decision. Every affected tool call was refused with 503 (fail closed). Check the PDP's health and `[authzen].timeout_ms`. `decision="deny"` counts policy denials and is not an outage signal. |
-| `av_mcp_discovery_failures_total{backend="…"}` | Sustained rate > 0 | `tools/list` could not discover a backend's tools (handshake refused, backend down, or the caller holds no usable credential for it). That backend's tools are missing from tool lists until it recovers; tool calls to it fail with 502. |
-| `av_mcp_tools_withheld_total{reason="…"}` | Sudden increase in `invalid_name` or `unrouted` | Backends advertise tools the gateway cannot accept (names with uppercase or non-ASCII characters) or that routing sends elsewhere. `scope` and `policy` reasons reflect normal filtering by caller permissions. |
-| `av_content_records_dropped_total` | Any sustained rate > 0 | Full-content tenant telemetry is falling behind: the queue to the tenant exporter was full, or the sink failed, and records were dropped. The audit journal and receipts are unaffected. Check the tenant collector's reachability and throughput. |
-| `av_workload_assertions_rejected_total{reason="…"}` | Sustained rate > 0 of `chain`, `signature`, or `replay` | Workload identity assertions are refused. `chain` usually means `[workload_identity].ca_file` does not match the foundation's instance identity CA; `replay` or `signature` can indicate a stolen or forged assertion; `unregistered` means an app has no `[[workload_identities]]` entry. |
+| `pv_atif_retention_pruned_total` | Sudden increase | Retention sweep ran (usually just noise, but confirm the `atif_retention_days` you set). |
+| `pv_reconciler_last_tick_completed_seconds` | `time() - value > 5 × tick interval` | The reconciler tick is stalled (hung filesystem, lifecycle-lock deadlock) or has never completed since boot. Closes, promotion retries, idle finalization and outbox replay are all stopped with it. The series exists from boot and reads 0 until the first tick completes. |
+| `pv_atif_recovery_skipped_total{reason="unauthenticated"}` | Rate > 0 sustained | Someone/something is planting sidecar-less .json files. Escalate. |
+| `pv_atif_recovery_skipped_total{reason="too_large"}` | Rate > 0 | Adversarial ATIF payload attempts (> `MAX_ATIF_RECOVERY_BYTES`). Investigate the spool contents. |
+| `pv_atif_recovery_skipped_total{reason="read_error"}` | Rate > 0 sustained | Recovery failed to open a spool file after `MAX_ATIF_RECOVERY_BYTES` metadata pre-check — disk / permission fault, or a symlink-plant beat the pre-check. Investigate the disk. |
+| `pv_atif_recovery_skipped_total{reason="invalid_json"}` | Any occurrence | ATIF file bytes could not parse as JSON. Adversarial payload or bit-rot. Escalate. |
+| `pv_atif_recovery_skipped_total{reason="nonconformant"}` | Any occurrence | ATIF parsed as JSON but failed strict-mode structural validation. Same class as `invalid_json` — either a hostile plant or a schema-version mismatch that the operator needs to reconcile. Escalate. |
+| `pv_atif_recovery_skipped_total{reason="provenance"}` | Any occurrence | `.atif-auth` sidecar HMAC failed to verify against the current signer key. This is a cryptographic integrity failure — either a key rotation that missed the retirement window, or a tampered/planted trajectory. **Escalate immediately.** |
+| `pv_incomplete_sessions_total` | Sudden increase | Sessions where `capture_failed` was set on the audit chain. After round 51 §6.2 (D7) this is genuinely rare and represents unrecoverable pipeline state, not client disconnects. Escalate. |
+| `pv_events_dropped_total{stage="response_slot"}` | Rate > 0 sustained | Response capture backpressure — the worker pool is saturated or the state store is slow. Scale up workers or investigate the state backend. |
+| `pv_http_shutdown_drain_timeouts_total` | Any increase | A graceful drain hit its timeout with requests still in flight; usually upstream latency. |
+| `pv_ephemeral_close_failures_total` | Any increase | The auto-close spawned for a stock-SDK one-shot session (no `X-PV-Session` header — the OpenAI-compatibility contract auto-closes it after the response) failed. The session is stranded open until the idle sweeper (`session_idle_close_s`) reaps it, delaying the receipt. If this fires steadily, the finalizer is unhealthy — investigate. |
+| `pv_stream_abort_close_failures_total` | Any increase | A background close spawned from a stream-abort drop path failed. Same class as ephemeral-close: the session is left open until the idle sweeper. Steady-state 0 on healthy nodes. |
+| `pv_stream_abort_no_runtime_total` | Any increase | A stream-abort drop path ran with no live Tokio runtime (harness shutdown, blocking-thread drop). Capture is marked failed so the reconciler retries on next tick. Any increase after boot suggests unclean shutdown ordering. |
+| `pv_reconciler_panics_total` | Any increase | The reconciler tick body panicked and was caught. The reconciler continues on the next tick, but a panic here indicates a bug or an environmental fault (allocator OOM, disk corruption); investigate the coincident logs. |
+| `pv_worker_shard_panics_total` | Any increase | A worker shard job body panicked and was caught. The shard continues serving subsequent jobs, but any occurrence is a bug or a hostile input that reached beyond the parser guards; capture the coincident session for triage. |
+| `pv_bridge_maintenance_panics_total` | Any increase | The bridge maintenance loop tick body panicked. The loop continues on the next interval. Same triage class as reconciler panics. |
+| `pv_bridge_maintenance_errors_total` | Rate > 0 sustained | The bridge maintenance loop tick returned an error (retention rewrite failed, cold-outbox stage failed). Steady errors indicate a persistent broker/disk fault. |
+| `pv_bridge_maintenance_join_errors_total` | Any increase | The bridge maintenance loop's spawned task failed to join (panic or cancellation). Any increase after boot is a signal of shutdown-ordering issues or a hostile panic in the maintenance body. |
+| `pv_atif_retention_panics_total` | Any increase | The hourly ATIF retention sweep tick body panicked and was caught. The loop continues on the next hour, but retention is the ONLY in-process reclaim path — a repeated firing lets the spool grow unbounded until the disk fills. Same triage class as `pv_bridge_maintenance_panics_total`. |
+| `pv_atif_retention_errors_total` | Rate > 0 sustained | The hourly ATIF retention sweep returned an error (permission drift on the spool subtree, a corrupt sidecar the pass keeps re-tripping on). Steady errors here mean the spool is not being reclaimed; investigate before the disk fills. |
+| `pv_tcp_nodelay_failures_total` | Sustained rate > 0 | TCP_NODELAY setsockopt failed on an accepted connection. Single events are noise (ECONNRESET race between accept and setsockopt); a sustained rate is either (a) a client half-open flood / SYN flood exhausting sockets before setsockopt runs, or (b) an embedded target without full socket-option support. Under (a) the log is rate-limited to one `warn!` per process to avoid a log storm — this counter is the primary observability signal instead. |
+| `pv_http_accept_failures_total` | Sustained rate > 0 | `accept()` on the front-door listener failed (EMFILE/ENFILE fd exhaustion, aborted handshakes). The accept loop sleeps 50 ms and continues, so a sustained rate means the daemon is refusing new connections — check `ulimit -n`, connection leaks, or an active slowloris flood. Like `pv_tcp_nodelay_failures_total`, the log line is rate-limited to one `warn!` per process (under EMFILE this arm loops at ~20 Hz for the whole incident); this counter is the primary observability signal instead. |
+| `pv_stream_abort_panics_total` | Any increase | A background close spawned from the stream-abort drop path PANICKED (caught). The session is left open until the idle sweeper. Same class as `pv_stream_abort_close_failures_total` but for panics rather than returned errors. |
+| `pv_ephemeral_close_panics_total` | Any increase | Same as `pv_ephemeral_close_failures_total` but for panics rather than returned errors — the auto-close of a completed one-shot ephemeral session panicked in a Drop-spawned task. |
+| `pv_admission_refund_panics_total` | Any increase | The admission-debit refund closure panicked inside its Drop-spawned `spawn_blocking` refund. The session and principal ledgers RETAIN the debit; a repeated firing drains the principal budget under real load. Investigate the state backend (Redis) and the store trait implementors' allocator health. |
+| `pv_idle_close_timeouts_total` | Any sustained rate > 0 | The reconciler's idle-close sweep hit its 90 s per-session deadline. The session is deferred to the next tick. A steady rate > 0 indicates a session with a lease that never drops (stuck stream, hung worker, unresponsive bridge) — inspect the coincident tracing warn line for the session id. |
+| `pv_shutdown_session_close_timeouts_total` | Any occurrence during a rollout | The shutdown-time per-session close hit its 3 s deadline. The session's finalize is deferred to the daemon's next-boot spool recovery (idempotent, no receipts lost). Distinct from `pv_http_shutdown_drain_timeouts_total` which fires on the OUTER phase timeout. Any occurrence on a rollout indicates a class of sessions that hang close — leaked SessionLease, dropped worker permit, unresponsive bridge publish. Inspect the coincident tracing warn line for the session id. |
+| `pv_shutdown_mcp_drain_timeouts_total` | Any occurrence during a rollout | The shutdown MCP-inflight drain hit its 5 s deadline before every detached `mcp_call_inner` spawn completed. `mcp_call` decouples the tool-execution body from axum's per-connection cancellation to keep durable state consistent under client disconnect; the drain waits for those bodies between HTTP graceful drain and `worker.wait_idle` so a late worker submission can't race the per-session close deadline. On drain timeout, shutdown still proceeds; sessions whose detached body was interrupted may be quarantined at restart-time recovery. Any occurrence on a rollout indicates a class of tool calls that regularly outlive the drain window (long-running upstream tool, hung sandbox). Distinct from `pv_shutdown_session_close_timeouts_total` (per-session close deadline) and `pv_http_shutdown_drain_timeouts_total` (outer HTTP-drain phase). |
+| `pv_lifecycle_outbox_pending` (gauge) | Sustained > 0, or growth rate | Count of unacked lifecycle outbox files (RECEIPT + SESSION_CLOSE) sitting in the spool at the last reconciler tick. Steady-state 0 on a healthy node. A rising baseline is the earliest signal of a broker outage — outboxes persist across restarts, so the disk-bounded queue grows until the bridge is reachable again. Investigate the bridge/broker health when this alerts. |
+| `pv_recovery_scan_capped_total{pass="…"}` | Any sustained rate > 0 | A recovery pass hit its per-tick entry-scan cap (10 000 entries) and returned early. The next tick re-opens the directory and resumes. A steady rate > 0 indicates a POISONED SPOOL (millions of stale files) that will starve legitimate recovery work until an operator quarantines the offending files. The `pass` label identifies which pass hit the cap: `adopt_strict_atif`, `recover_signed_journals`, `consolidate_step_journals`, `retry_marked_promotions`, `remove_acked_outboxes`, `replay_lifecycle_outboxes`, or `quarantine_orphan_json`. |
+| `pv_authzen_decisions_total{decision="error"}` | Any sustained rate > 0 | The external AuthZEN policy decision point timed out, answered a non-200 status, or returned no boolean decision. Every affected tool call was refused with 503 (fail closed). Check the PDP's health and `[authzen].timeout_ms`. `decision="deny"` counts policy denials and is not an outage signal. |
+| `pv_mcp_discovery_failures_total{backend="…"}` | Sustained rate > 0 | `tools/list` could not discover a backend's tools (handshake refused, backend down, or the caller holds no usable credential for it). That backend's tools are missing from tool lists until it recovers; tool calls to it fail with 502. |
+| `pv_mcp_tools_withheld_total{reason="…"}` | Sudden increase in `invalid_name` or `unrouted` | Backends advertise tools the gateway cannot accept (names with uppercase or non-ASCII characters) or that routing sends elsewhere. `scope` and `policy` reasons reflect normal filtering by caller permissions. |
+| `pv_content_records_dropped_total` | Any sustained rate > 0 | Full-content tenant telemetry is falling behind: the queue to the tenant exporter was full, or the sink failed, and records were dropped. The audit journal and receipts are unaffected. Check the tenant collector's reachability and throughput. |
+| `pv_workload_assertions_rejected_total{reason="…"}` | Sustained rate > 0 of `chain`, `signature`, or `replay` | Workload identity assertions are refused. `chain` usually means `[workload_identity].ca_file` does not match the foundation's instance identity CA; `replay` or `signature` can indicate a stolen or forged assertion; `unregistered` means an app has no `[[workload_identities]]` entry. |
 
 ## Backup
 
@@ -298,7 +298,7 @@ The workspace's SemVer contract:
   optional; removals or renames are MAJOR bumps.
 * Config: new keys added with `#[serde(default)]` and documented in
   `docs/reference/CONFIGURATION.md`. Removals are MAJOR bumps.
-* `avctl` CLI surface: adding subcommands is minor; removing them
+* `pvctl` CLI surface: adding subcommands is minor; removing them
   or renaming flags is MAJOR.
 
 Rolling upgrades within a MAJOR version are safe: mix old and new

@@ -1,10 +1,10 @@
 .PHONY: fmt fmt-check lint lint-all-features test test-fast test-all bench fuzz-smoke sla schema-check compose-check ci doc clean run doctor
 
 run:
-	cargo run -p av-harness --bin agentvisord
+	cargo run -p pv-harness --bin proofvisord
 
 doctor:
-	cargo run -q -p av-cli --bin avctl -- doctor
+	cargo run -q -p pv-cli --bin pvctl -- doctor
 
 fmt:
 	cargo fmt --all
@@ -47,14 +47,14 @@ doc:
 
 schema-check:
 	for schema in schemas/*.json; do node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$$schema" || exit 1; done
-	cargo run -q -p av-cli -- manifest-validate manifests/bridge.example.yaml
-	cargo run -q -p av-cli -- config-validate config/harness.example.toml
+	cargo run -q -p pv-cli -- manifest-validate manifests/bridge.example.yaml
+	cargo run -q -p pv-cli -- config-validate config/harness.example.toml
 	# The docker/container configs select full-feature backends (kafka,
-	# redis, onnx, qdrant) that the default-features avctl deliberately
+	# redis, onnx, qdrant) that the default-features pvctl deliberately
 	# refuses to claim it can run (round-51 §8.10). They target the
 	# full-feature container image, so check structure only here.
-	cargo run -q -p av-cli -- config-validate config/harness.docker.toml --structural-only
-	cargo run -q -p av-cli -- config-validate config/harness.container.toml --structural-only
+	cargo run -q -p pv-cli -- config-validate config/harness.docker.toml --structural-only
+	cargo run -q -p pv-cli -- config-validate config/harness.container.toml --structural-only
 
 compose-check:
 	docker compose -f docker/docker-compose.yml config >/dev/null

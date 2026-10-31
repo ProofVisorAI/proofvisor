@@ -34,13 +34,13 @@ gen() {
   echo "  WARNING: $(basename "$out") ${d}s exceeds window ${window}s even at +40%"
 }
 
-gen "$VOICE/s1" 5.4 "This is Agent Visor A I: the control plane for A I agents that touch real money and real systems."
+gen "$VOICE/s1" 5.4 "This is Proof Visor: the control plane for A I agents that touch real money and real systems."
 gen "$VOICE/s2" 6.4 "Companies let A I agents order stock and pay invoices on their own. One tricked agent can send thousands to a fake vendor."
-gen "$VOICE/s3" 7.9 "Agent Visor sits between the agent and the money. Bad orders are blocked before they go out, and proven afterwards. Here is the complete flow, from zero."
-gen "$VOICE/s4" 4.6 "A brand new user lands on Agent Visor A I."
+gen "$VOICE/s3" 7.9 "Proof Visor sits between the agent and the money. Bad orders are blocked before they go out, and proven afterwards. Here is the complete flow, from zero."
+gen "$VOICE/s4" 4.6 "A brand new user lands on Proof Visor."
 gen "$VOICE/s5" 7.2 "They create a workspace. Company, email, password. That is the whole setup."
 gen "$VOICE/s6" 4.9 "A brand new workspace. Zero sessions, zero deployments. Nothing to audit, yet."
-gen "$VOICE/s7" 9.0 "One install command connects their first daemon. Agent Visor issues its signing key automatically."
+gen "$VOICE/s7" 9.0 "One install command connects their first daemon. Proof Visor issues its signing key automatically."
 gen "$VOICE/s8" 9.6 "And the first sessions stream in. Their buying agent just tried to pay a vendor that is not on the approved list. The order is blocked: eight thousand four hundred dollars kept."
 gen "$VOICE/s9" 5.9 "One click isolates the blocked session."
 gen "$VOICE/s10" 9.2 "Inside it: the agent was tricked into ordering from an unapproved vendor. Blocked before the money moved. Its retry, with the approved vendor, went through."

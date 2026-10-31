@@ -43,7 +43,7 @@ Nightly (04:17 UTC)         Weekly (Mon 06:00 UTC)
 | `.github/workflows/deploy.yml` | main pushes and PRs matching console/release-tool paths; manual runs | Build local OCI archives, test and scan each platform, promote verified bytes on main, then optionally deploy the exact digest to Fly |
 | `.github/workflows/pages.yml` | main pushes matching its source/docs path filters; manual runs | Rustdoc and the docs SPA to GitHub Pages |
 | `.github/workflows/deny.yml` | push to main, all PRs | cargo-deny advisory, license, and duplicate checks |
-| `.github/workflows/publish-crates.yml` | tag `av-*-vX.Y.Z` | Publish crates to crates.io |
+| `.github/workflows/publish-crates.yml` | tag `pv-*-vX.Y.Z` | Publish crates to crates.io |
 | `.github/workflows/release.yml` | tag `vX.Y.Z` | Build release binaries and a GitHub release |
 | `.github/workflows/dependabot-automerge.yml` | Dependabot PRs | Approve and enable auto-merge for eligible dependency updates after required checks pass |
 | `.github/workflows/backup.yml` | daily 04:17 UTC; manual runs | Verify and encrypt a PostgreSQL dump, then upload the ciphertext with 30-day retention |
@@ -124,8 +124,8 @@ When the public-repository attestation steps ran, verify the promoted index:
 ```bash
 # Set IMAGE_DIGEST to the promoted sha256:... digest from the workflow.
 gh attestation verify \
-  "oci://ghcr.io/agentvisorai/agentvisor-api@${IMAGE_DIGEST:?}" \
-  --owner AgentVisorAI
+  "oci://ghcr.io/proofvisorai/proofvisor-api@${IMAGE_DIGEST:?}" \
+  --owner ProofVisorAI
 ```
 
 The copy boundary uses Skopeo's [digest-preserving OCI copy](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md)
@@ -161,16 +161,16 @@ that the target application and its required configuration already exist.
 
 ```bash
 # Set IMAGE_DIGEST to the reviewed sha256:... digest.
-image_ref="ghcr.io/agentvisorai/agentvisor-api@${IMAGE_DIGEST:?}"
+image_ref="ghcr.io/proofvisorai/proofvisor-api@${IMAGE_DIGEST:?}"
 
 # Fly; run from server/ so fly.toml is available.
 (cd server && fly deploy --image "$image_ref")
 
 # Cloud Run
-gcloud run deploy agentvisor-api --image "$image_ref"
+gcloud run deploy proofvisor-api --image "$image_ref"
 
 # Kubernetes
-kubectl set image deployment/agentvisor-api "api=$image_ref"
+kubectl set image deployment/proofvisor-api "api=$image_ref"
 
 # Plain Docker behind an HTTPS reverse proxy. The private environment file
 # must supply DATABASE_URL, JWT_SECRET, HTTPS APP_BASE_URL, ALLOWED_ORIGINS,
@@ -188,7 +188,7 @@ separate validation. An image update command alone does not establish them.
 Record the previous successful image digest before deploying. From `server/`:
 
 ```bash
-fly deploy --image "ghcr.io/agentvisorai/agentvisor-api@${PREVIOUS_IMAGE_DIGEST:?}"
+fly deploy --image "ghcr.io/proofvisorai/proofvisor-api@${PREVIOUS_IMAGE_DIGEST:?}"
 ```
 
 A digest selects the same image bytes without rebuilding. Source-revision

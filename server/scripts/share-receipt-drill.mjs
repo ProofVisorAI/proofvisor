@@ -4,7 +4,7 @@
  * The scenario:
  *   * Investor Alice is looking at a session receipt on the console.
  *   * She clicks "Share verify link" -> the console copies a URL of
- *     the form `agentvisorai.me/verify/#data=<b64>` to her clipboard.
+ *     the form `proofvisor.com/verify/#data=<b64>` to her clipboard.
  *   * She DMs the URL to her partner Bob.
  *   * Bob opens the URL in his browser.
  *   * Bob's browser decodes the base64 fragment, imports the
@@ -36,7 +36,7 @@ const aliceCtx = await browser.newContext({
 const alice = await aliceCtx.newPage();
 
 // Log in mock-mode
-await alice.addInitScript(() => { try { localStorage.setItem("av_mock_signed_out", "1"); } catch {} });
+await alice.addInitScript(() => { try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {} });
 await alice.goto(SITE + "#/login", { waitUntil: "networkidle" });
 await alice.waitForSelector("input#email", { timeout: 15000 });
 await alice.locator("input#email").fill("olivia.tan@northwind.com");
@@ -81,7 +81,7 @@ const bobJsErrors = [];
 bob.on("pageerror", (e) => bobJsErrors.push(e.message));
 
 // Bob opens the URL Alice DM'd him. Rewrite the origin to our local
-// server since Alice's URL points at agentvisorai.me but our drill
+// server since Alice's URL points at proofvisor.com but our drill
 // runs locally.
 const localizedUrl = clipboardUrl.replace(
   /^https?:\/\/[^/]+\/verify\//,

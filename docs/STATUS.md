@@ -1,4 +1,4 @@
-# AgentVisor AI status
+# ProofVisor status
 
 Real-time SLO tracker. Curated by the on-call.
 
@@ -7,15 +7,15 @@ Real-time SLO tracker. Curated by the on-call.
 **Demo surfaces operational · hosted API live (demo-scale)** — last
 verified: 2026-09-06.
 
-- **Console** (`agentvisorai.me/app/`) — nominal (mock mode by
+- **Console** (`proofvisor.com/app/`) — nominal (mock mode by
   default: the full product experience against built-in fixtures;
   nothing leaves the browser. Append `?live=1` to run the same page
   against the hosted API; `?live=0` reverts)
-- **Site + verifier** (`agentvisorai.me`, `/verify/`) — nominal
-- **Installer + public repo** (`agentvisorai.me/install.sh`,
-  `github.com/AgentVisorAI/agentvisor`) — nominal, exercised nightly
+- **Site + verifier** (`proofvisor.com`, `/verify/`) — nominal
+- **Installer + public repo** (`proofvisor.com/install.sh`,
+  `github.com/ProofVisorAI/proofvisor`) — nominal, exercised nightly
   by the `public-consumer` workflow
-- **Hosted API** (`api.agentvisorai.me`) — **live** as of 2026-09-06
+- **Hosted API** (`api.proofvisor.com`) — **live** as of 2026-09-06
   on the free-tier stack from `server/DEPLOY.md`: Render web service
   (Ohio, Docker image from `server/Dockerfile`) + Neon Postgres
   (us-east-2, direct/unpooled URL so the LISTEN/NOTIFY bus works) +
@@ -65,12 +65,12 @@ Point the monitor at (once the hosted API launches with the beta —
 the host does not resolve before then):
 
 ```
-https://api.agentvisorai.me/healthz
+https://api.proofvisor.com/healthz
 ```
 
 Expect a 200 with `{"ok":true,"version":"…"}`. Until launch, monitor
-the live demo surfaces instead: `https://agentvisorai.me/app/` and
-`https://agentvisorai.me/build.txt` (the deploy-convergence marker).
+the live demo surfaces instead: `https://proofvisor.com/app/` and
+`https://proofvisor.com/build.txt` (the deploy-convergence marker).
 
 For deeper checks, prod-mode healthchecks should hit `/readyz` too — a
 503 there means the DB (or the LISTEN/NOTIFY bridge) is degraded.
@@ -78,4 +78,4 @@ For deeper checks, prod-mode healthchecks should hit `/readyz` too — a
 ## Contact
 
 Incidents: post in-repo issues tagged `incident:` or email
-security@agentvisorai.me for anything sensitive.
+security@proofvisor.com for anything sensitive.

@@ -870,7 +870,7 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
         },
         req.log,
       );
-      const fname = `agentvisor-audit-${claims.orgId}-${new Date()
+      const fname = `proofvisor-audit-${claims.orgId}-${new Date()
         .toISOString()
         .replace(/[:.]/g, "-")}.csv`;
       const escape = (v: unknown): string => {

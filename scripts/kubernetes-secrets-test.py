@@ -13,7 +13,7 @@ import uuid
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    prefix = "av-kubernetes-secrets-" + uuid.uuid4().hex[:12]
+    prefix = "pv-kubernetes-secrets-" + uuid.uuid4().hex[:12]
     work = Path(tempfile.mkdtemp(prefix=prefix + "-"))
     calls = 0
     volumes = []
@@ -30,7 +30,7 @@ def main():
     print("Kubernetes secret test logs: " + str(work), flush=True)
     resources = json.loads(run(["ruby", "-ryaml", "-rjson", "-e",
                                "puts JSON.generate(YAML.load_stream(File.read(ARGV[0])))",
-                               str(root / "deploy/kubernetes/agentvisor-ai.yaml")]))
+                               str(root / "deploy/kubernetes/proofvisor.yaml")]))
     pod = next(item for item in resources if item and item.get("kind") == "Deployment")["spec"]["template"]["spec"]
     installer = pod["initContainers"][0]
     if pod["securityContext"]["runAsUser"] != 65532 or pod["automountServiceAccountToken"]:
@@ -46,7 +46,7 @@ def main():
     if volume.get("emptyDir") != {"medium": "Memory", "sizeLimit": "64Mi"}:
         raise RuntimeError("Temporary files must use the bounded memory-backed mount")
     secret_mounts = [mount for mount in pod["containers"][0]["volumeMounts"]
-                     if mount["mountPath"] in ("/etc/agentvisor-ai/signing.seed", "/etc/agentvisor-ai/identity.hmac")]
+                     if mount["mountPath"] in ("/etc/proofvisor/signing.seed", "/etc/proofvisor/identity.hmac")]
     if len(secret_mounts) != 2 or not all(mount["readOnly"] for mount in secret_mounts):
         raise RuntimeError("Both runtime secret files must be mounted read-only")
     source, destination, data = [prefix + "-" + name for name in ("source", "destination", "data")]
@@ -66,21 +66,21 @@ def main():
         init = base + ["--user", str(security["runAsUser"])]
         for capability in security["capabilities"]["add"]:
             init += ["--cap-add", capability]
-        init += ["-v", source + ":/var/run/agentvisor-ai/secret-source:ro",
-                 "-v", destination + ":/etc/agentvisor-ai",
-                 "-v", data + ":/var/run/agentvisor-ai/data", image] + installer["command"]
-        verify = base + ["--user", "65532:65532", "-v", destination + ":/etc/agentvisor-ai:ro",
+        init += ["-v", source + ":/var/run/proofvisor/secret-source:ro",
+                 "-v", destination + ":/etc/proofvisor",
+                 "-v", data + ":/var/run/proofvisor/data", image] + installer["command"]
+        verify = base + ["--user", "65532:65532", "-v", destination + ":/etc/proofvisor:ro",
                          "-v", data + ":/data", image, "sh", "-ec", """
 for name in signing.seed identity.hmac; do
-  path="/etc/agentvisor-ai/$name"
+  path="/etc/proofvisor/$name"
   [ "$(stat -c '%u:%g:%a' "$path")" = '65532:65532:600' ]
   [ -r "$path" ]
   # BusyBox test -w checks mode bits; verify the read-only mount with a write.
   if (printf forbidden >> "$path") 2>/dev/null; then exit 1; fi
 done
-[ "$(cat /etc/agentvisor-ai/signing.seed)" = signing-fixture ]
-[ "$(cat /etc/agentvisor-ai/identity.hmac)" = identity-fixture ]
-[ "$(stat -c '%u:%g:%a' /etc/agentvisor-ai)" = '65532:65532:700' ]
+[ "$(cat /etc/proofvisor/signing.seed)" = signing-fixture ]
+[ "$(cat /etc/proofvisor/identity.hmac)" = identity-fixture ]
+[ "$(stat -c '%u:%g:%a' /etc/proofvisor)" = '65532:65532:700' ]
 touch /data/spool/non-root-write
 """]
         run(init)
@@ -89,8 +89,8 @@ touch /data/spool/non-root-write
         run(init)
         run(verify)
         print("PASS: init command safely repeats after files become owned by the daemon", flush=True)
-        denied = run(base + ["--user", "65531:65531", "-v", destination + ":/etc/agentvisor-ai:ro",
-                             image, "cat", "/etc/agentvisor-ai/identity.hmac"], expected=1)
+        denied = run(base + ["--user", "65531:65531", "-v", destination + ":/etc/proofvisor:ro",
+                             image, "cat", "/etc/proofvisor/identity.hmac"], expected=1)
         if "Permission denied" not in denied:
             raise RuntimeError("Another UID could not read the credential for an unrelated reason")
         print("PASS: another UID cannot read the identity credential", flush=True)

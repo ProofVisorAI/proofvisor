@@ -8,7 +8,7 @@
  *   2. POST /webhooks with the receiver URL + events=['test','policy.block']
  *   3. GET /webhooks -> list shows 1 endpoint
  *   4. POST /webhooks/:id/test -> receiver gets one signed 'test' event
- *   5. Verify X-AgentVisor-Signature against payload
+ *   5. Verify X-ProofVisor-Signature against payload
  *   6. GET /webhooks/:id/deliveries -> shows the 'delivered' row with
  *      responseCode=200 and attempt=1
  *   7. Deactivate the endpoint (PATCH { isActive: false }), fire another
@@ -23,7 +23,7 @@ import { createServer } from "node:http";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8747";
-const PG_CONTAINER = process.env.PG_CONTAINER ?? "av-pg-r47";
+const PG_CONTAINER = process.env.PG_CONTAINER ?? "pv-pg-r47";
 const RECV_PORT = 21117;
 const nonce = Math.random().toString(36).slice(2, 6);
 
@@ -65,13 +65,13 @@ let csrf = null;
 async function jsonReq(method, path, body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (cookie) headers["Cookie"] = "av_session=" + cookie + (csrf ? "; av_csrf=" + csrf : "");
-  if (csrf) headers["x-av-csrf"] = csrf;
+  if (cookie) headers["Cookie"] = "pv_session=" + cookie + (csrf ? "; pv_csrf=" + csrf : "");
+  if (csrf) headers["x-pv-csrf"] = csrf;
   const r = await fetch(BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const sc = r.headers.get("set-cookie") ?? "";
-  const nc = /av_session=([^;]+)/.exec(sc);
+  const nc = /pv_session=([^;]+)/.exec(sc);
   if (nc) cookie = nc[1];
-  const nc2 = /av_csrf=([^;]+)/.exec(sc);
+  const nc2 = /pv_csrf=([^;]+)/.exec(sc);
   if (nc2) csrf = nc2[1];
   return r;
 }
@@ -126,10 +126,10 @@ capture = [];
   }
   if (capture.length !== 1) fail(`receiver got ${capture.length} hits, expected 1`);
   const c = capture[0];
-  if (c.headers["x-agentvisor-event"] !== "test") fail(`event header: ${c.headers["x-agentvisor-event"]}`);
-  if (!c.headers["x-agentvisor-delivery"]) fail("delivery header missing");
-  if (!c.headers["x-agentvisor-timestamp"]) fail("timestamp header missing");
-  if (!c.headers["x-agentvisor-signature"]) fail("signature header missing");
+  if (c.headers["x-proofvisor-event"] !== "test") fail(`event header: ${c.headers["x-proofvisor-event"]}`);
+  if (!c.headers["x-proofvisor-delivery"]) fail("delivery header missing");
+  if (!c.headers["x-proofvisor-timestamp"]) fail("timestamp header missing");
+  if (!c.headers["x-proofvisor-signature"]) fail("signature header missing");
   console.log(`✅ receiver got 1 signed request`);
 }
 
@@ -138,9 +138,9 @@ capture = [];
   const c = capture[0];
   const ok = verify(
     secret,
-    c.headers["x-agentvisor-timestamp"],
+    c.headers["x-proofvisor-timestamp"],
     c.body,
-    c.headers["x-agentvisor-signature"],
+    c.headers["x-proofvisor-signature"],
   );
   if (!ok) fail("signature verify failed");
   const parsed = JSON.parse(c.body);
@@ -204,7 +204,7 @@ capture = [];
   receiverBehavior = { status: 200 };
   const { execSync } = await import("node:child_process");
   execSync(
-    `docker exec ${PG_CONTAINER} psql -U av -d avdb -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
+    `docker exec ${PG_CONTAINER} psql -U pv -d pvdb -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
     { stdio: "ignore" },
   );
   capture = [];

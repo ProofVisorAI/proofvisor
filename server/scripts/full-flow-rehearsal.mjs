@@ -18,7 +18,7 @@
  */
 import { chromium, devices } from "playwright";
 
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/";
 const ROOT = SITE.replace(/app\/?$/, "");
 // PROFILE=phone rehearses the QR-code path: the printed handout's QR
 // lands investors on the site on their phones — same narrative, tap
@@ -47,7 +47,7 @@ const beat = (m) => console.log("✅ [" + ((Date.now() - t0) / 1000).toFixed(1) 
 // ── 1. Landing → CTA
 await page.goto(ROOT, { waitUntil: "domcontentloaded" });
 await page.click('a.cta.primary[href="app/?tour=1"]');
-await page.waitForSelector(".av-tour-card", { timeout: 20000 });
+await page.waitForSelector(".pv-tour-card", { timeout: 20000 });
 if (SLOW) {
   await page.evaluate(() => {
     const ds = window.dataSource;
@@ -68,7 +68,7 @@ beat("landing CTA → console, tour auto-started");
 // here produced false "target missing" failures.
 const tourTargets = [".stat.savings", ".stat.blocks", 'tr[data-id="sess_01H9K"]', ".evt.err", ".receipt-card"];
 for (let step = 0; step < tourTargets.length; step++) {
-  await page.waitForFunction((n) => document.querySelector(".av-tour-step")?.textContent.includes("Step " + n + " of"), step + 1, { timeout: 20000 });
+  await page.waitForFunction((n) => document.querySelector(".pv-tour-step")?.textContent.includes("Step " + n + " of"), step + 1, { timeout: 20000 });
   const onTarget = await page.evaluate((sel) => {
     const t = document.querySelector(sel);
     if (!t) return false;
@@ -78,7 +78,7 @@ for (let step = 0; step < tourTargets.length; step++) {
   if (!onTarget) {
     console.log("DEBUG", await page.evaluate(() => ({
       hash: location.hash,
-      stepTxt: document.querySelector(".av-tour-step")?.textContent,
+      stepTxt: document.querySelector(".pv-tour-step")?.textContent,
       rows: document.querySelectorAll("tr[data-clickable]").length,
       ids: [...document.querySelectorAll("tr[data-clickable]")].slice(0, 3).map((r) => r.getAttribute("data-id")),
       skl: !!document.querySelector("#view .skl"),
@@ -86,17 +86,17 @@ for (let step = 0; step < tourTargets.length; step++) {
     fail("tour step " + step + " target missing: " + tourTargets[step]);
   }
   await page.evaluate(() => {
-    const btns = [...document.querySelectorAll(".av-tour-card button")];
+    const btns = [...document.querySelectorAll(".pv-tour-card button")];
     (btns.find((x) => /next|→/i.test(x.textContent)) || btns[btns.length - 1]).click();
   });
 }
-await page.waitForFunction(() => document.querySelector(".av-tour-step")?.textContent.includes("Step 6 of"), { timeout: 20000 });
+await page.waitForFunction(() => document.querySelector(".pv-tour-step")?.textContent.includes("Step 6 of"), { timeout: 20000 });
 beat("tour: all 6 steps landed on live targets");
 
 // ── 3. Finale CTA → verifier in a new tab → sample verifies green
 const [verifyPage] = await Promise.all([
   context.waitForEvent("page", { timeout: 10000 }),
-  page.evaluate(() => { [...document.querySelectorAll(".av-tour-card a, .av-tour-card button")].find((x) => /verifier/i.test(x.textContent)).click(); }),
+  page.evaluate(() => { [...document.querySelectorAll(".pv-tour-card a, .pv-tour-card button")].find((x) => /verifier/i.test(x.textContent)).click(); }),
 ]).catch(() => fail("tour finale verifier CTA did not open a tab"));
 await verifyPage.waitForSelector("#loadExample", { timeout: 15000 });
 await verifyPage.click("#loadExample");

@@ -1,5 +1,5 @@
 /*
- * AgentVisor AI console. Data source layer.
+ * ProofVisor console. Data source layer.
  *
  * MockDataSource (Northwind Traders fixtures) and ApiDataSource (real API
  * adapter). Choice driven by window.MOCK_MODE from index.html.
@@ -101,13 +101,13 @@
     var digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
     return pub + "|" + sig + "|" + bytesToHex(new Uint8Array(digest));
   }
-  // R190 F1: match the Rust `av-receipts` signing framing.
+  // R190 F1: match the Rust `pv-receipts` signing framing.
   // See docs/verify/verify.js for the full rationale — Rust
   // defaults to receipt_version=2 which prepends a domain tag
   // and length prefix before the canonical body; prior JS
   // verifier used bare-body semantics (v1 only) and would show
   // every v2 receipt as INVALID.
-  var _RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("agentvisor-receipt-v2\0");
+  var _RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("proofvisor-receipt-v2\0");
   function _receiptSigningMessage(rawBody) {
     var canonical = new TextEncoder().encode(rawBody);
     var receiptVersion = 1;
@@ -129,7 +129,7 @@
   }
   // R193 F1: identity-binding check — see docs/verify/verify.js
   // for rationale. Mirrors Rust `verify_embedded()` at
-  // crates/av-receipts/src/receipt.rs:415-418 (equivalently
+  // crates/pv-receipts/src/receipt.rs:415-418 (equivalently
   // `verify()` at :371-374 — both re-derive the key id from the
   // embedded pubkey and reject on `derived_id != body.key_id`).
   async function _deriveKeyIdFromPubHex(hex) {
@@ -217,8 +217,8 @@
   ];
 
   var MOCK_API_KEYS = [
-    { id: "key_ci", name: "CI runner", createdAt: iso(14 * 24 * HOUR), lastUsedAt: iso(28 * MIN), hint: "av_srv_a091…" },
-    { id: "key_ops", name: "Ops dashboard", createdAt: iso(3 * 24 * HOUR), lastUsedAt: iso(6 * HOUR), hint: "av_srv_c412…" },
+    { id: "key_ci", name: "CI runner", createdAt: iso(14 * 24 * HOUR), lastUsedAt: iso(28 * MIN), hint: "pv_srv_a091…" },
+    { id: "key_ops", name: "Ops dashboard", createdAt: iso(3 * 24 * HOUR), lastUsedAt: iso(6 * HOUR), hint: "pv_srv_c412…" },
   ];
 
   var MOCK_WEBHOOKS = [
@@ -266,7 +266,7 @@
       version: "0.4.2",
       lastSeenAt: iso(1 * MIN),
       createdAt: iso(38 * 24 * HOUR),
-      ingestTokenHint: "av_live_9HpD…",
+      ingestTokenHint: "pv_live_9HpD…",
       publicKeyHex: "573c8f249012fbb08b3d79973411bb93141f32719c86ada25306fde5e59e8d57",
       keyFingerprint: "kf_573c8f24",
       sessions24h: 18,
@@ -282,7 +282,7 @@
       version: "0.4.2",
       lastSeenAt: iso(4 * MIN),
       createdAt: iso(38 * 24 * HOUR),
-      ingestTokenHint: "av_live_7bK2…",
+      ingestTokenHint: "pv_live_7bK2…",
       publicKeyHex: "8c9b0a1e2f3d4c5b6a7e8f9d0c1b2a3e3a5f7e2d1b8c9a4e6f1d2c3b4a5e6f7d",
       keyFingerprint: "kf_8c9b0a1e",
       sessions24h: 9,
@@ -298,7 +298,7 @@
       version: "0.4.1",
       lastSeenAt: iso(38 * MIN),
       createdAt: iso(11 * 24 * HOUR),
-      ingestTokenHint: "av_live_3xF9…",
+      ingestTokenHint: "pv_live_3xF9…",
       publicKeyHex: "1e2f3d4c5b6a7e8f9d0c1b2a3e3a5f7e2d1b8c9a4e6f1d2c3b4a5e6f7d8c9b0a1",
       keyFingerprint: "kf_1e2f3d4c",
       sessions24h: 3,
@@ -518,13 +518,13 @@
   var MOCK_SESSIONS = generateMockSessions();
 
   // Big-data demo: 250 extra synthetic sessions spread across the
-  // last 30 days, toggled by av_mock_bigdata. Exists to exercise the
+  // last 30 days, toggled by pv_mock_bigdata. Exists to exercise the
   // code paths the 32-session fixture can never reach — Load more
   // pagination, sort across pages, the DOM cap — and to answer the
   // investor question "what does this look like at scale?".
   var BIGDATA_CACHE = null;
   function bigDataOn() {
-    try { return localStorage.getItem("av_mock_bigdata") === "1"; } catch (e) { return false; }
+    try { return localStorage.getItem("pv_mock_bigdata") === "1"; } catch (e) { return false; }
   }
   function bigDataSessions() {
     if (BIGDATA_CACHE) return BIGDATA_CACHE;
@@ -808,8 +808,8 @@
     {
       id: "saml_okta_prod",
       displayName: "Okta production",
-      ssoUrl: "https://northwind.okta.com/app/agentvisor_prod_1/sso/saml",
-      sloUrl: "https://northwind.okta.com/app/agentvisor_prod_1/slo/saml",
+      ssoUrl: "https://northwind.okta.com/app/proofvisor_prod_1/sso/saml",
+      sloUrl: "https://northwind.okta.com/app/proofvisor_prod_1/slo/saml",
       entityIdIdp: "http://www.okta.com/exkA1B2C3D4E5F6G7H8",
       x509Cert: "-----BEGIN CERTIFICATE-----\nMIIDpDCCAoygAwIBAgIGAX0EXAMPLE\n...(truncated)...\n-----END CERTIFICATE-----",
       wantAssertionsSigned: true,
@@ -824,11 +824,11 @@
       isActive: true,
       hasSpKeypair: true,
       spCertPem: "-----BEGIN CERTIFICATE-----\nMIIDazCCAlOgAwIBAgIUX9c5\n...(truncated)...\n-----END CERTIFICATE-----",
-      spEntityId: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod",
-      spAcsUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/acs",
-      spSloUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/slo",
-      spLoginUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/login",
-      spMetadataUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/metadata.xml",
+      spEntityId: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod",
+      spAcsUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/acs",
+      spSloUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/slo",
+      spLoginUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/login",
+      spMetadataUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/metadata.xml",
       x509CertFingerprint: "d4:3f:6a:b2:81:29:57:83:19:04:af:c3:76:98:ea:d5:78:14:5c:7d",
       createdAt: iso(20 * 24 * HOUR),
       updatedAt: iso(3 * 24 * HOUR),
@@ -859,7 +859,7 @@
    * ============================================================ */
 
   /* ── FRESH-WORKSPACE SIMULATION (first-user story) ───────────
-   * When av_mock_fresh_t0 is set (by signup), the org starts empty:
+   * When pv_mock_fresh_t0 is set (by signup), the org starts empty:
    * no deployments until the daemon "connects" (FRESH_CONNECT_MS),
    * then the first sessions stream in one at a time. The featured
    * blocked session arrives second, bringing the first $8,400 save.
@@ -869,13 +869,13 @@
   var FRESH_SESSION_AT = [16000, 21000, 26000];
   function freshElapsed() {
     try {
-      var v = localStorage.getItem("av_mock_fresh_t0");
+      var v = localStorage.getItem("pv_mock_fresh_t0");
       if (!v) return null;
       var el = Date.now() - +v;
       // Corrupt (NaN) or future t0 would freeze fresh mode in a
       // perpetual "connecting" state — self-heal instead.
       if (!isFinite(el) || el < 0) {
-        try { localStorage.removeItem("av_mock_fresh_t0"); } catch (e2) {}
+        try { localStorage.removeItem("pv_mock_fresh_t0"); } catch (e2) {}
         return null;
       }
       return el;
@@ -889,7 +889,7 @@
   // straddling a millisecond).
   function freshT0Ms() {
     try {
-      var v = localStorage.getItem("av_mock_fresh_t0");
+      var v = localStorage.getItem("pv_mock_fresh_t0");
       if (!v) return null;
       var t0 = +v;
       if (!isFinite(t0) || t0 > Date.now()) return null;
@@ -902,7 +902,7 @@
   function freshIdentity() {
     if (freshElapsed() == null) return null;
     try {
-      var raw = localStorage.getItem("av_mock_fresh_identity");
+      var raw = localStorage.getItem("pv_mock_fresh_identity");
       var v = raw ? JSON.parse(raw) : null;
       // Shape-check before trusting persisted state: a value that
       // parses but isn't a session (renderShell reads user.displayName
@@ -910,7 +910,7 @@
       if (!v || typeof v !== "object" ||
           !v.user || typeof v.user.email !== "string" ||
           !v.org || typeof v.org.name !== "string") {
-        if (raw != null) try { localStorage.removeItem("av_mock_fresh_identity"); } catch (e2) {}
+        if (raw != null) try { localStorage.removeItem("pv_mock_fresh_identity"); } catch (e2) {}
         return null;
       }
       return v;
@@ -929,7 +929,7 @@
   var freshRt = freshRtBlank(null);
   function freshRuntime() {
     var key = null;
-    try { key = localStorage.getItem("av_mock_fresh_t0"); } catch (e) {}
+    try { key = localStorage.getItem("pv_mock_fresh_t0"); } catch (e) {}
     if (freshRt.key !== key) freshRt = freshRtBlank(key);
     return freshRt;
   }
@@ -1096,10 +1096,10 @@
   }
 
   function delay(ms) {
-    // Video-recording aid: av_mock_fastload collapses the simulated
+    // Video-recording aid: pv_mock_fastload collapses the simulated
     // network latency so re-renders never flash skeletons on camera.
     // Never set in normal browsing.
-    try { if (localStorage.getItem("av_mock_fastload")) ms = Math.min(ms, 15); } catch (e) {}
+    try { if (localStorage.getItem("pv_mock_fastload")) ms = Math.min(ms, 15); } catch (e) {}
     return new Promise(function (r) { setTimeout(r, ms); });
   }
 
@@ -1143,7 +1143,7 @@
   var MockDataSource = {
     mode: "mock",
     async getSession() {
-      try { if (localStorage.getItem("av_mock_signed_out") === "1") return null; } catch (e) {}
+      try { if (localStorage.getItem("pv_mock_signed_out") === "1") return null; } catch (e) {}
       if (!mockState.session) {
         // A fresh-workspace signup persists its identity (audit D4:
         // the judge's own name must survive a reload — reverting to
@@ -1173,19 +1173,19 @@
         },
       };
       try {
-        localStorage.removeItem("av_mock_signed_out");
+        localStorage.removeItem("pv_mock_signed_out");
         // First-user story: a brand-new workspace starts EMPTY, the
         // first deployment connects after the install step, and the
         // first sessions stream in after that (see FRESH_* below).
-        localStorage.setItem("av_mock_fresh_t0", String(Date.now()));
-        localStorage.setItem("av_mock_fresh_identity", JSON.stringify(session));
+        localStorage.setItem("pv_mock_fresh_t0", String(Date.now()));
+        localStorage.setItem("pv_mock_fresh_identity", JSON.stringify(session));
       } catch (e) {}
       mockState.session = session;
       return mockState.session;
     },
     async login(input) {
       await delay(400);
-      try { localStorage.removeItem("av_mock_signed_out"); } catch (e) {}
+      try { localStorage.removeItem("pv_mock_signed_out"); } catch (e) {}
       // Signing back in with the SAME email that created the fresh
       // workspace resumes THAT workspace. login() used to wipe the
       // fresh keys unconditionally — an investor who signed up, signed
@@ -1200,8 +1200,8 @@
       // Any other email: the Northwind showcase (and the abandoned
       // fresh workspace is cleared so its onboarding sim stops).
       try {
-        localStorage.removeItem("av_mock_fresh_t0");
-        localStorage.removeItem("av_mock_fresh_identity");
+        localStorage.removeItem("pv_mock_fresh_t0");
+        localStorage.removeItem("pv_mock_fresh_identity");
       } catch (e) {}
       mockState.session = {
         user: { id: "usr_new", email: input.email, displayName: input.email.split("@")[0] },
@@ -1212,9 +1212,9 @@
     async loginWithProvider(provider) {
       await delay(500);
       try {
-        localStorage.removeItem("av_mock_signed_out");
-        localStorage.removeItem("av_mock_fresh_t0");
-        localStorage.removeItem("av_mock_fresh_identity");
+        localStorage.removeItem("pv_mock_signed_out");
+        localStorage.removeItem("pv_mock_fresh_t0");
+        localStorage.removeItem("pv_mock_fresh_identity");
       } catch (e) {}
       mockState.session = {
         user: { id: "usr_olivia", email: "olivia.tan@northwind.com", displayName: "Olivia Tan" },
@@ -1322,7 +1322,7 @@
     async webauthnAuthStart() { return { options: { challenge: "mock" } }; },
     async webauthnAuthFinish() { throw new Error("mock_no_real_authenticator"); },
     async logout() {
-      try { localStorage.setItem("av_mock_signed_out", "1"); } catch (e) {}
+      try { localStorage.setItem("pv_mock_signed_out", "1"); } catch (e) {}
       mockState.session = null;
     },
     async requestPasswordReset(input) {
@@ -1362,7 +1362,7 @@
     async createDeployment(input) {
       await delay(300);
       var id = "dep_" + Math.random().toString(36).slice(2, 8);
-      var token = "av_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+      var token = "pv_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
       var freshMode = freshElapsed() != null;
       var dep = {
         id: id,
@@ -1373,7 +1373,7 @@
         version: null,
         lastSeenAt: null,
         createdAt: new Date().toISOString(),
-        ingestTokenHint: "av_live_" + token.slice(8, 12) + "…",
+        ingestTokenHint: "pv_live_" + token.slice(8, 12) + "…",
         publicKeyHex: null,
         keyFingerprint: null,
         sessions24h: 0, spend24h: "$0.00",
@@ -1388,10 +1388,10 @@
     },
     async rotateDeploymentToken(id) {
       await delay(200);
-      var token = "av_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+      var token = "pv_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
       var pool = freshElapsed() != null ? (freshDeployments() || []) : MOCK_DEPLOYMENTS;
       var d = pool.find(function (x) { return x.id === id; });
-      if (d) d.ingestTokenHint = "av_live_" + token.slice(8, 12) + "…";
+      if (d) d.ingestTokenHint = "pv_live_" + token.slice(8, 12) + "…";
       recordAudit("deployment.token_rotated", d ? d.name : id);
       return { ingestToken: token };
     },
@@ -1833,9 +1833,9 @@
         throw new Error("Password must be at least 12 characters.");
       }
       try {
-        localStorage.removeItem("av_mock_signed_out");
-        localStorage.removeItem("av_mock_fresh_t0");
-        localStorage.removeItem("av_mock_fresh_identity");
+        localStorage.removeItem("pv_mock_signed_out");
+        localStorage.removeItem("pv_mock_fresh_t0");
+        localStorage.removeItem("pv_mock_fresh_identity");
       } catch (e) {}
       var email = input.email || "you@northwind.com";
       var name = (input.displayName || "").trim() || email.split("@")[0];
@@ -1880,8 +1880,8 @@
     },
     async createApiKey(name) {
       await delay(120);
-      var hint = "av_srv_" + Math.random().toString(36).slice(2, 10) + "…";
-      var plaintext = "av_srv_" + Math.random().toString(36).slice(2, 10).padEnd(28, "0");
+      var hint = "pv_srv_" + Math.random().toString(36).slice(2, 10) + "…";
+      var plaintext = "pv_srv_" + Math.random().toString(36).slice(2, 10).padEnd(28, "0");
       var row = { id: "key_" + Math.random().toString(36).slice(2, 8), name: name, createdAt: new Date().toISOString(), lastUsedAt: null, hint: hint };
       if (freshElapsed() != null) freshRuntime().apiKeys.unshift(row);
       else MOCK_API_KEYS.unshift(row);
@@ -2113,7 +2113,7 @@
       await delay(200);
       if (!password) { var e1 = new Error("password_required"); e1.status = 400; throw e1; }
       var lines = [
-        JSON.stringify({ type: "header", format: "agentvisor.export.v1", generatedAt: new Date().toISOString(), note: "demo fixture export" }),
+        JSON.stringify({ type: "header", format: "proofvisor.export.v1", generatedAt: new Date().toISOString(), note: "demo fixture export" }),
         JSON.stringify({ type: "user", email: (mockState.session && mockState.session.user.email) || "demo@northwind.com" }),
         JSON.stringify({ type: "org", name: (mockState.session && mockState.session.org.name) || "Northwind Traders" }),
       ];
@@ -2232,7 +2232,7 @@
     // updates window.__avActiveOrgId on login/session-load/org-switch.
     try {
       if (typeof window !== "undefined" && window.__avActiveOrgId) {
-        headers["X-AV-Org"] = window.__avActiveOrgId;
+        headers["X-PV-Org"] = window.__avActiveOrgId;
       }
     } catch (e) {}
     var res = await fetch(apiUrl(path), {
@@ -2308,7 +2308,7 @@
       if (res.status === 401 && !path.endsWith("/auth/me") && !bodyCredential401) {
         // Signal the app; app.js listens for this and navigates.
         try {
-          window.dispatchEvent(new CustomEvent("av-session-expired", { detail: { errorCode: err.errorCode } }));
+          window.dispatchEvent(new CustomEvent("pv-session-expired", { detail: { errorCode: err.errorCode } }));
         } catch (e) {}
       }
       throw err;
@@ -2479,7 +2479,7 @@
           version: d.daemonVersion || null,
           lastSeenAt: d.lastIngestAt || null,
           createdAt: d.createdAt,
-          ingestTokenHint: d.ingestTokenHint ? "av_live_" + d.ingestTokenHint.slice(0, 4) + "…" : "—",
+          ingestTokenHint: d.ingestTokenHint ? "pv_live_" + d.ingestTokenHint.slice(0, 4) + "…" : "—",
           publicKeyHex: d.publicKeyHex || null,
           keyFingerprint: d.publicKeyHex ? "kf_" + d.publicKeyHex.slice(0, 8) : null,
           sessions24h: null, spend24h: null,
@@ -2500,7 +2500,7 @@
         environment: dep.environment || input.environment || "production",
         status: "pending", version: null,
         lastSeenAt: null, createdAt: dep.createdAt || new Date().toISOString(),
-        ingestTokenHint: "av_live_" + (r.ingestToken || "").slice(8, 12) + "…",
+        ingestTokenHint: "pv_live_" + (r.ingestToken || "").slice(8, 12) + "…",
         publicKeyHex: null, keyFingerprint: null, sessions24h: 0, spend24h: "$0.00",
       }, ingestToken: r.ingestToken };
     },
@@ -2704,7 +2704,7 @@
     async listApiKeys() {
       // Real programmatic API keys. The console POSTs a name and gets
       // back a plaintext token exactly once; we surface a hint like
-      // "av_srv_a091…" the operator can use to identify the row later.
+      // "pv_srv_a091…" the operator can use to identify the row later.
       // Loading failure must reach the page's error state. Returning
       // an empty list would falsely claim that no active keys exist.
       var res = await apiFetch("/api/v1/keys");

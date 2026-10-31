@@ -5,7 +5,7 @@ The narrative layer. Commands, timings, and the reset live in
 *show*. One protagonist, one number, one payoff:
 
 > **A procurement agent tries to move $8,400 to an unapproved vendor.
-> AgentVisor blocks it mid-flight, lets the compliant $84 retry
+> ProofVisor blocks it mid-flight, lets the compliant $84 retry
 > through, and hands you cryptographic proof of both decisions.**
 
 Every claim below was executed against the shipped release and the
@@ -69,7 +69,7 @@ Terminal 2 runs the 2-second `console-sync`.*
 ## Close (20 s) — the ask
 
 "Agents are getting autonomy faster than companies are getting
-control. AgentVisor is the checkpoint in between: **enforce before,
+control. ProofVisor is the checkpoint in between: **enforce before,
 prove after.** It's live today — install script, hosted console,
 signed receipts. [ask]."
 

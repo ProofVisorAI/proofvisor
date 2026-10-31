@@ -12,7 +12,7 @@
  */
 import { chromium } from "playwright";
 
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/";
 const APP = new URL("app/", SITE).href;
 const VERIFY = new URL("verify/", SITE).href;
 
@@ -176,7 +176,7 @@ console.log("\n=== Functional: console login still works under strict CSP ===");
   const cspViolations = [];
   await page.exposeFunction("__cspRecord", (v) => cspViolations.push(v));
   await page.addInitScript(() => {
-    try { localStorage.setItem("av_mock_signed_out", "1"); } catch {}
+    try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {}
     document.addEventListener("securitypolicyviolation", (e) => {
       window.__cspRecord({ directive: e.violatedDirective, blockedURI: e.blockedURI });
     });

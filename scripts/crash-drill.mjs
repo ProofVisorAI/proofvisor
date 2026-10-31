@@ -5,7 +5,7 @@
  * The product claim is "Enforce before. Prove after." — the PROOF must
  * survive the daemon dying at the worst moment. This drill:
  *
- *   1. boots agentvisord with scripted LLM + tool mocks (same shapes as
+ *   1. boots proofvisord with scripted LLM + tool mocks (same shapes as
  *      scripts/demo-agent.mjs),
  *   2. runs an allowed call and a BLOCKED $8,400 call in session S,
  *   3. holds another request upstream and SIGKILLs the daemon,
@@ -39,10 +39,10 @@ const LLM_PORT = PORT_BASE;
 const TOOL_PORT = PORT_BASE + 1;
 const DAEMON_PORT = PORT_BASE + 2;
 const repoRoot = new URL("..", import.meta.url).pathname;
-const daemonBin = process.env.AGENTVISORD ?? [join(repoRoot, "target/release/agentvisord"), join(repoRoot, "target/debug/agentvisord")].find(existsSync);
-const avctlBin = process.env.AVCTL ?? [join(repoRoot, "target/release/avctl"), join(repoRoot, "target/debug/avctl")].find(existsSync);
+const daemonBin = process.env.PROOFVISORD ?? [join(repoRoot, "target/release/proofvisord"), join(repoRoot, "target/debug/proofvisord")].find(existsSync);
+const pvctlBin = process.env.PVCTL ?? [join(repoRoot, "target/release/pvctl"), join(repoRoot, "target/debug/pvctl")].find(existsSync);
 if (!daemonBin) {
-  console.error("build first: cargo build --release -p av-harness");
+  console.error("build first: cargo build --release -p pv-harness");
   process.exit(2);
 }
 
@@ -93,7 +93,7 @@ const toolSrv = createServer((req, res) => {
   });
 });
 
-const workDir = mkdtempSync(join(tmpdir(), "av-crash-"));
+const workDir = mkdtempSync(join(tmpdir(), "pv-crash-"));
 const configPath = join(workDir, "harness.toml");
 writeFileSync(configPath, `config_version = 1
 listen = "127.0.0.1:${DAEMON_PORT}"
@@ -116,7 +116,7 @@ const crashedSession = SESSION;
 function startDaemon() {
   const d = spawn(daemonBin, ["--config", configPath], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, AV_SIGNING_SEED_FILE: join(workDir, "signing.seed") },
+    env: { ...process.env, PV_SIGNING_SEED_FILE: join(workDir, "signing.seed") },
   });
   let log = "";
   d.stdout.on("data", (c) => (log += c));
@@ -133,12 +133,12 @@ async function waitHealthy(timeoutMs = 15000) {
 }
 const chat = (text) => fetch(`${daemonUrl}/v1/chat/completions`, {
   method: "POST",
-  headers: { "content-type": "application/json", "x-av-session": SESSION },
+  headers: { "content-type": "application/json", "x-pv-session": SESSION },
   body: JSON.stringify({ model: "crash-drill-1", messages: [{ role: "user", content: text }] }),
 }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 const callTool = (name, args, id) => fetch(`${daemonUrl}/mcp`, {
   method: "POST",
-  headers: { "content-type": "application/json", "x-av-session": SESSION },
+  headers: { "content-type": "application/json", "x-pv-session": SESSION },
   body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
 }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 
@@ -238,10 +238,10 @@ const main = async () => {
 
   // C+D: sync everything into a console and count across sessions.
   const CONSOLE_URL = process.env.CONSOLE_URL;
-  if (!CONSOLE_URL || !avctlBin) {
-    console.log("  (sync leg skipped — set CONSOLE_URL/DEPLOYMENT_ID/TOKEN_FILE and build avctl)");
+  if (!CONSOLE_URL || !pvctlBin) {
+    console.log("  (sync leg skipped — set CONSOLE_URL/DEPLOYMENT_ID/TOKEN_FILE and build pvctl)");
   } else {
-    const syncOut = execFileSync(avctlBin, [
+    const syncOut = execFileSync(pvctlBin, [
       "console-sync",
       "--spool-dir", join(workDir, "spool/atif"),
       "--bridge-dir", join(workDir, "data/bridge"),
@@ -259,8 +259,8 @@ const main = async () => {
     if (!jar) {
       beat(false, "D: console verification requires COOKIE_JAR");
     } else {
-      const cookie = readFileSync(jar, "utf8").split("\n").filter((line) => line.includes("av_session"))
-        .map((line) => "av_session=" + line.trim().split(/\s+/).pop()).pop() ?? "";
+      const cookie = readFileSync(jar, "utf8").split("\n").filter((line) => line.includes("pv_session"))
+        .map((line) => "pv_session=" + line.trim().split(/\s+/).pop()).pop() ?? "";
       const response = await fetch(`${CONSOLE_URL}/api/v1/sessions?q=${encodeURIComponent(crashedSession)}&limit=20`, { headers: { cookie } });
       beat(response.ok, "D: console session query succeeds");
       const sessions = await response.json();

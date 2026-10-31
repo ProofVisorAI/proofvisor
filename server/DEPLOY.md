@@ -1,4 +1,4 @@
-# Deploying AgentVisor AI
+# Deploying ProofVisor
 
 The console API is a Node.js application backed by PostgreSQL. This guide
 describes deployment templates and the local checks performed against them.
@@ -12,7 +12,7 @@ main-only job receives registry write permission. Both amd64 and arm64 must
 pass, and the required console regression workflow must succeed. Pull requests
 publish no registry tags and receive no deployment credentials. The job copies the tested bytes without rebuilding, preserves
 BuildKit SBOM/provenance descriptors, and verifies the final multiarch digest.
-Deploy `ghcr.io/agentvisorai/agentvisor-api@sha256:...` from a successful
+Deploy `ghcr.io/proofvisorai/proofvisor-api@sha256:...` from a successful
 promotion. The optional Fly job uses that exact digest automatically.
 
 The `validated-*` tags are internal staging references, not production release
@@ -33,10 +33,10 @@ restore and application behavior before directing traffic to a new host.
 |---|---|---|---|
 | **Cloudflare Pages** | Frontend | `docs/_headers`, `docs/_redirects` | [Deploy](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github) |
 | **Fly.io** | API | `server/fly.toml` | `fly launch --copy-config` |
-| **Render** | API + Postgres | `render.yaml` | [Deploy](https://render.com/deploy?repo=https://github.com/AgentVisorAI/agentvisor-ai) |
-| **Railway** | API + Postgres | `railway.json` | [Deploy](https://railway.app/new/template?template=https://github.com/AgentVisorAI/agentvisor-ai) |
-| **Koyeb** | API | `koyeb.yaml` | [Deploy](https://app.koyeb.com/deploy?type=git&repository=github.com/AgentVisorAI/agentvisor-ai&branch=main&name=agentvisor-api&dockerfile=server/Dockerfile) |
-| **Google Cloud Run** | API | `server/Dockerfile` | [Deploy](https://deploy.cloud.run/?git_repo=https://github.com/AgentVisorAI/agentvisor-ai&dir=server) |
+| **Render** | API + Postgres | `render.yaml` | [Deploy](https://render.com/deploy?repo=https://github.com/ProofVisorAI/proofvisor) |
+| **Railway** | API + Postgres | `railway.json` | [Deploy](https://railway.app/new/template?template=https://github.com/ProofVisorAI/proofvisor) |
+| **Koyeb** | API | `koyeb.yaml` | [Deploy](https://app.koyeb.com/deploy?type=git&repository=github.com/ProofVisorAI/proofvisor&branch=main&name=proofvisor-api&dockerfile=server/Dockerfile) |
+| **Google Cloud Run** | API | `server/Dockerfile` | [Deploy](https://deploy.cloud.run/?git_repo=https://github.com/ProofVisorAI/proofvisor&dir=server) |
 | **Neon** | Postgres | `DATABASE_URL` | [Provider](https://neon.tech) |
 | **Supabase** | Postgres | `DATABASE_URL` | [Provider](https://supabase.com) |
 
@@ -44,7 +44,7 @@ restore and application behavior before directing traffic to a new host.
 
 ```
         ┌────────────────────────┐        ┌──────────────────────┐
-Console │  agentvisorai.me/app/  │───────▶│  api.agentvisorai.me │───┐
+Console │  proofvisor.com/app/  │───────▶│  api.proofvisor.com │───┐
         │  Static SPA            │  HTTPS │  Fastify + Prisma    │   │
         │  MOCK_MODE=false       │        │  Docker container    │   │
         └────────────────────────┘        └──────────┬───────────┘   │
@@ -53,10 +53,10 @@ Console │  agentvisorai.me/app/  │───────▶│  api.agentviso
               │                                      ▼               │
 Daemon        │                            ┌──────────────────────┐  │
 (customer)    └──────── HTTPS ─────────────│  Managed Postgres    │  │
-                    ****** X-AV-Deployment│  Neon / Supabase / …│  │
+                    ****** X-PV-Deployment│  Neon / Supabase / …│  │
                                           └──────────┬───────────┘  │
                                                      │              │
-                                        LISTEN/NOTIFY av_bus        │
+                                        LISTEN/NOTIFY pv_bus        │
                                                      ▼              │
                                           [SSE fan-out across       │
                                            all API instances]       │
@@ -73,7 +73,7 @@ Nothing above is provider-specific:
 - **Frontend** = static files → any static host
 - **Backend** = Docker image → any container host
 - **Database** = standard Postgres → any provider that speaks `postgres://`
-- **Real-time bus** = `LISTEN/NOTIFY av_bus` on the same Postgres → no
+- **Real-time bus** = `LISTEN/NOTIFY pv_bus` on the same Postgres → no
   Redis, no Kafka, no proprietary broker
 
 Swap any of the three without touching the other two.
@@ -85,7 +85,7 @@ Swap any of the three without touching the other two.
 `docs/` is a static SPA + landing page. **Cloudflare Pages** is one option:
 
 ```bash
-npx wrangler pages deploy docs --project-name agentvisor-console
+npx wrangler pages deploy docs --project-name proofvisor-console
 ```
 
 Or connect the repo in the Cloudflare dashboard → `docs/` build root →
@@ -147,7 +147,7 @@ fly secrets set \
 fly deploy
 
 # Custom subdomain
-fly certs add api.agentvisorai.me
+fly certs add api.proofvisor.com
 ```
 
 Choose machine memory, minimum running instances, regions, and idle behavior
@@ -159,7 +159,7 @@ To flip the frontend to live mode, append `?live=1` to the console URL
 
 ```js
 window.MOCK_MODE = false;
-window.API_BASE = "https://api.agentvisorai.me";   // origin only — paths already include /api/v1
+window.API_BASE = "https://api.proofvisor.com";   // origin only — paths already include /api/v1
 ```
 
 Commit + push → Pages redeploys in ~30 s.
@@ -181,11 +181,11 @@ sign up in production:
 - **Dev**: leave both unset. `NODE_ENV=development` logs the would-be
   email to stdout so you can copy the reset link out of the terminal.
 
-`EMAIL_FROM` defaults to `AgentVisor AI <no-reply@agentvisorai.me>`;
+`EMAIL_FROM` defaults to `ProofVisor <no-reply@proofvisor.com>`;
 override per environment.
 
 **Split origins** (SPA on Pages, API elsewhere): set `API_PUBLIC_URL`
-to the API's own public origin (e.g. `https://api.agentvisorai.me`).
+to the API's own public origin (e.g. `https://api.proofvisor.com`).
 SAML SP URLs (entityId / ACS / metadata) and OAuth redirect URIs are
 built from it; without it they fall back to `APP_BASE_URL` — the SPA
 origin — and every IdP round-trip 404s (found the hard way; see the
@@ -205,11 +205,11 @@ local development against a receiver on your own machine set
 
 - **Google**: [Google Cloud → APIs & Services → OAuth 2.0 Client IDs](https://console.cloud.google.com/apis/credentials).
   Create a Web application client. Add authorized redirect URI:
-  `https://api.agentvisorai.me/api/v1/auth/oauth/google/callback`
+  `https://api.proofvisor.com/api/v1/auth/oauth/google/callback`
   (swap the host for your API origin). Grab client id + secret.
 - **Microsoft**: [Azure Portal → App registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade).
   Register a new app. Redirect URI (Web):
-  `https://api.agentvisorai.me/api/v1/auth/oauth/microsoft/callback`.
+  `https://api.proofvisor.com/api/v1/auth/oauth/microsoft/callback`.
   Under *Certificates & secrets* create a client secret. Set
   `MICROSOFT_TENANT=common` for multi-tenant + personal, or a specific
   tenant id for enterprise single-tenant.
@@ -219,7 +219,7 @@ local development against a receiver on your own machine set
   `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` from the client you register
   there, and optionally `OIDC_DISPLAY_NAME` (login button reads
   "Continue with <name>", default "SSO"). Register redirect URI
-  `https://api.agentvisorai.me/api/v1/auth/oauth/oidc/callback` and
+  `https://api.proofvisor.com/api/v1/auth/oauth/oidc/callback` and
   auth method `client_secret_post`. Same rules as the branded
   providers: PKCE S256, nonce, and `email_verified: true` required in
   the id_token — issuers that don't verify emails are refused.
@@ -320,14 +320,14 @@ in the stack requires a proprietary service.
 **Move off Fly.io** → Cloud Run / Render / Railway / Koyeb / Kubernetes / VPS
 
 ```bash
-docker build -t "$REG/agentvisor-api" server/
-docker push "$REG/agentvisor-api"
+docker build -t "$REG/proofvisor-api" server/
+docker push "$REG/proofvisor-api"
 
 # On the new host, supply the production settings through a private env file.
 docker run --read-only --tmpfs /tmp:uid=65532,gid=65532,mode=0700 \
   --cap-drop ALL --security-opt no-new-privileges \
-  --env-file /secure/path/agentvisor-api.env -p 8080:8080 \
-  "$REG/agentvisor-api"
+  --env-file /secure/path/proofvisor-api.env -p 8080:8080 \
+  "$REG/proofvisor-api"
 ```
 
 The environment file must include `DATABASE_URL`, `JWT_SECRET`, the allowed
@@ -347,7 +347,7 @@ fly secrets set DATABASE_URL="$NEW_DATABASE_URL"
 **Move off Cloudflare Pages** → any static host
 
 ```bash
-rsync -av docs/ new-host:/var/www/agentvisor-console/
+rsync -pv docs/ new-host:/var/www/proofvisor-console/
 # Update DNS. Done.
 ```
 

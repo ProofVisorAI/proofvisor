@@ -1,7 +1,7 @@
 {
-  "name": "agentvisor-console-build",
+  "name": "proofvisor-console-build",
   "private": true,
-  "description": "Build-time minifier pin for the AgentVisor console SPA.",
+  "description": "Build-time minifier pin for the ProofVisor console SPA.",
   "devDependencies": {
     "terser": "5.36.0"
   }

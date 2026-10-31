@@ -43,7 +43,7 @@ def executables(output, expected):
 
 def compile_contracts(output_dir):
     command = ["cargo", "test", "--locked", "--all-features", "--no-run",
-               "--message-format=json", "-p", "av-state", "-p", "av-harness"]
+               "--message-format=json", "-p", "pv-state", "-p", "pv-harness"]
     for name in TARGETS:
         command += ["--test", name]
     environment = dict(os.environ, CARGO_BUILD_JOBS="2", CARGO_INCREMENTAL="0")
@@ -120,8 +120,8 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--docker-host", default=os.environ.get("DOCKER_HOST"))
-    parser.add_argument("--output-dir", type=Path, default=Path("/tmp/agentvisor-redis-cluster-tls-results"))
-    parser.add_argument("--state-file", type=Path, default=Path("/tmp/agentvisor-redis-cluster-tls-owned"))
+    parser.add_argument("--output-dir", type=Path, default=Path("/tmp/proofvisor-redis-cluster-tls-results"))
+    parser.add_argument("--state-file", type=Path, default=Path("/tmp/proofvisor-redis-cluster-tls-owned"))
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()

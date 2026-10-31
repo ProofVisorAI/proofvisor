@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    project = "av-secrets-test-" + uuid.uuid4().hex[:12]
+    project = "pv-secrets-test-" + uuid.uuid4().hex[:12]
     # Home directories are shared into common desktop Docker VMs; host /tmp
     # frequently is not. Never mount actual operator secrets into this fixture.
     work = Path(tempfile.mkdtemp(prefix=project + "-", dir=Path.home()))

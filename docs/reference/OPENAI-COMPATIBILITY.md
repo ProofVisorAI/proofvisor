@@ -1,6 +1,6 @@
 # OpenAI Compatibility
 
-AgentVisor AI is an OpenAI-compatible reverse proxy. Any client that
+ProofVisor is an OpenAI-compatible reverse proxy. Any client that
 speaks the `POST /v1/chat/completions` protocol (OpenAI Python SDK,
 LangChain, LlamaIndex, curl) can point at the harness with:
 
@@ -33,7 +33,7 @@ records the same shape regardless of the upstream. Pair `provider`
 with the matching `upstream_url`, `upstream_chat_path`,
 `upstream_auth_header` and `upstream_auth_scheme` (e.g. Anthropic's
 `x-api-key` header with an empty scheme). Unsupported `provider`
-values are refused at pre-flight by `avctl config-validate` and at
+values are refused at pre-flight by `pvctl config-validate` and at
 boot by the daemon.
 
 Cross-provider stop-reason normalization deserves calling out
@@ -77,7 +77,7 @@ which does not change with the upstream dialect.
 
 Every other route on the harness (`/v1/sessions/{id}/promote`,
 `/v1/sessions/{id}/close`, `/health`,
-`/livez`, `/readyz`, `/metrics`, `/dashboard/*`) is AgentVisor AI
+`/livez`, `/readyz`, `/metrics`, `/dashboard/*`) is ProofVisor
 territory and is documented separately. Only the chat route is
 "OpenAI-compatible" in the strict sense.
 
@@ -105,7 +105,7 @@ contracts, intentionally NOT OpenAI-shaped: `close` returns
 `{"kind":"receipt",...}` / `{"kind":"atif",...}` /
 `{"kind":"already_closed"}` and `promote` returns the bare signed
 receipt object (the artifact itself, suitable for piping to
-`avctl receipt-verify`).
+`pvctl receipt-verify`).
 
 ## Supported request fields
 
@@ -162,7 +162,7 @@ to "nothing else in your app moves":
 Invariants the passes guarantee: message count order and roles are
 preserved, the first system message and the `keep_tail` suffix are
 byte-identical, and `tool_call_id` linkage survives (property-tested
-in `av-compress/tests/invariants.rs`). Every stub names the pruned
+in `pv-compress/tests/invariants.rs`). Every stub names the pruned
 token count and the SHA-256 of the removed content, so the audit
 trail records what was elided.
 
@@ -181,7 +181,7 @@ compression_enabled = false
 
 ### 1. HTTP status codes
 
-| Situation | OpenAI | AgentVisor AI |
+| Situation | OpenAI | ProofVisor |
 | --- | --- | --- |
 | Rate limit | `429` | `429` |
 | Post-compression session budget refusal | n/a | `403` (deliberately not 429, which SDKs auto-retry — the cap is permanent for the session) |
@@ -225,23 +225,23 @@ generates a stable `event_uid` and uses that.
 
 ## Session semantics
 
-Chat requests carry two AgentVisor-specific headers:
+Chat requests carry two ProofVisor-specific headers:
 
 | Header | Purpose |
 | --- | --- |
-| `X-AV-Session` | Client-chosen session id. Rotating this restarts the audit chain; the harness treats each `session_id` as an independent conversation. |
-| `X-AV-Workflow` | `signed` or `unsigned`. Chooses whether the session's audit lands as a signed receipt (Kafka topic `agent.receipt`) or as an ATIF trajectory (spool + broker fold). |
+| `X-PV-Session` | Client-chosen session id. Rotating this restarts the audit chain; the harness treats each `session_id` as an independent conversation. |
+| `X-PV-Workflow` | `signed` or `unsigned`. Chooses whether the session's audit lands as a signed receipt (Kafka topic `agent.receipt`) or as an ATIF trajectory (spool + broker fold). |
 
 If your client speaks OpenAI's protocol out of the box, it will not
 set these. The harness defaults them from config
 (`default_workflow`) and generates a fresh session id per request —
-echoed back in the `X-AV-Session` **response** header, so you can
-`avctl receipt-locate` the audit artifact later.
+echoed back in the `X-PV-Session` **response** header, so you can
+`pvctl receipt-locate` the audit artifact later.
 The session then closes immediately after the response — one turn,
 one audit event.
 
 For long-lived multi-turn agent conversations, set the same
-`X-AV-Session` on every request and either explicitly
+`X-PV-Session` on every request and either explicitly
 `POST /v1/sessions/{id}/close` when done or rely on the idle-close sweeper
 (`session_idle_close_s`).
 
@@ -271,5 +271,5 @@ curl -sS http://localhost:8484/v1/chat/completions \
 
 The response is an OpenAI-shaped `ChatCompletion` object. Your
 audit event lands on the broker in parallel; verify it with
-`avctl event-tail --data-dir /path/to/bridge --topic agent.step`
+`pvctl event-tail --data-dir /path/to/bridge --topic agent.step`
 (the `--data-dir` points at the harness's `bridge_data_dir`).

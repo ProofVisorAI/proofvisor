@@ -18,7 +18,7 @@
  */
 import { chromium } from "playwright";
 
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/";
 // R91 F4: the /verify page's TRUSTED_RECEIPT_KEYS Set is only
 // exposed on `window` when the ?ci-drill=1 URL flag is set (see
 // docs/verify/verify.js R91 F4 comment). This drill mutates the
@@ -210,11 +210,11 @@ await uploadJson("this is not JSON at all {");
 
 // 6. Upload wrong format tag
 const wrongFormat = JSON.parse(sampleText);
-wrongFormat.format = "agentvisor.receipt.v99";
+wrongFormat.format = "proofvisor.receipt.v99";
 await uploadJson(JSON.stringify(wrongFormat));
 {
   const sub = await page.locator(".result-card .result-sub").innerText();
-  if (!/format/i.test(sub) && !/agentvisor\.receipt\.v99/.test(sub)) {
+  if (!/format/i.test(sub) && !/proofvisor\.receipt\.v99/.test(sub)) {
     fail("wrong-format error not shown: " + sub);
   }
   console.log("✅ wrong format tag -> clean error message");
@@ -227,7 +227,7 @@ await uploadJson(JSON.stringify(wrongFormat));
   const os = await import("node:os");
   const fsp = await import("node:fs/promises");
   const pathm = await import("node:path");
-  const dir = await fsp.mkdtemp(pathm.join(os.tmpdir(), "av-verify-"));
+  const dir = await fsp.mkdtemp(pathm.join(os.tmpdir(), "pv-verify-"));
   const good = pathm.join(dir, "receipt.json");
   await fsp.writeFile(good, sampleText);
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -271,7 +271,7 @@ await uploadJson(JSON.stringify(wrongFormat));
   const os = await import("node:os");
   const fsp = await import("node:fs/promises");
   const pathm = await import("node:path");
-  const dir = await fsp.mkdtemp(pathm.join(os.tmpdir(), "av-dlverify-"));
+  const dir = await fsp.mkdtemp(pathm.join(os.tmpdir(), "pv-dlverify-"));
   const appPage = await context.newPage();
   await appPage.goto(new URL("app/#/sessions/sess_01H9K", SITE).href, { waitUntil: "domcontentloaded" });
   await appPage.waitForSelector("#dlRcpt", { timeout: 15000 });

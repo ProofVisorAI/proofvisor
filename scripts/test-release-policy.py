@@ -106,7 +106,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.registry.deployable(),[])
         self.assertEqual(len(json.loads(self.registry.raw)['manifests']),4)
         image=policy.promote(self.root,ENV,self.registry)
-        self.assertEqual(image,'ghcr.io/example/agentvisor-api@'+result['digest'])
+        self.assertEqual(image,'ghcr.io/example/proofvisor-api@'+result['digest'])
         self.assertEqual(len(self.registry.deployable()),3)
         self.assertTrue(all(v==self.registry.raw for v in self.registry.tags.values()))
     def test_pr_even_with_both_artifacts_cannot_write(self):
@@ -222,7 +222,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(validate['permissions'],{'contents':'read'})
         build=next(x for x in validate['steps'] if x.get('uses','').startswith('docker/build-push-action@'))
         self.assertIs(build['with']['push'],False)
-        self.assertIn('agentvisor-api:build-',build['with']['tags'])
+        self.assertIn('proofvisor-api:build-',build['with']['tags'])
         self.assertIn('type=oci',build['with']['outputs'])
         text=json.dumps(validate)
         self.assertNotIn('login-action',text);self.assertNotIn('secrets.',text);self.assertNotIn('id-token',text)

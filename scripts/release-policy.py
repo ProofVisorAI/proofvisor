@@ -136,7 +136,7 @@ def scan_policy(report, runtime):
 def test_runtime(directory, arch, run=command):
     (directory/'runtime.json').unlink(missing_ok=True)
     info = archive_info(directory / 'image.oci.tar', arch)
-    tag = 'agentvisor-api:release-test-' + arch
+    tag = 'proofvisor-api:release-test-' + arch
     # The Docker daemon needs only the runnable platform. The original archive,
     # including attestations, is kept unchanged for registry promotion.
     run(['skopeo','--override-os','linux','--override-arch',arch,'copy',
@@ -215,7 +215,7 @@ def verify(directory, env):
 def repository(env):
     owner = env.get('GITHUB_REPOSITORY_OWNER', '').lower()
     require(re.fullmatch('[a-z0-9][a-z0-9-]*', owner), 'Invalid registry owner')
-    return 'ghcr.io/' + owner + '/agentvisor-api'
+    return 'ghcr.io/' + owner + '/proofvisor-api'
 
 
 def check_index(raw, values):

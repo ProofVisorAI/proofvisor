@@ -3,10 +3,10 @@
  *
  * Wire a CI job / Grafana dashboard / internal script as an *org*
  * rather than as a user. Keys are argon2-hashed at rest; plaintext
- * (av_srv_xxxx) is returned once at create time.
+ * (pv_srv_xxxx) is returned once at create time.
  *
  * Authenticate by sending:
- *   Authorization: Bearer av_srv_<plaintext>
+ *   Authorization: Bearer pv_srv_<plaintext>
  *
  * This is picked up in lib/session-middleware.ts alongside the JWT
  * cookie flow; a valid key grants a synthesized session with the key's
@@ -62,7 +62,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       keys: rows.map((r) => ({
         id: r.id,
         name: r.name,
-        hint: "av_srv_" + r.tokenHint + "…",
+        hint: "pv_srv_" + r.tokenHint + "…",
         role: r.role,
         createdByEmail: r.createdByEmail,
         lastUsedAt: r.lastUsedAt,
@@ -94,7 +94,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const plaintextBody = randomToken(28); // 224 bits of randomness
-    const plaintext = "av_srv_" + plaintextBody;
+    const plaintext = "pv_srv_" + plaintextBody;
     const tokenHash = await hashPassword(plaintext);
     // R104 F1 + F2: resolve claims.sub to the ULTIMATE human user
     // id before persisting createdById. For a cookie session
@@ -232,7 +232,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       key: {
         id: key.id,
         name: key.name,
-        hint: "av_srv_" + key.tokenHint + "…",
+        hint: "pv_srv_" + key.tokenHint + "…",
         role: key.role,
         createdAt: key.createdAt,
       },

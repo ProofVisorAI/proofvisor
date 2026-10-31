@@ -78,7 +78,7 @@ else:sys.exit(20)
 
 class DrillTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='av-backup-drill-unit-')
+        self.temporary = tempfile.TemporaryDirectory(prefix='pv-backup-drill-unit-')
         self.work = Path(self.temporary.name)
         tools = self.work / 'bin'
         tools.mkdir()

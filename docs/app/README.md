@@ -1,10 +1,10 @@
-# AgentVisor AI Console
+# ProofVisor Console
 
 > **Changing this code?** Read [HANDBOOK.md](./HANDBOOK.md) first — the
 > invariants, bug classes, and harness traps from the hardening campaign,
 > each backed by a CI guard.
 
-The console served at `agentvisorai.me/app/` is a real multi-tenant SPA:
+The console served at `proofvisor.com/app/` is a real multi-tenant SPA:
 sign in, view your fleet of policed agent sessions, add & rotate deployment
 ingest tokens, and inspect any session's event stream and signed receipt.
 
@@ -52,14 +52,14 @@ Append `?live=1` to the console URL (persists in `localStorage`;
 
 ```js
 window.MOCK_MODE = false;
-window.API_BASE = "https://api.agentvisorai.me";
+window.API_BASE = "https://api.proofvisor.com";
 ```
 
 (The origin only — request paths already include `/api/v1`.)
 
 …and the same UI now talks to the real hosted backend defined in [`../../server/`](../../server/).
 Signup / login create real users and orgs. Deployments mint real ingest
-tokens. Session data is streamed by real `agentvisord` daemons.
+tokens. Session data is streamed by real `proofvisord` daemons.
 
 See [`server/README.md`](../../server/README.md) for the full deploy runbook.
 

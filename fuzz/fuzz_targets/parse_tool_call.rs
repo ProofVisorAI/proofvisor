@@ -8,5 +8,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = av_sandbox::parse_tool_call(data);
+    let _ = pv_sandbox::parse_tool_call(data);
 });

@@ -73,11 +73,11 @@ jobs:
           file: server/Dockerfile
           push: false
           # A local name gives BuildKit attestation subjects a manifest binding.
-          tags: agentvisor-api:build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          tags: proofvisor-api:build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           platforms: linux/${{ matrix.arch }}
           outputs: type=oci,dest=${{ env.CANDIDATE }}/image.oci.tar
           labels: |
-            org.opencontainers.image.title=AgentVisor API
+            org.opencontainers.image.title=ProofVisor API
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=Apache-2.0
@@ -90,7 +90,7 @@ jobs:
       - name: Generate SPDX inventory of the tested image
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: docker:agentvisor-api:release-test-${{ matrix.arch }}
+          image: docker:proofvisor-api:release-test-${{ matrix.arch }}
           format: spdx-json
           output-file: ${{ env.CANDIDATE }}/sbom.spdx.json
           upload-artifact: false
@@ -119,7 +119,7 @@ jobs:
             "$TRIVY_IMAGE" image --image-src docker --platform "linux/$ARCH" \
               --scanners vuln --ignorefile /dev/null --list-all-pkgs \
               --format json --output /reports/trivy-full.json \
-              --skip-db-update --no-progress "agentvisor-api:release-test-$ARCH"
+              --skip-db-update --no-progress "proofvisor-api:release-test-$ARCH"
       - name: Gate fixable HIGH/CRITICAL findings and seal the tested bytes
         run: python3 scripts/release-policy.py seal --directory "$CANDIDATE" --arch "$ARCH"
       - name: Preserve reports even when validation fails
@@ -232,7 +232,7 @@ jobs:
       contents: read
     environment:
       name: production
-      url: https://api.agentvisorai.me
+      url: https://api.proofvisor.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

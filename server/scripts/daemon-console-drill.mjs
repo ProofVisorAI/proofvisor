@@ -1,6 +1,6 @@
 // Exercise the complete daemon -> crash recovery -> console-sync -> API
 // contract. The API and PostgreSQL must already be running. Supply current
-// AGENTVISORD and AVCTL binaries; this runner never builds or downloads them.
+// PROOFVISORD and PVCTL binaries; this runner never builds or downloads them.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,11 +14,11 @@ const API = (process.env.API_BASE || "http://127.0.0.1:8985").replace(/\/$/, "")
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 // Missing binaries must fail, rather than letting a crash-only run pass
 // while the console synchronization leg is silently skipped.
-for (const name of ["AGENTVISORD", "AVCTL"]) {
+for (const name of ["PROOFVISORD", "PVCTL"]) {
   assert.ok(process.env[name], `${name} must name a current executable`);
   await access(process.env[name], constants.X_OK);
 }
-const fixture = await mkdtemp(join(tmpdir(), "av-console-drill-"));
+const fixture = await mkdtemp(join(tmpdir(), "pv-console-drill-"));
 const password = randomBytes(32).toString("hex");
 let cookie;
 
@@ -36,7 +36,7 @@ async function request(path, body, retry = true) {
     return request(path, body, false);
   }
   if (!r.ok) throw new Error(`${path} failed with HTTP ${r.status}: ${await r.text()}`);
-  return { data: await r.json(), cookie: r.headers.getSetCookie().find((c) => c.startsWith("av_session="))?.split(";")[0] };
+  return { data: await r.json(), cookie: r.headers.getSetCookie().find((c) => c.startsWith("pv_session="))?.split(";")[0] };
 }
 
 try {
@@ -48,7 +48,7 @@ try {
   const cookieJar = join(fixture, "owner.jar");
   await writeFile(tokenFile, data.ingestToken, { mode: 0o600 });
   const host = new URL(API).hostname;
-  await writeFile(cookieJar, `# Netscape HTTP Cookie File\n${host}\tFALSE\t/\tFALSE\t0\tav_session\t${cookie.slice("av_session=".length)}\n`, { mode: 0o600 });
+  await writeFile(cookieJar, `# Netscape HTTP Cookie File\n${host}\tFALSE\t/\tFALSE\t0\tav_session\t${cookie.slice("pv_session=".length)}\n`, { mode: 0o600 });
   const child = spawn(process.execPath, [join(repo, "scripts/crash-drill.mjs")], {
     cwd: repo,
     stdio: "inherit",

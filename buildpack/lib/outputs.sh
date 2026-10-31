@@ -11,7 +11,7 @@ sidecar_binary() {
         aarch64|arm64) arch=aarch64 ;;
         *) return 0 ;;
     esac
-    candidate=$buildpack_dir/vendor/avctl-linux-$arch
+    candidate=$buildpack_dir/vendor/pvctl-linux-$arch
     if [ -f "$candidate" ] && [ -x "$candidate" ]; then
         printf '%s' "$candidate"
     fi
@@ -33,8 +33,8 @@ client_base() {
 mcp_config() {
     printf '%s' "$1" | jq --arg base "$2" '{
         mcpServers: (
-            {agentvisor: {type: "http", url: ($base + "/mcp")}}
-            + (.backends | map({key: ("agentvisor-" + .), value: {type: "http", url: ($base + "/mcp/" + .)}})
+            {proofvisor: {type: "http", url: ($base + "/mcp")}}
+            + (.backends | map({key: ("proofvisor-" + .), value: {type: "http", url: ($base + "/mcp/" + .)}})
                | from_entries)
         )
     }'
@@ -45,17 +45,17 @@ mcp_config() {
 # $1 = binding JSON, $2 = client base URL, $3 = MCP config path.
 client_environment() {
     printf '%s' "$1" | jq -r --arg base "$2" --arg mcp "$3" '
-        "AV_GATEWAY_URL=\(.gateway_url)",
-        "AV_AUDIENCE=\(.audience)",
-        "AV_IDENTITY_JWKS_URL=\(.identity_jwks_url // "")",
-        "AV_CLIENT_BASE_URL=\($base)",
+        "PV_GATEWAY_URL=\(.gateway_url)",
+        "PV_AUDIENCE=\(.audience)",
+        "PV_IDENTITY_JWKS_URL=\(.identity_jwks_url // "")",
+        "PV_CLIENT_BASE_URL=\($base)",
         "OPENAI_BASE_URL=\($base)/v1",
         "OPENAI_API_BASE=\($base)/v1",
-        "AGENTVISOR_MCP_URL=\($base)/mcp",
-        "AGENTVISOR_MCP_CONFIG=\($mcp)"'
+        "PROOFVISOR_MCP_URL=\($base)/mcp",
+        "PROOFVISOR_MCP_CONFIG=\($mcp)"'
 }
 
-# Sidecar settings file read by `avctl sidecar --config`, so no binding
+# Sidecar settings file read by `pvctl sidecar --config`, so no binding
 # value ever appears on a command line. $1 = binding JSON,
 # $2 = default credential.
 sidecar_config() {

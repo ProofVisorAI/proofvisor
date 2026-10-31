@@ -14,7 +14,7 @@
  *   ALLOWED_ORIGINS=http://127.0.0.1:8988 \
  *   API_PUBLIC_URL=http://127.0.0.1:4477 \
  *   OIDC_ISSUER_URL=http://127.0.0.1:4478 \
- *   OIDC_CLIENT_ID=av-console \
+ *   OIDC_CLIENT_ID=pv-console \
  *   OIDC_CLIENT_SECRET=drill-secret-123 \
  *   OIDC_DISPLAY_NAME=Keycloak \
  *   npx tsx src/index.ts
@@ -50,12 +50,12 @@ import { execFileSync } from "node:child_process";
 const API = process.env.API_BASE || "http://127.0.0.1:4477";
 const IDP_PORT = Number(process.env.IDP_PORT || 4478);
 const ISSUER = `http://127.0.0.1:${IDP_PORT}`;
-const CLIENT_ID = "av-console";
+const CLIENT_ID = "pv-console";
 const CLIENT_SECRET = "drill-secret-123";
 const APP_BASE = "http://127.0.0.1:8988";
 const PG_CONTAINER = process.env.PG_CONTAINER || "";
-const PG_USER = process.env.PG_USER || "agentvisor";
-const PG_DB = process.env.PG_DB || "agentvisor";
+const PG_USER = process.env.PG_USER || "proofvisor";
+const PG_DB = process.env.PG_DB || "proofvisor";
 
 let passed = 0;
 let failed = 0;
@@ -237,7 +237,7 @@ async function runFlow({ provider = "oidc", omitCookie = false, forgeState = fal
   if (!authUrl.startsWith(ISSUER)) {
     return { startStatus: 302, startLocation: authUrl };
   }
-  const stateCookie = cookieFrom(start, "av_oauth_state");
+  const stateCookie = cookieFrom(start, "pv_oauth_state");
   const authz = await fetch(authUrl, { redirect: "manual" });
   let cbUrl = new URL(authz.headers.get("location"));
   if (forgeState) cbUrl.searchParams.set("state", "forged-state-value");
@@ -250,7 +250,7 @@ async function runFlow({ provider = "oidc", omitCookie = false, forgeState = fal
     headers: omitCookie ? {} : { cookie: stateCookie },
   });
   const clearedState = (cb.headers.getSetCookie?.() || []).some(
-    (c) => c.startsWith("av_oauth_state=") && /max-age=0|expires=thu, 01 jan 1970/i.test(c),
+    (c) => c.startsWith("pv_oauth_state=") && /max-age=0|expires=thu, 01 jan 1970/i.test(c),
   );
   return {
     startStatus: 302,
@@ -258,7 +258,7 @@ async function runFlow({ provider = "oidc", omitCookie = false, forgeState = fal
     stateCookie,
     status: cb.status,
     finalLocation: cb.headers.get("location"),
-    sessionCookie: cookieFrom(cb, "av_session"),
+    sessionCookie: cookieFrom(cb, "pv_session"),
     stateCookieCleared: clearedState,
   };
 }
@@ -317,7 +317,7 @@ async function main() {
   check("PKCE S256", authUrl.searchParams.get("code_challenge_method") === "S256" && (authUrl.searchParams.get("code_challenge") || "").length >= 40);
   check("state + nonce present", !!authUrl.searchParams.get("state") && !!authUrl.searchParams.get("nonce"));
   check("redirect_uri is API callback", authUrl.searchParams.get("redirect_uri") === `${API}/api/v1/auth/oauth/oidc/callback`);
-  const sc = cookieFrom(start, "av_oauth_state");
+  const sc = cookieFrom(start, "pv_oauth_state");
   check("signed state cookie set", !!sc && sc.includes("."));
 
   console.log("[3] happy path: JIT signup");

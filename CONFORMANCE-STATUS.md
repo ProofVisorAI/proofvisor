@@ -1,4 +1,4 @@
-# AgentVisor AI Conformance Status
+# ProofVisor Conformance Status
 
 How to verify a receipt yourself lives in
 [`docs/reference/VERIFYING-A-RECEIPT.md`](docs/reference/VERIFYING-A-RECEIPT.md);
@@ -28,13 +28,13 @@ The functional MVP is implemented and the executable local correctness gates pas
 | OCSF event profile | Pass | Every class validates; identity and normalized stop state are present |
 | Inventory fingerprint | Roadmap | Model/schema shape exists; DOCX labels per-forward inventory as roadmap, not MVP |
 | Portable Bridge | Pass locally | Embedded ordering/recovery plus live Kafka/NATS provisioning and replay contracts, including TLS+SASL Kafka and TLS+auth NATS endpoints |
-| Retention and cold tier | Pass locally | Manifest retention/replication, authenticated pre-ack cold intents, conditional objects; live S3-compatible export verified against MinIO (`AV_COLD_S3_URL` contract) |
+| Retention and cold tier | Pass locally | Manifest retention/replication, authenticated pre-ack cold intents, conditional objects; live S3-compatible export verified against MinIO (`PV_COLD_S3_URL` contract) |
 | Receipts | Pass | RFC 8785 vectors, trusted-key CLI verification, signer-pinned recovery, authenticated journals/outboxes |
 | ATIF v1.7 | Pass | Strict/golden tests, retry-safe parent-fsynced writer, recovered accounting/TTL, real HTTP trajectory accepted by Harbor |
 | Required runtime stack | Pass locally | Pinned MiniLM runs in tract, passes loop SLA, and feeds live Qdrant; live Redis/Kafka/NATS contracts pass, including a 3-master Redis Cluster (multi-key atomic budget spend on a real slot map) |
 | MCP Streamable HTTP (server and backend client) | Pass locally | `initialize`/`ping`/`tools/list`/notifications, signed sessions, Origin and version checks, per-backend routes; backend handshake, SSE decoding, server-request answers, resumption, and 404 renewal against scripted backends (`e2e_mcp_gateway`). Not yet run against third-party MCP servers or clients. |
 | Delegation, missions, external PDP | Pass locally | RFC 8693 actor tokens, human-subject rule, per-agent missions, AuthZEN 1.0 single and batch evaluation against a scripted PDP (`e2e_identity_and_policy`). Not yet run against a production AuthZEN service. |
-| Workload identity and sidecar | Pass locally | RFC 7523 assertions over a generated Cloud Foundry-shaped certificate chain (`av-identity` `workload`, `e2e_workload_identity`), sidecar proxying against the real verifier, buildpack contract tests. Not yet staged on a Cloud Foundry foundation. |
+| Workload identity and sidecar | Pass locally | RFC 7523 assertions over a generated Cloud Foundry-shaped certificate chain (`pv-identity` `workload`, `e2e_workload_identity`), sidecar proxying against the real verifier, buildpack contract tests. Not yet staged on a Cloud Foundry foundation. |
 | Tenant content telemetry | Pass locally | GenAI spans with redaction verified with the SDK in-memory exporter; worker hand-off verified end to end. |
 | OTLP/Vector | Pass locally | Real server emitted a nonempty 1,244-byte OTLP trace batch and flushed on SIGTERM |
 | 10,000 connections | Final local run passed | Every exact response completed, admission p95/p99 were 0.727/1.286 ms, and audit work drained with zero pending jobs and zero worker errors. Backing service records were healthy and unchanged before and after. See [benchmarks](BENCHMARKS.md) for timing, preserved failures, and scope. |
@@ -50,8 +50,8 @@ The functional MVP is implemented and the executable local correctness gates pas
 - JSON schemas, example TOML, and Bridge manifest: pass.
 - Compose rendering: pass.
 - Harbor pinned reference validator over a real HTTP harness trajectory: pass.
-- Live crash-recovery (2026-08-16): release daemon on live Kafka + Redis SIGKILLed mid-load (300 sessions in flight); restart quarantined all 300 incomplete sessions, served fresh traffic with zero failures, and a second SIGKILL + restart re-quarantined the same set idempotently (no duplication, no re-execution, zero ERROR lines). Reproducible artifact (round-51 §11 — attestations need pointers): the same SIGKILL→restart→SIGKILL→restart idempotence property is now pinned in CI by `crates/av-harness/tests/e2e_process_restart.rs` (`sigkill_restart_recovers_and_is_idempotent`, plus the spool-outage and two-daemon-lock siblings), which spawns the real `agentvisord` binary; the live-brokers variant remains an operator attestation.
-- Offline receipt verification (2026-08-16): a receipt produced by the crash-recovered daemon, consumed from the live Kafka `agent.receipt` topic, verified offline via `avctl receipt-verify` with the independently extracted public key; a single-byte tamper was rejected. Reproducible artifact (round-51 §11): `scripts/live-verify.sh` runs the same chain — hero snippet → close → promote → `avctl pubkey` extraction → offline verify → tamper refusal — plus the §3.1 forgery PoC (identity-point public key + small-order signature refused at `add_key_bytes`), against release binaries with a scripted mock upstream. Six live checks; no live broker required.
+- Live crash-recovery (2026-08-16): release daemon on live Kafka + Redis SIGKILLed mid-load (300 sessions in flight); restart quarantined all 300 incomplete sessions, served fresh traffic with zero failures, and a second SIGKILL + restart re-quarantined the same set idempotently (no duplication, no re-execution, zero ERROR lines). Reproducible artifact (round-51 §11 — attestations need pointers): the same SIGKILL→restart→SIGKILL→restart idempotence property is now pinned in CI by `crates/pv-harness/tests/e2e_process_restart.rs` (`sigkill_restart_recovers_and_is_idempotent`, plus the spool-outage and two-daemon-lock siblings), which spawns the real `proofvisord` binary; the live-brokers variant remains an operator attestation.
+- Offline receipt verification (2026-08-16): a receipt produced by the crash-recovered daemon, consumed from the live Kafka `agent.receipt` topic, verified offline via `pvctl receipt-verify` with the independently extracted public key; a single-byte tamper was rejected. Reproducible artifact (round-51 §11): `scripts/live-verify.sh` runs the same chain — hero snippet → close → promote → `pvctl pubkey` extraction → offline verify → tamper refusal — plus the §3.1 forgery PoC (identity-point public key + small-order signature refused at `add_key_bytes`), against release binaries with a scripted mock upstream. Six live checks; no live broker required.
 - Release core SLA: pass using direct admission-wrapper and HTTP MCP-denial timing; explicit durable admission is reported separately.
 - Release 10,000-request gate with live Kafka/Redis: the final source passed on 2026-09-24, including every complete response and zero-error audit drain. Earlier watchdog-interrupted failures remain recorded separately.
 
@@ -73,18 +73,18 @@ independent-host failover. The broker TLS/SASL results below remain dated local
 attestations; their gated `live_contract.rs` suites and secure fixture helper
 are in the repository and can be rerun.
 
-- **Redis Cluster topology** — a live 3-master cluster (redis 8, ports 7000-7002) passed the `AV_REDIS_URL` contract suite, including a new multi-key `try_spend_many` test using the production `budget:{hash-tag}:` key shape (proves CROSSSLOT safety on a real slot map, plus cross-key atomicity of a refused spend).
-- **S3-compatible cold tier** — the two-phase cold export (staged intent → conditional `PutMode::Create` put → idempotent re-put) passed live against MinIO via the new `AV_COLD_S3_URL`-gated contract; the object landed with the deterministic `topic/pN/offset.json` key. Standard `AWS_*` env credentials are now honored (keys are lowercased before `object_store::parse_url_opts`, which only parses lowercase config names).
-- **Broker TLS/SASL** — the Kafka connector now reads `AV_KAFKA_CA_FILE` + `AV_KAFKA_SASL_USERNAME`/`AV_KAFKA_SASL_PASSWORD` (mechanism via `AV_KAFKA_SASL_MECHANISM`: `SCRAM-SHA-256` default, `SCRAM-SHA-512`, or `PLAIN` — upgraded from PLAIN-only on 2026-08-16 with rskafka 0.6/rustls 0.23; credentials refused without TLS) on both the rskafka event path and the librdkafka admin path; the live contract passed against Redpanda with a `sasl`-authenticated TLS listener (private CA) for SCRAM-SHA-256 and PLAIN, an unauthenticated client was rejected by the broker, credentials-without-CA was refused client-side, and the plaintext path is regression-tested unchanged. The NATS connector reads `AV_NATS_CA_FILE` + `AV_NATS_USER`/`AV_NATS_PASSWORD`; the live contract passed over `tls://` against nats-server with TLS + user/password required.
+- **Redis Cluster topology** — a live 3-master cluster (redis 8, ports 7000-7002) passed the `PV_REDIS_URL` contract suite, including a new multi-key `try_spend_many` test using the production `budget:{hash-tag}:` key shape (proves CROSSSLOT safety on a real slot map, plus cross-key atomicity of a refused spend).
+- **S3-compatible cold tier** — the two-phase cold export (staged intent → conditional `PutMode::Create` put → idempotent re-put) passed live against MinIO via the new `PV_COLD_S3_URL`-gated contract; the object landed with the deterministic `topic/pN/offset.json` key. Standard `AWS_*` env credentials are now honored (keys are lowercased before `object_store::parse_url_opts`, which only parses lowercase config names).
+- **Broker TLS/SASL** — the Kafka connector now reads `PV_KAFKA_CA_FILE` + `PV_KAFKA_SASL_USERNAME`/`PV_KAFKA_SASL_PASSWORD` (mechanism via `PV_KAFKA_SASL_MECHANISM`: `SCRAM-SHA-256` default, `SCRAM-SHA-512`, or `PLAIN` — upgraded from PLAIN-only on 2026-08-16 with rskafka 0.6/rustls 0.23; credentials refused without TLS) on both the rskafka event path and the librdkafka admin path; the live contract passed against Redpanda with a `sasl`-authenticated TLS listener (private CA) for SCRAM-SHA-256 and PLAIN, an unauthenticated client was rejected by the broker, credentials-without-CA was refused client-side, and the plaintext path is regression-tested unchanged. The NATS connector reads `PV_NATS_CA_FILE` + `PV_NATS_USER`/`PV_NATS_PASSWORD`; the live contract passed over `tls://` against nats-server with TLS + user/password required.
 
 ## Receipt Verification Protocol (independent implementation)
 
 README and the project site link here for "verifying a receipt from
 scratch". The following is the complete, normative recipe an
-independent verifier must implement — no AgentVisor code required. A
+independent verifier must implement — no ProofVisor code required. A
 receipt is a single JSON object; the reference implementation is
-`crates/av-receipts/src/receipt.rs` (`Receipt::verify`) and the CLI
-wrapper is `avctl receipt-verify <file> --public-key-hex <64-hex>`.
+`crates/pv-receipts/src/receipt.rs` (`Receipt::verify`) and the CLI
+wrapper is `pvctl receipt-verify <file> --public-key-hex <64-hex>`.
 
 ### Inputs
 
@@ -140,18 +140,18 @@ wrapper is `avctl receipt-verify <file> --public-key-hex <64-hex>`.
    signed *message* is version-dispatched:
    * **v1** (legacy): the raw JCS canonical bytes from step 4.
    * **v2** (current, what daemons emit): the concatenation
-     `"AV-RECEIPT-v2\n"` (14-byte ASCII domain tag) ‖
+     `"PV-RECEIPT-v2\n"` (14-byte ASCII domain tag) ‖
      `u64_be(len(canonical_bytes))` (8-byte big-endian length prefix) ‖
      `canonical_bytes`. Rejecting the framing is what stops a v1
      signature over `body` from being replayed as a v2 signature over
-     `AV-RECEIPT-v2\n || len || body` and vice versa.
+     `PV-RECEIPT-v2\n || len || body` and vice versa.
 
 Any step failing means the receipt does not attest anything. For
 `subject.kind == "atif_trajectory"`, additionally compare
 `subject.trajectory_digest` against `SHA-256(file bytes)` of the ATIF
 artifact you hold; for `subject.kind == "event_chain"`, the
 `chain_head`/`event_count` bind the OCSF event-chain replay. The chain
-construction is: `h0 = SHA-256("av-genesis" || session_id)`,
+construction is: `h0 = SHA-256("pv-genesis" || session_id)`,
 `h(i) = SHA-256(h(i-1) || JCS(event_i))` with events ordered by
 `metadata.sequence`; `chain_head` is the final hash rendered as
 lowercase hex and `event_count` the number of events folded in.

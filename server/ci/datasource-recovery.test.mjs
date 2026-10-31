@@ -53,7 +53,7 @@ test("non-object JSON error bodies preserve authentication and rate-limit handli
   for (const body of ["null", "false", "17", '"proxy error"', "[]", "<html>proxy error</html>"]) {
     const unauthenticated = fixture(401, body);
     await assert.rejects(unauthenticated.ds.listPolicies(), error => error.status === 401 && error.message === "http_401");
-    assert.deepEqual(unauthenticated.events, ["av-session-expired"]);
+    assert.deepEqual(unauthenticated.events, ["pv-session-expired"]);
     const limited = fixture(429, body);
     await assert.rejects(limited.ds.listPolicies(), error => error.status === 429 && error.retryAfterSec === 7);
   }

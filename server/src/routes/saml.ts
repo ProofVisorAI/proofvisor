@@ -35,7 +35,7 @@ import { truncateWellFormed } from "../lib/strings.js";
 
 // Browser-binding transaction cookie for SP-initiated SAML logins —
 // see lib/saml.ts and the shared saml_authn_requests table.
-const SAML_TXN_COOKIE = "av_saml_txn";
+const SAML_TXN_COOKIE = "pv_saml_txn";
 import {
   buildLoginUrl,
   consumeSamlResponse,
@@ -458,7 +458,7 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
       // confirm, reset confirm). SAML sign-in itself never needs the
       // flag.
 
-      // Everything lines up. Mint an av_session JWT, PINNED to this
+      // Everything lines up. Mint an pv_session JWT, PINNED to this
       // org (see SessionClaims.ssoOrgId): the asserting IdP speaks for
       // this workspace only, so the session must not widen into the
       // user's other orgs via /switch-org.
@@ -506,7 +506,7 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
       // Prior shape did NO validation: no session cookie check,
       // no configId lookup, no LogoutRequest signature verify. Any
       // origin could POST here (SLO was CSRF-exempt) and force
-      // `Set-Cookie: av_session=; Max-Age=0` on any authenticated
+      // `Set-Cookie: pv_session=; Max-Age=0` on any authenticated
       // visitor — a session-DoS primitive. Combined with the fact
       // that the handler previously didn't even validate the
       // configId param (destructured as `_req`), an attacker
@@ -944,7 +944,7 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
         "../lib/saml-cert.js"
       );
       const certPem = await generateSelfSignedCert(privateKey, publicKey, {
-        subjectCN: `AgentVisor SP for ${existing.id}`,
+        subjectCN: `ProofVisor SP for ${existing.id}`,
         days: 365 * 5,
       });
 

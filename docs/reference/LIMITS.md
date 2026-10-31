@@ -26,7 +26,7 @@ before you know the knob.
 | Identity scopes | 64 entries × 256 UTF-8 code points each | Bounded so delegation-chain subset checks stay per-request cheap and no single scope pollutes logs. |
 | Concurrent sessions per process | unbounded (RAM-limited) | Idle sweeper reaps at `session_idle_close_s`. |
 | Concurrent worker slots | `worker_channel_capacity` (default 32768), sharded over `max(16, available_parallelism)` shards | Additional concurrency queues in the request pipeline. |
-| Concurrent response slots | mirrors worker capacity | Backpressure surfaces as `av_events_dropped_total{stage="response_slot"}`. |
+| Concurrent response slots | mirrors worker capacity | Backpressure surfaces as `pv_events_dropped_total{stage="response_slot"}`. |
 
 ## Budgets
 
@@ -95,7 +95,7 @@ tests exercised.
 
 | Limit | Default | Notes |
 | --- | --- | --- |
-| Orphan file bytes to read during recovery | 256 MiB (`MAX_ATIF_RECOVERY_BYTES`) | Larger files are refused with `av_atif_recovery_skipped_total{reason="too_large"}` and left in place for operator inspection. |
+| Orphan file bytes to read during recovery | 256 MiB (`MAX_ATIF_RECOVERY_BYTES`) | Larger files are refused with `pv_atif_recovery_skipped_total{reason="too_large"}` and left in place for operator inspection. |
 | Orphan age gate | 60s | Files newer than this are skipped this tick (defense against quarantining in-progress closes). |
 | Live-session-stem check | on always | Sidecar-less .json files whose stem matches a currently-open session are skipped even if aged (round 51 §8.5). |
 | Retention max sleep between prunes | 1 hour | Fixed. |
@@ -141,7 +141,7 @@ Under crash (SIGKILL) and restart, exactly-once semantics hold for:
   lifecycle lock).
 
 Repeated restarts do NOT duplicate any of these; they DO extend the
-window during which `av_atif_recovery_skipped_total{reason="unauthenticated"}`
+window during which `pv_atif_recovery_skipped_total{reason="unauthenticated"}`
 ticks by 60s per orphan (the MIN_ORPHAN_AGE gate). This is
 intentional (round 51 §8.5).
 

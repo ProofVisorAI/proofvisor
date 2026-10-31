@@ -46,7 +46,7 @@ const fs=require('node:fs'),args=process.argv.slice(2);
 for(const flag of ['-keyout','-out']) fs.writeFileSync(args[args.indexOf(flag)+1],'fixture');
 `;
 async function fixture(t, mode) {
-  const work = await mkdtemp(join(tmpdir(), "av-auth-cleanup-test-"));
+  const work = await mkdtemp(join(tmpdir(), "pv-auth-cleanup-test-"));
   t.after(() => rm(work, { force: true, recursive: true }));
   for (const [name, source] of [["docker", fakeDocker], ["openssl", fakeOpenSsl]]) {
     await writeFile(join(work, name), source); await chmod(join(work, name), 0o700);
@@ -72,7 +72,7 @@ async function fixture(t, mode) {
   }
   const [code, signal] = await exited; clearTimeout(timeout);
   assert.equal(signal, null, logs); assert.equal(code, 1, logs);
-  const output = (await readdir(work)).find((name) => name.startsWith("av-auth-"));
+  const output = (await readdir(work)).find((name) => name.startsWith("pv-auth-"));
   assert.ok(output);
   const report = JSON.parse(await readFile(join(work, output, "report.json"), "utf8"));
   const state = JSON.parse(await readFile(join(work, "state.json"), "utf8"));

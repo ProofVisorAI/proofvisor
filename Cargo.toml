@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/av-core",
-    "crates/av-events",
-    "crates/av-atif",
-    "crates/av-receipts",
-    "crates/av-state",
-    "crates/av-bridge",
-    "crates/av-identity",
-    "crates/av-compress",
-    "crates/av-loopdetect",
-    "crates/av-sandbox",
-    "crates/av-harness",
-    "crates/av-cli",
-    "crates/av-redact",
+    "crates/pv-core",
+    "crates/pv-events",
+    "crates/pv-atif",
+    "crates/pv-receipts",
+    "crates/pv-state",
+    "crates/pv-bridge",
+    "crates/pv-identity",
+    "crates/pv-compress",
+    "crates/pv-loopdetect",
+    "crates/pv-sandbox",
+    "crates/pv-harness",
+    "crates/pv-cli",
+    "crates/pv-redact",
 ]
 
 [workspace.package]
@@ -21,9 +21,9 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
 license = "Apache-2.0"
-repository = "https://github.com/AgentVisorAI/agentvisor"
-homepage = "https://agentvisorai.me/"
-documentation = "https://agentvisorai.me/api/"
+repository = "https://github.com/ProofVisorAI/proofvisor"
+homepage = "https://proofvisor.com/"
+documentation = "https://proofvisor.com/api/"
 # `keywords` and `categories` are inherited by every workspace crate
 # via `keywords.workspace = true` / `categories.workspace = true`.
 # crates.io caps at 5 keywords / 5 categories.
@@ -31,18 +31,18 @@ keywords = ["ai", "agents", "audit", "atif", "ocsf"]
 categories = ["command-line-utilities", "web-programming::http-server", "asynchronous"]
 
 [workspace.dependencies]
-av-core = { path = "crates/av-core", version = "0.1.0" }
-av-events = { path = "crates/av-events", version = "0.1.0" }
-av-atif = { path = "crates/av-atif", version = "0.1.0" }
-av-receipts = { path = "crates/av-receipts", version = "0.1.0" }
-av-state = { path = "crates/av-state", version = "0.1.0" }
-av-bridge = { path = "crates/av-bridge", version = "0.1.0" }
-av-identity = { path = "crates/av-identity", version = "0.1.0" }
-av-compress = { path = "crates/av-compress", version = "0.1.0" }
-av-loopdetect = { path = "crates/av-loopdetect", version = "0.1.0" }
-av-sandbox = { path = "crates/av-sandbox", version = "0.1.0" }
-av-harness = { path = "crates/av-harness", version = "0.1.0" }
-av-redact = { path = "crates/av-redact", version = "0.1.0" }
+pv-core = { path = "crates/pv-core", version = "0.1.0" }
+pv-events = { path = "crates/pv-events", version = "0.1.0" }
+pv-atif = { path = "crates/pv-atif", version = "0.1.0" }
+pv-receipts = { path = "crates/pv-receipts", version = "0.1.0" }
+pv-state = { path = "crates/pv-state", version = "0.1.0" }
+pv-bridge = { path = "crates/pv-bridge", version = "0.1.0" }
+pv-identity = { path = "crates/pv-identity", version = "0.1.0" }
+pv-compress = { path = "crates/pv-compress", version = "0.1.0" }
+pv-loopdetect = { path = "crates/pv-loopdetect", version = "0.1.0" }
+pv-sandbox = { path = "crates/pv-sandbox", version = "0.1.0" }
+pv-harness = { path = "crates/pv-harness", version = "0.1.0" }
+pv-redact = { path = "crates/pv-redact", version = "0.1.0" }
 
 tokio = { version = "1.47", features = ["full"] }
 axum = { version = "0.8", features = ["macros"] }
@@ -53,7 +53,7 @@ futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 # float_roundtrip is REQUIRED for RFC 8785 correctness: without it serde_json
 # parses floats at reduced precision and canonical hashes differ from other
-# JCS implementations (verified by the RFC Appendix vectors in av-receipts).
+# JCS implementations (verified by the RFC Appendix vectors in pv-receipts).
 serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml = "0.9"
 toml = "1.1"
@@ -101,7 +101,7 @@ dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "warn"
-# Checked arithmetic is enforced by construction in budget/monetary code (av-state);
+# Checked arithmetic is enforced by construction in budget/monetary code (pv-state);
 # blanket-warning every u64 counter/time op only produces noise.
 arithmetic_side_effects = "allow"
 cast_possible_truncation = "warn"

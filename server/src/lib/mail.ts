@@ -161,16 +161,16 @@ function escHtml(s: string): string {
 function mailShell(inner: string): string {
   return `<div style="font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#222;max-width:520px">
   <div style="display:flex;align-items:center;gap:8px;margin:0 0 18px">
-    <img src="https://agentvisorai.me/logo.png" width="26" height="26" alt="AgentVisor AI" style="border-radius:6px;vertical-align:middle" />
-    <span style="font-weight:600;font-size:15px;vertical-align:middle">&nbsp;AgentVisor AI</span>
+    <img src="https://proofvisor.com/logo.png" width="26" height="26" alt="ProofVisor" style="border-radius:6px;vertical-align:middle" />
+    <span style="font-weight:600;font-size:15px;vertical-align:middle">&nbsp;ProofVisor</span>
   </div>
   ${inner}
-  <p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:10px">AgentVisor AI — the policy checkpoint for AI agents · <a href="https://agentvisorai.me" style="color:#999">agentvisorai.me</a></p>
+  <p style="font-size:12px;color:#999;margin-top:24px;border-top:1px solid #eee;padding-top:10px">ProofVisor — the policy checkpoint for AI agents · <a href="https://proofvisor.com" style="color:#999">proofvisor.com</a></p>
 </div>`;
 }
 
 export function passwordResetMail(link: string): Pick<MailInput, "subject" | "text" | "html"> {
-  const text = `Reset your AgentVisor AI password:
+  const text = `Reset your ProofVisor password:
 
 ${link}
 
@@ -179,15 +179,15 @@ you can ignore this email — nothing has changed on your account.
 `;
   const linkEsc = escHtml(link);
   const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Reset your password</h2>
-  <p>Click the link below to choose a new password for your AgentVisor AI account.</p>
+  <p>Click the link below to choose a new password for your ProofVisor account.</p>
   <p><a href="${linkEsc}" style="display:inline-block;background:#0a5c8b;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:500">Reset password</a></p>
   <p style="font-size:13px;color:#666">Or copy this URL into your browser:<br><code style="word-break:break-all">${linkEsc}</code></p>
   <p style="font-size:13px;color:#666">This link expires in 24 hours. If you didn't request a reset, you can ignore this email — nothing has changed.</p>`);
-  return { subject: "Reset your AgentVisor AI password", text, html };
+  return { subject: "Reset your ProofVisor password", text, html };
 }
 
 export function emailChangeVerifyMail(link: string, oldEmail: string): Pick<MailInput, "subject" | "text" | "html"> {
-  const text = `Confirm this address for your AgentVisor AI account (${oldEmail}):
+  const text = `Confirm this address for your ProofVisor account (${oldEmail}):
 
 ${link}
 
@@ -197,31 +197,31 @@ ignore this message — nothing changes without this link.
 `;
   const linkEsc = escHtml(link);
   const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Confirm your new email</h2>
-  <p>The AgentVisor AI account <strong>${escHtml(oldEmail)}</strong> asked to use this address instead.</p>
+  <p>The ProofVisor account <strong>${escHtml(oldEmail)}</strong> asked to use this address instead.</p>
   <p><a href="${linkEsc}" style="display:inline-block;background:#0a5c8b;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:500">Confirm this address</a></p>
   <p style="font-size:13px;color:#666">Or copy this URL into your browser:<br><code style="word-break:break-all">${linkEsc}</code></p>
   <p style="font-size:13px;color:#666">This link expires in 24 hours. If you didn't ask for this, ignore it — nothing changes without this link.</p>`);
-  return { subject: "Confirm your new AgentVisor AI email address", text, html };
+  return { subject: "Confirm your new ProofVisor email address", text, html };
 }
 
 export function emailChangedNoticeMail(newEmail: string): Pick<MailInput, "subject" | "text" | "html"> {
-  const text = `The email on your AgentVisor AI account was just changed to ${newEmail}.
+  const text = `The email on your ProofVisor account was just changed to ${newEmail}.
 
 Every signed-in session was signed out; sign in with the new address.
 
 If this was NOT you, someone with your password changed your login
 address. This address no longer signs in, so contact your workspace
-owner or support@agentvisorai.me right away.
+owner or support@proofvisor.com right away.
 `;
   const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Your account email was changed</h2>
-  <p>The email on your AgentVisor AI account is now <strong>${escHtml(newEmail)}</strong>. Every signed-in session was signed out; sign in with the new address.</p>
-  <p><strong>If this was not you</strong>, someone with your password changed your login address. Contact your workspace owner or <a href="mailto:support@agentvisorai.me">support@agentvisorai.me</a> right away.</p>`);
-  return { subject: "Your AgentVisor AI account email was changed", text, html };
+  <p>The email on your ProofVisor account is now <strong>${escHtml(newEmail)}</strong>. Every signed-in session was signed out; sign in with the new address.</p>
+  <p><strong>If this was not you</strong>, someone with your password changed your login address. Contact your workspace owner or <a href="mailto:support@proofvisor.com">support@proofvisor.com</a> right away.</p>`);
+  return { subject: "Your ProofVisor account email was changed", text, html };
 }
 
 export function adminMfaResetMail(adminEmail: string): Pick<MailInput, "subject" | "text" | "html"> {
   const adminEsc = escHtml(adminEmail);
-  const text = `A workspace administrator (${adminEmail}) reset the passkeys on your AgentVisor AI account.
+  const text = `A workspace administrator (${adminEmail}) reset the passkeys on your ProofVisor account.
 
 All your passkeys were removed, every signed-in session was signed
 out, and API tokens you created were revoked. You can sign in with
@@ -232,14 +232,14 @@ password from the sign-in page ("Forgot password") and contact your
 workspace owner.
 `;
   const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Your passkeys were reset</h2>
-  <p>A workspace administrator (<strong>${adminEsc}</strong>) reset the passkeys on your AgentVisor AI account.</p>
+  <p>A workspace administrator (<strong>${adminEsc}</strong>) reset the passkeys on your ProofVisor account.</p>
   <p>All your passkeys were removed, every signed-in session was signed out, and API tokens you created were revoked. You can sign in with your password alone, then enroll a new passkey under <em>Settings &gt; SSO</em>.</p>
   <p><strong>If you did not ask for this</strong>, treat your account as at risk: reset your password from the sign-in page (&ldquo;Forgot password&rdquo;) and contact your workspace owner.</p>`);
-  return { subject: "Your AgentVisor AI passkeys were reset by an administrator", text, html };
+  return { subject: "Your ProofVisor passkeys were reset by an administrator", text, html };
 }
 
 export function passwordChangedMail(): Pick<MailInput, "subject" | "text" | "html"> {
-  const text = `Your AgentVisor AI password was just changed.
+  const text = `Your ProofVisor password was just changed.
 
 If this was you, no action is needed — every other signed-in session
 was signed out, and your API ingest tokens keep working.
@@ -251,7 +251,7 @@ out every session and revokes your API tokens.
   const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Your password was changed</h2>
   <p>If this was you, no action is needed — every other signed-in session was signed out, and your API ingest tokens keep working.</p>
   <p><strong>If this was not you</strong>, someone else knows your password. Reset it immediately from the sign-in page (&ldquo;Forgot password&rdquo;) — a reset signs out every session and revokes your API tokens.</p>`);
-  return { subject: "Your AgentVisor AI password was changed", text, html };
+  return { subject: "Your ProofVisor password was changed", text, html };
 }
 
 export function welcomeMail(displayName: string): Pick<MailInput, "subject" | "text" | "html"> {
@@ -259,24 +259,24 @@ export function welcomeMail(displayName: string): Pick<MailInput, "subject" | "t
   const nameEsc = escHtml(name);
   const text = `Hi ${name},
 
-Welcome to AgentVisor AI. Your account is ready.
+Welcome to ProofVisor. Your account is ready.
 
 Next steps:
-  1. Install the daemon: https://github.com/AgentVisorAI/agentvisor-ai#quickstart
+  1. Install the daemon: https://github.com/ProofVisorAI/proofvisor#quickstart
   2. Point your agent at the daemon and set default_workflow="signed".
   3. Watch your first sealed session appear in the console.
 
-Questions? Reply to this email or hit us at hello@agentvisorai.me.
+Questions? Reply to this email or hit us at hello@proofvisor.com.
 `;
   const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Welcome, ${nameEsc} 👋</h2>
-  <p>Your AgentVisor AI account is ready.</p>
+  <p>Your ProofVisor account is ready.</p>
   <ol>
-    <li><a href="https://github.com/AgentVisorAI/agentvisor-ai#quickstart">Install the daemon</a></li>
+    <li><a href="https://github.com/ProofVisorAI/proofvisor#quickstart">Install the daemon</a></li>
     <li>Point your agent at the daemon and set <code>default_workflow="signed"</code>.</li>
     <li>Watch your first sealed session appear in the console.</li>
   </ol>
-  <p style="font-size:13px;color:#666">Questions? Reply to this email or hit us at <a href="mailto:hello@agentvisorai.me">hello@agentvisorai.me</a>.</p>`);
-  return { subject: "Welcome to AgentVisor AI", text, html };
+  <p style="font-size:13px;color:#666">Questions? Reply to this email or hit us at <a href="mailto:hello@proofvisor.com">hello@proofvisor.com</a>.</p>`);
+  return { subject: "Welcome to ProofVisor", text, html };
 }
 
 export function inviteMail(
@@ -284,10 +284,10 @@ export function inviteMail(
   inviterEmail: string,
   link: string,
 ): Pick<MailInput, "subject" | "text" | "html"> {
-  const text = `${inviterEmail} invited you to join ${orgName} on AgentVisor AI.
+  const text = `${inviterEmail} invited you to join ${orgName} on ProofVisor.
 
 Click the link below to accept the invite. If you already have an
-AgentVisor AI account with this email, we'll add you to ${orgName};
+ProofVisor account with this email, we'll add you to ${orgName};
 otherwise you'll set a password to finish signing up.
 
 ${link}
@@ -298,9 +298,9 @@ you can safely ignore it.
   const orgEsc = escHtml(orgName);
   const inviterEsc = escHtml(inviterEmail);
   const linkEsc = escHtml(link);
-  const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Join ${orgEsc} on AgentVisor AI</h2>
+  const html = mailShell(`  <h2 style="margin:0 0 12px;font-size:20px">Join ${orgEsc} on ProofVisor</h2>
   <p><b>${inviterEsc}</b> invited you to their workspace.</p>
   <p><a href="${linkEsc}" style="background:#4c6ef5;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;display:inline-block">Accept invite</a></p>
   <p style="font-size:13px;color:#666">This link expires in 7 days. If you didn't expect this email, you can safely ignore it.</p>`);
-  return { subject: `Invite to join ${orgName} on AgentVisor AI`, text, html };
+  return { subject: `Invite to join ${orgName} on ProofVisor`, text, html };
 }

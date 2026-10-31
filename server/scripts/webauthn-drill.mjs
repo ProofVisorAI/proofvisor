@@ -137,7 +137,7 @@ async function main() {
     body: JSON.stringify({ email, password: "correcthorse42x", orgName: "WAOrg" }),
   });
   if (signup.status !== 201) throw new Error("signup " + signup.status + " " + await signup.text());
-  const cookie = /(av_session=[^;]+)/.exec(signup.headers.get("set-cookie") ?? "")?.[1];
+  const cookie = /(pv_session=[^;]+)/.exec(signup.headers.get("set-cookie") ?? "")?.[1];
 
   // ---------- Registration ceremony ----------
   console.log("[1/5] registration/challenge");
@@ -153,7 +153,7 @@ async function main() {
   });
   if (regCh.status !== 200) throw new Error("reg challenge " + regCh.status + " " + await regCh.text());
   const regChSetCookie = regCh.headers.get("set-cookie") ?? "";
-  const regCookie = /(av_wa_reg_challenge=[^;]+)/.exec(regChSetCookie)?.[1];
+  const regCookie = /(pv_wa_reg_challenge=[^;]+)/.exec(regChSetCookie)?.[1];
   if (!regCookie) throw new Error("no reg challenge cookie");
   const regOpts = (await regCh.json()).options;
 
@@ -216,14 +216,14 @@ async function main() {
     throw new Error("MFA gate did not fire: " + JSON.stringify(gatedBody));
   }
   console.log("  mfaRequired=true (R85 F3: email intentionally omitted from response)");
-  if ((gated.headers.get("set-cookie") ?? "").includes("av_session=")) {
+  if ((gated.headers.get("set-cookie") ?? "").includes("pv_session=")) {
     // With MFA required, we should NOT have gotten a session cookie yet.
     throw new Error("session cookie leaked despite MFA gate!");
   }
   // The password-verified login sets the MFA gate cookie; the ceremony
   // endpoints refuse (decoy) without it — carry it like a browser would.
-  const mfaGateCookie = /(av_mfa_gate=[^;]+)/.exec(gated.headers.get("set-cookie") ?? "")?.[1];
-  if (!mfaGateCookie) throw new Error("no av_mfa_gate cookie on the mfaRequired response");
+  const mfaGateCookie = /(pv_mfa_gate=[^;]+)/.exec(gated.headers.get("set-cookie") ?? "")?.[1];
+  if (!mfaGateCookie) throw new Error("no pv_mfa_gate cookie on the mfaRequired response");
 
   // ---------- Authentication ceremony ----------
   console.log("[5/5] passkey authenticate");
@@ -238,7 +238,7 @@ async function main() {
     body: JSON.stringify({ email }),
   });
   const authOpts = (await authCh.json()).options;
-  const authCookie = /(av_wa_auth_challenge=[^;]+)/.exec(authCh.headers.get("set-cookie") ?? "")?.[1];
+  const authCookie = /(pv_wa_auth_challenge=[^;]+)/.exec(authCh.headers.get("set-cookie") ?? "")?.[1];
   if (!authCookie) throw new Error("no auth challenge cookie");
   const assertion = await auth.assertion({ challenge: authOpts.challenge, signCount: 1 });
   const authVerify = await fetch(`${API}/api/v1/auth/webauthn/authenticate/verify`, {
@@ -253,8 +253,8 @@ async function main() {
   });
   console.log("  status:", authVerify.status);
   if (authVerify.status !== 200) throw new Error("auth verify " + authVerify.status + " " + await authVerify.text());
-  const newSessionCookie = /(av_session=[^;]+)/.exec(authVerify.headers.get("set-cookie") ?? "")?.[1];
-  if (!newSessionCookie) throw new Error("no av_session cookie after passkey");
+  const newSessionCookie = /(pv_session=[^;]+)/.exec(authVerify.headers.get("set-cookie") ?? "")?.[1];
+  if (!newSessionCookie) throw new Error("no pv_session cookie after passkey");
 
   const me = await fetch(`${API}/api/v1/auth/me`, {
     headers: { Cookie: newSessionCookie, Origin: SPA_ORIGIN },

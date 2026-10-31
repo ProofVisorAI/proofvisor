@@ -15,25 +15,25 @@
 import { execSync } from "node:child_process";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8749";
-const PG = process.env.PG_CONTAINER ?? "av-pg-r49";
+const PG = process.env.PG_CONTAINER ?? "pv-pg-r49";
 const nonce = Math.random().toString(36).slice(2, 6);
 
 async function jr(state, method, path, body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (state.cookie) headers["Cookie"] = "av_session=" + state.cookie + (state.csrf ? "; av_csrf=" + state.csrf : "");
-  if (state.csrf) headers["x-av-csrf"] = state.csrf;
+  if (state.cookie) headers["Cookie"] = "pv_session=" + state.cookie + (state.csrf ? "; pv_csrf=" + state.csrf : "");
+  if (state.csrf) headers["x-pv-csrf"] = state.csrf;
   const r = await fetch(BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const sc = r.headers.get("set-cookie") ?? "";
-  const nc = /av_session=([^;]+)/.exec(sc);
+  const nc = /pv_session=([^;]+)/.exec(sc);
   if (nc) state.cookie = nc[1];
-  const nc2 = /av_csrf=([^;]+)/.exec(sc);
+  const nc2 = /pv_csrf=([^;]+)/.exec(sc);
   if (nc2) state.csrf = nc2[1];
   return r;
 }
 function fail(m) { console.log("❌", m); process.exit(1); }
 function sql(q) {
-  return execSync(`docker exec ${PG} psql -U av -d avdb -t -A -c "${q.replace(/"/g, "\\\"")}"`).toString().trim();
+  return execSync(`docker exec ${PG} psql -U pv -d pvdb -t -A -c "${q.replace(/"/g, "\\\"")}"`).toString().trim();
 }
 
 // Setup alice + bob (two orgs). Each will get a deployment + old/new sessions.

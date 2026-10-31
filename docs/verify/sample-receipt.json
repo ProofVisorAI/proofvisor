@@ -1,5 +1,5 @@
 {
-  "format": "agentvisor.receipt.v1",
+  "format": "proofvisor.receipt.v1",
   "exportedAt": "2026-08-27T07:16:04.483Z",
   "session": {
     "id": "sess_01H9K",
@@ -51,6 +51,6 @@
     "signature": "base64-decode(receipt.rawSignatureB64)",
     "publicKey": "hex-decode(publicKey.hex)",
     "command": "node server/scripts/verify-receipt.mjs sess_01H9K7GRPX.json",
-    "docs": "https://agentvisorai.me/reference/receipts"
+    "docs": "https://proofvisor.com/reference/receipts"
   }
 }

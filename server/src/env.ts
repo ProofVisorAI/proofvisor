@@ -97,9 +97,9 @@ const Env = z.object({
       "COOKIE_SECRETS was set but empty after parsing",
     )
     .transform((o) => o.list),
-  JWT_ISSUER: z.string().default("agentvisor-ai"),
-  JWT_AUDIENCE: z.string().default("agentvisor-console"),
-  SESSION_COOKIE_NAME: z.string().default("av_session"),
+  JWT_ISSUER: z.string().default("proofvisor"),
+  JWT_AUDIENCE: z.string().default("proofvisor-console"),
+  SESSION_COOKIE_NAME: z.string().default("pv_session"),
   // Explicit override wins. Otherwise: Secure in production, plain in
   // dev so devs can use localhost without HTTPS. Guards against the
   // footgun of forgetting to set this in a real deployment.
@@ -249,7 +249,7 @@ const Env = z.object({
         .map((s) => (s.includes("/") ? s : s.includes(":") ? `${s}/128` : `${s}/32`)),
     ),
   // Public base URL of the console. Used to build OAuth redirect_uri
-  // and password-reset links. e.g. https://agentvisorai.me
+  // and password-reset links. e.g. https://proofvisor.com
   // R175 F1: refuse to boot in production if left at the localhost
   // default (or on http://). APP_BASE_URL flows into:
   //   * reset-request emails (auth.ts:1042)
@@ -282,8 +282,8 @@ const Env = z.object({
       "APP_BASE_URL must be an absolute HTTP(S) URL without credentials, query, or fragment; production requires HTTPS.",
     ),
   // Public base URL of THIS API when it lives on a different origin
-  // than the console (Pages at agentvisorai.me, API at
-  // api.agentvisorai.me). Flows into every URL that must be served by
+  // than the console (Pages at proofvisor.com, API at
+  // api.proofvisor.com). Flows into every URL that must be served by
   // the API itself: SAML SP entityId / ACS / metadata / login and the
   // OAuth redirect_uri. Those were previously built from APP_BASE_URL,
   // which on a split-origin deploy is the STATIC console host — the
@@ -333,7 +333,7 @@ const Env = z.object({
   // first reset request weeks later).
   RESEND_API_KEY: z.string().optional(),
   SMTP_URL: z.string().optional(),
-  EMAIL_FROM: z.string().default("AgentVisor AI <no-reply@agentvisorai.me>"),
+  EMAIL_FROM: z.string().default("ProofVisor <no-reply@proofvisor.com>"),
 });
 
 const parsed = Env.safeParse(process.env);

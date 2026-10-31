@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /*
- * Standalone AgentVisor receipt verifier.
+ * Standalone ProofVisor receipt verifier.
  *
  * Reads a receipt bundle exported from the console (Download receipt
  * button on the session detail page) OR a raw daemon receipt file
- * (spool/atif/receipts/*.json as written by agentvisord) and verifies
+ * (spool/atif/receipts/*.json as written by proofvisord) and verifies
  * the Ed25519 signature against the embedded public key.
  *
- * Requires only Node 16+. No AgentVisor dependency, no network
+ * Requires only Node 16+. No ProofVisor dependency, no network
  * call — everything the verifier needs is inside the JSON file
  * (plus the trust-anchor list this script ships with).
  *
  * Usage:
- *   node server/scripts/verify-receipt.mjs path/to/agentvisor-receipt-<sessId>.json
+ *   node server/scripts/verify-receipt.mjs path/to/proofvisor-receipt-<sessId>.json
  *   node server/scripts/verify-receipt.mjs --allow-untrusted-key <bundle.json>
  *
  * Exit codes:
@@ -45,7 +45,7 @@ import { createPublicKey, verify, createHash } from "node:crypto";
 // embeds their pubkey in a fresh bundle passes the internal
 // signature check with an "authentic" verdict — the entire premise
 // of "any auditor can verify offline" collapses. Populate with
-// lowercased 64-hex Ed25519 pubkeys of the AgentVisor deployment(s).
+// lowercased 64-hex Ed25519 pubkeys of the ProofVisor deployment(s).
 // Empty list defaults to REQUIRING `--allow-untrusted-key`.
 const TRUSTED_RECEIPT_KEYS = new Set([
   // Keep in sync with docs/verify/verify.js TRUSTED_RECEIPT_KEYS.
@@ -95,15 +95,15 @@ try {
   process.exit(2);
 }
 
-// Raw daemon receipts: the file agentvisord writes under
+// Raw daemon receipts: the file proofvisord writes under
 // spool/atif/receipts/ is {receipt fields…, public_key_b64,
 // signature_b64} — NOT the console-export bundle envelope. The
-// /verify page (docs/verify/verify.js) and `avctl receipt-verify`
+// /verify page (docs/verify/verify.js) and `pvctl receipt-verify`
 // both accept raw files, and the page's no-WebCrypto fallback copy
 // points here — so adapt raw receipts to the bundle shape the rest
 // of this script expects. The signed message is the RFC 8785 (JCS)
 // canonicalization of the receipt WITHOUT signature_b64 (same
-// construction as av_receipts::canonicalize over Receipt.body).
+// construction as pv_receipts::canonicalize over Receipt.body).
 // Keep in sync with docs/verify/verify.js rawReceiptToBundle.
 function jcsCanonicalize(value) {
   // Minimal JCS for the receipt value domain: JSON.stringify already
@@ -157,13 +157,13 @@ if (looksLikeRawReceipt(bundle)) {
     body[k] = bundle[k];
   }
   bundle = {
-    format: "agentvisor.receipt.v1",
+    format: "proofvisor.receipt.v1",
     receipt: { rawBody: jcsCanonicalize(body), rawSignatureB64: bundle.signature_b64 },
     publicKey: { hex: Buffer.from(bundle.public_key_b64, "base64").toString("hex") },
   };
 }
 
-if (bundle.format !== "agentvisor.receipt.v1") {
+if (bundle.format !== "proofvisor.receipt.v1") {
   console.error("Unrecognized format:", bundle.format);
   process.exit(2);
 }
@@ -195,18 +195,18 @@ const spki = Buffer.concat([
 ]);
 const key = createPublicKey({ key: spki, format: "der", type: "spki" });
 
-// R190 F1: match the Rust `av-receipts` signing framing.
-// crates/av-receipts/src/receipt.rs:50-64 `signing_message()`
+// R190 F1: match the Rust `pv-receipts` signing framing.
+// crates/pv-receipts/src/receipt.rs:50-64 `signing_message()`
 // dispatches on `receipt_version`:
 //   v1 → bare canonical bytes (legacy)
-//   v2 → RECEIPT_DOMAIN_TAG_V2 (b"agentvisor-receipt-v2\0") ||
+//   v2 → RECEIPT_DOMAIN_TAG_V2 (b"proofvisor-receipt-v2\0") ||
 //        u64_be(canonical.len()) || canonical
 // Rust defaults RECEIPT_VERSION=2 (receipt.rs:30), so modern
 // daemons emit v2 receipts. Prior CLI used bare-body semantics
 // only and would fail every v2 receipt as "SIGNATURE DOES NOT
 // VERIFY" (exit 1) even though the sig was cryptographically
 // valid. Now: parse body, dispatch to correct framing.
-const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("agentvisor-receipt-v2\0", "utf8");
+const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("proofvisor-receipt-v2\0", "utf8");
 function receiptSigningMessage(rawBody) {
   const canonical = Buffer.from(rawBody, "utf8");
   let receiptVersion = 1;
@@ -232,7 +232,7 @@ function receiptSigningMessage(rawBody) {
   process.exit(1);
 }
 // Rust-parity strictness (round-12 differential: one file must never
-// verify green here while `avctl receipt-verify` / the daemon refuse
+// verify green here while `pvctl receipt-verify` / the daemon refuse
 // it — an equivocation vector for whoever holds the "greener" tool):
 //   1. STANDARD base64 alphabet only, correct padding, no whitespace.
 //      Node's Buffer.from(s, "base64") is WHATWG-forgiving (skips
@@ -251,11 +251,11 @@ function isStrictStandardB64(s) {
   return Buffer.from(s, "base64").toString("base64") === s;
 }
 // Rust-parity precision gate: receipt integers are u64s capped at
-// JCS_SAFE_MAX = 2^53 (av-core error.rs; jcs.rs refuses anything
+// JCS_SAFE_MAX = 2^53 (pv-core error.rs; jcs.rs refuses anything
 // above). JSON.parse rounds bigger integer tokens to the nearest
 // double BEFORE this script re-canonicalizes the raw-receipt body, so
 // a tampered `…992` → `…993` silently rounds BACK to the signed value
-// and verified green here while `avctl receipt-verify` refuses the
+// and verified green here while `pvctl receipt-verify` refuses the
 // file — the same one-file-two-verdicts equivocation the duplicate-key
 // and base64 gates close. Scan the raw text: any integer token above
 // 2^53 in magnitude is a refusal. Keep in sync with
@@ -361,7 +361,7 @@ const sig = Buffer.from(r.rawSignatureB64, "base64");
 const sigOk = verify(null, msg, key, sig);
 // R193 F1: enforce identity binding — body.key_id must derive
 // from the pubkey. Mirrors Rust `Receipt::verify_embedded()` at
-// crates/av-receipts/src/receipt.rs:371-374. Legacy v1 receipts
+// crates/pv-receipts/src/receipt.rs:371-374. Legacy v1 receipts
 // (sample-receipt.json) have no body.key_id — skip.
 function deriveKeyIdFromPubHex(hex) {
   return createHash("sha256").update(Buffer.from(hex, "hex")).digest("hex").slice(0, 32);
@@ -474,7 +474,7 @@ if (allowUntrusted) {
     "   `--allow-untrusted-key` was passed, so exiting 0. The bundle attests only that WHOEVER",
   );
   console.log(
-    "   holds the corresponding private key signed this payload — NOT that it was AgentVisor.",
+    "   holds the corresponding private key signed this payload — NOT that it was ProofVisor.",
   );
   process.exit(0);
 }
@@ -489,7 +489,7 @@ console.log(
   "   one this verifier is willing to trust. An attacker who generates their own Ed25519 keypair",
 );
 console.log(
-  "   can produce identical output, so this is NOT proof of AgentVisor authorship. Rerun with",
+  "   can produce identical output, so this is NOT proof of ProofVisor authorship. Rerun with",
 );
 console.log(
   "   `--allow-untrusted-key` to acknowledge and exit 0, or populate TRUSTED_RECEIPT_KEYS with",

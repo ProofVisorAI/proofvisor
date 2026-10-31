@@ -1,17 +1,17 @@
-# Network isolation for AgentVisor AI and the MCP servers behind it.
+# Network isolation for ProofVisor and the MCP servers behind it.
 #
 # These policies make the gateway the only path to your MCP backends, and
 # limit who can reach the gateway. They take effect only on a cluster whose
 # network plugin enforces NetworkPolicy (for example Calico or Cilium).
 #
-#   kubectl -n agentvisor-ai apply -f network-policies.yaml
+#   kubectl -n proofvisor apply -f network-policies.yaml
 #
 # Apply the second policy in EVERY namespace that runs MCP backends (edit
 # its `namespace:`), and label each backend pod
-# `agentvisor.ai/mcp-backend: "true"`. Label each client (agent) pod that
-# may call the gateway `agentvisor.ai/client: "true"`.
+# `proofvisor.com/mcp-backend: "true"`. Label each client (agent) pod that
+# may call the gateway `proofvisor.com/client: "true"`.
 #
-# Pair these with `require_private_backends = true` in agentvisor.toml: the
+# Pair these with `require_private_backends = true` in proofvisor.toml: the
 # gateway then refuses to connect to a backend whose address is public,
 # and these policies refuse every caller except the gateway.
 ---
@@ -21,12 +21,12 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: agentvisor-ai-ingress
-  namespace: agentvisor-ai
+  name: proofvisor-ingress
+  namespace: proofvisor
 spec:
   podSelector:
     matchLabels:
-      app: agentvisor-ai
+      app: proofvisor
   policyTypes:
     - Ingress
   ingress:
@@ -34,7 +34,7 @@ spec:
         - namespaceSelector: {}
           podSelector:
             matchLabels:
-              agentvisor.ai/client: "true"
+              proofvisor.com/client: "true"
       ports:
         - protocol: TCP
           port: 8484
@@ -45,19 +45,19 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: mcp-backends-only-from-agentvisor
+  name: mcp-backends-only-from-proofvisor
   namespace: mcp-backends
 spec:
   podSelector:
     matchLabels:
-      agentvisor.ai/mcp-backend: "true"
+      proofvisor.com/mcp-backend: "true"
   policyTypes:
     - Ingress
   ingress:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: agentvisor-ai
+              kubernetes.io/metadata.name: proofvisor
           podSelector:
             matchLabels:
-              app: agentvisor-ai
+              app: proofvisor

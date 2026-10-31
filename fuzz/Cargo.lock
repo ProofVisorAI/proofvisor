@@ -76,10 +76,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "av-atif"
+name = "pv-atif"
 version = "0.1.0"
 dependencies = [
- "av-core",
+ "pv-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -88,11 +88,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-bridge"
+name = "pv-bridge"
 version = "0.1.0"
 dependencies = [
- "av-core",
- "av-events",
+ "pv-core",
+ "pv-events",
  "jsonschema",
  "parking_lot",
  "serde",
@@ -103,15 +103,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-compress"
+name = "pv-compress"
 version = "0.1.0"
 dependencies = [
- "av-core",
+ "pv-core",
  "serde_json",
 ]
 
 [[package]]
-name = "av-core"
+name = "pv-core"
 version = "0.1.0"
 dependencies = [
  "hex",
@@ -125,46 +125,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-events"
+name = "pv-events"
 version = "0.1.0"
 dependencies = [
- "av-core",
+ "pv-core",
  "serde",
  "serde_json",
  "thiserror",
 ]
 
 [[package]]
-name = "av-fuzz"
+name = "pv-fuzz"
 version = "0.0.0"
 dependencies = [
- "av-compress",
- "av-core",
- "av-harness",
- "av-identity",
- "av-receipts",
- "av-sandbox",
+ "pv-compress",
+ "pv-core",
+ "pv-harness",
+ "pv-identity",
+ "pv-receipts",
+ "pv-sandbox",
  "libfuzzer-sys",
  "serde_json",
 ]
 
 [[package]]
-name = "av-harness"
+name = "pv-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "av-atif",
- "av-bridge",
- "av-compress",
- "av-core",
- "av-events",
- "av-identity",
- "av-loopdetect",
- "av-receipts",
- "av-redact",
- "av-sandbox",
- "av-state",
+ "pv-atif",
+ "pv-bridge",
+ "pv-compress",
+ "pv-core",
+ "pv-events",
+ "pv-identity",
+ "pv-loopdetect",
+ "pv-receipts",
+ "pv-redact",
+ "pv-sandbox",
+ "pv-state",
  "axum",
  "base64 0.23.1",
  "dashmap",
@@ -195,11 +195,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-identity"
+name = "pv-identity"
 version = "0.1.0"
 dependencies = [
- "av-core",
- "av-events",
+ "pv-core",
+ "pv-events",
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",
  "jsonwebtoken",
@@ -214,10 +214,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-loopdetect"
+name = "pv-loopdetect"
 version = "0.1.0"
 dependencies = [
- "av-core",
+ "pv-core",
  "parking_lot",
  "serde",
  "serde_json",
@@ -225,11 +225,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-receipts"
+name = "pv-receipts"
 version = "0.1.0"
 dependencies = [
- "av-core",
- "av-events",
+ "pv-core",
+ "pv-events",
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",
  "hex",
@@ -243,10 +243,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-redact"
+name = "pv-redact"
 version = "0.1.0"
 dependencies = [
- "av-core",
+ "pv-core",
  "regex",
  "serde",
  "serde_json",
@@ -254,11 +254,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-sandbox"
+name = "pv-sandbox"
 version = "0.1.0"
 dependencies = [
- "av-core",
- "av-state",
+ "pv-core",
+ "pv-state",
  "jsonschema",
  "serde",
  "serde_json",
@@ -267,10 +267,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "av-state"
+name = "pv-state"
 version = "0.1.0"
 dependencies = [
- "av-core",
+ "pv-core",
  "dashmap",
  "parking_lot",
  "serde",

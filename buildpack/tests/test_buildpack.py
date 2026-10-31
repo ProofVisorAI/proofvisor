@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class BuildpackTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="av-buildpack-")
+        self.temp = tempfile.TemporaryDirectory(prefix="pv-buildpack-")
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name)
         self.env = dict(os.environ, SERVICE_BINDING_ROOT=str(self.work / "bindings"))
@@ -31,14 +31,14 @@ class BuildpackTests(unittest.TestCase):
         copy = self.work / "buildpack"
         shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns("tests", "__pycache__", "vendor"))
         arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(platform.machine(), platform.machine())
-        binary = copy / "vendor" / f"avctl-linux-{arch}"
+        binary = copy / "vendor" / f"pvctl-linux-{arch}"
         binary.parent.mkdir()
-        binary.write_text("#!/bin/sh\necho fake avctl\n")
+        binary.write_text("#!/bin/sh\necho fake pvctl\n")
         binary.chmod(0o755)
         self.root = copy
 
     def profile_values(self, *names):
-        profile = self.work / "deps/0/profile.d/agentvisor.sh"
+        profile = self.work / "deps/0/profile.d/proofvisor.sh"
         script = '. "$1"; ' + "; ".join(f'printf "%s\\n" "${name}"' for name in names)
         result = subprocess.run(["sh", "-c", script, "sh", str(profile)], text=True, capture_output=True,
                                 cwd=self.work, timeout=10, env={"PATH": os.environ["PATH"]})
@@ -59,12 +59,12 @@ class BuildpackTests(unittest.TestCase):
         credentials = dict(gateway_url=" https://gw.example/v1 \n", audience=" client ")
         credentials.update(overrides)
         self.env["VCAP_SERVICES"] = json.dumps({"user-provided": [
-            {"tags": ["agentvisor"], "credentials": credentials}]})
+            {"tags": ["proofvisor"], "credentials": credentials}]})
 
     def binding(self, name="one", **overrides):
         directory = self.work / "bindings" / name
         directory.mkdir()
-        values = dict(type="agentvisor\n", gateway_url=" https://file.example \n", audience=" file \n")
+        values = dict(type="proofvisor\n", gateway_url=" https://file.example \n", audience=" file \n")
         values.update(overrides)
         for key, value in values.items():
             (directory / key).write_text(value)
@@ -82,8 +82,8 @@ class BuildpackTests(unittest.TestCase):
         result = self.run_script("supply")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(list((self.work / "app").iterdir()), [])
-        profile = self.work / "deps/0/profile.d/agentvisor.sh"
-        result = subprocess.run(["sh", "-c", '. "$1"; printf "%s\\n%s\\n%s" "$AV_GATEWAY_URL" "$AV_AUDIENCE" "$AV_IDENTITY_JWKS_URL"', "sh", str(profile)],
+        profile = self.work / "deps/0/profile.d/proofvisor.sh"
+        result = subprocess.run(["sh", "-c", '. "$1"; printf "%s\\n%s\\n%s" "$PV_GATEWAY_URL" "$PV_AUDIENCE" "$PV_IDENTITY_JWKS_URL"', "sh", str(profile)],
                                 text=True, capture_output=True, cwd=self.work, timeout=10)
         self.assertEqual(result.stdout, "https://gw.example/v1\nclient's $(touch NOT_ALLOWED)\n")
         self.assertFalse((self.work / "NOT_ALLOWED").exists())
@@ -93,26 +93,26 @@ class BuildpackTests(unittest.TestCase):
         self.assertEqual(self.run_script("detect", cnb=True).returncode, 0)
         result = self.run_script("build", cnb=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        env = self.work / "layers/agentvisor/env.launch"
-        self.assertEqual((env / "AV_GATEWAY_URL.override").read_text(), "https://file.example")
-        self.assertEqual((env / "AV_AUDIENCE.override").read_text(), "file")
-        self.assertEqual((env / "AV_IDENTITY_JWKS_URL.override").read_text(), "")
-        self.assertIn("launch = true", (self.work / "layers/agentvisor.toml").read_text())
+        env = self.work / "layers/proofvisor/env.launch"
+        self.assertEqual((env / "PV_GATEWAY_URL.override").read_text(), "https://file.example")
+        self.assertEqual((env / "PV_AUDIENCE.override").read_text(), "file")
+        self.assertEqual((env / "PV_IDENTITY_JWKS_URL.override").read_text(), "")
+        self.assertIn("launch = true", (self.work / "layers/proofvisor.toml").read_text())
         self.assertEqual(list((self.work / "app").iterdir()), [])
 
     def test_vcap_precedence_and_no_match_fallback(self):
         self.binding()
         self.vcap()
         self.assertEqual(self.run_script("build", cnb=True).returncode, 0)
-        env = self.work / "layers/agentvisor/env.launch/AV_GATEWAY_URL.override"
+        env = self.work / "layers/proofvisor/env.launch/PV_GATEWAY_URL.override"
         self.assertEqual(env.read_text(), "https://gw.example/v1")
-        self.env["VCAP_SERVICES"] = '{"postgres":[{"name":"agentvisor-db"}]}'
+        self.env["VCAP_SERVICES"] = '{"postgres":[{"name":"proofvisor-db"}]}'
         self.assertEqual(self.run_script("build", cnb=True).returncode, 0)
         self.assertEqual(env.read_text(), "https://file.example")
 
     def test_malformed_vcap_never_falls_back(self):
         self.binding()
-        for value in ("{", "[]", "{} {}", '{"agentvisor":{}}', '{"agentvisor":[null]}'):
+        for value in ("{", "[]", "{} {}", '{"proofvisor":{}}', '{"proofvisor":[null]}'):
             with self.subTest(value=value):
                 self.env["VCAP_SERVICES"] = value
                 self.assertEqual(self.run_script("detect", cnb=True).returncode, 1)
@@ -138,7 +138,7 @@ class BuildpackTests(unittest.TestCase):
         self.binding("one")
         self.binding("two")
         self.assertEqual(self.run_script("detect", cnb=True).returncode, 1)
-        self.env["VCAP_SERVICES"] = json.dumps({"agentvisor": [{}, {}]})
+        self.env["VCAP_SERVICES"] = json.dumps({"proofvisor": [{}, {}]})
         self.assertEqual(self.run_script("supply").returncode, 1)
 
     def test_type_with_embedded_nul_never_matches(self):
@@ -162,15 +162,15 @@ class BuildpackTests(unittest.TestCase):
         result = self.run_script("supply")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no sidecar binary", result.stdout)
-        self.assertEqual(self.profile_values("OPENAI_BASE_URL", "OPENAI_API_BASE", "AGENTVISOR_MCP_URL",
-                                             "AGENTVISOR_MCP_CONFIG", "OPENAI_API_KEY"),
+        self.assertEqual(self.profile_values("OPENAI_BASE_URL", "OPENAI_API_BASE", "PROOFVISOR_MCP_URL",
+                                             "PROOFVISOR_MCP_CONFIG", "OPENAI_API_KEY"),
                          ["https://gw.example/v1/v1", "https://gw.example/v1/v1", "https://gw.example/v1/mcp",
-                          "/home/vcap/deps/0/agentvisor/mcp.json", ""])
-        config = json.loads((self.work / "deps/0/agentvisor/mcp.json").read_text())
+                          "/home/vcap/deps/0/proofvisor/mcp.json", ""])
+        config = json.loads((self.work / "deps/0/proofvisor/mcp.json").read_text())
         self.assertEqual(config["mcpServers"], {
-            "agentvisor": {"type": "http", "url": "https://gw.example/v1/mcp"},
-            "agentvisor-billing": {"type": "http", "url": "https://gw.example/v1/mcp/billing"},
-            "agentvisor-search": {"type": "http", "url": "https://gw.example/v1/mcp/search"},
+            "proofvisor": {"type": "http", "url": "https://gw.example/v1/mcp"},
+            "proofvisor-billing": {"type": "http", "url": "https://gw.example/v1/mcp/billing"},
+            "proofvisor-search": {"type": "http", "url": "https://gw.example/v1/mcp/search"},
         })
         self.assertFalse((self.work / "deps/0/launch.yml").exists())
         self.assertEqual(list((self.work / "app").iterdir()), [])
@@ -181,16 +181,16 @@ class BuildpackTests(unittest.TestCase):
         result = self.run_script("supply")
         self.assertEqual(result.returncode, 0, result.stderr)
         deps = self.work / "deps/0"
-        self.assertTrue(os.access(deps / "bin/avctl", os.X_OK))
-        self.assertEqual(self.profile_values("OPENAI_BASE_URL", "AGENTVISOR_MCP_URL", "OPENAI_API_KEY"),
-                         ["http://127.0.0.1:8485/v1", "http://127.0.0.1:8485/mcp", "agentvisor-sidecar"])
+        self.assertTrue(os.access(deps / "bin/pvctl", os.X_OK))
+        self.assertEqual(self.profile_values("OPENAI_BASE_URL", "PROOFVISOR_MCP_URL", "OPENAI_API_KEY"),
+                         ["http://127.0.0.1:8485/v1", "http://127.0.0.1:8485/mcp", "proofvisor-sidecar"])
         launch = (deps / "launch.yml").read_text()
-        self.assertIn('type: "agentvisor-sidecar"', launch)
+        self.assertIn('type: "proofvisor-sidecar"', launch)
         self.assertIn('sidecar_for: ["web"]', launch)
-        self.assertIn("/home/vcap/deps/0/bin/avctl sidecar --config /home/vcap/deps/0/agentvisor/sidecar.json",
+        self.assertIn("/home/vcap/deps/0/bin/pvctl sidecar --config /home/vcap/deps/0/proofvisor/sidecar.json",
                       launch)
         self.assertNotIn("client", launch, "binding values never appear on the command line")
-        self.assertEqual(json.loads((deps / "agentvisor/sidecar.json").read_text()), {
+        self.assertEqual(json.loads((deps / "proofvisor/sidecar.json").read_text()), {
             "gateway": "https://gw.example/v1", "audience": "client's $(touch NOT_ALLOWED)",
             "listen": "127.0.0.1:8485", "credential": "cf-instance"})
         self.assertFalse((self.work / "NOT_ALLOWED").exists())
@@ -199,7 +199,7 @@ class BuildpackTests(unittest.TestCase):
         self.with_vendored_sidecar()
         self.vcap(sidecar_port="9001")
         self.assertEqual(self.run_script("supply").returncode, 0)
-        profile = self.work / "deps/0/profile.d/agentvisor.sh"
+        profile = self.work / "deps/0/profile.d/proofvisor.sh"
         result = subprocess.run(["sh", "-c", '. "$1"; printf "%s" "$OPENAI_API_KEY"', "sh", str(profile)],
                                 text=True, capture_output=True, timeout=10,
                                 env={"PATH": os.environ["PATH"], "OPENAI_API_KEY": "sk-real"})
@@ -216,38 +216,38 @@ class BuildpackTests(unittest.TestCase):
         self.binding()
         result = self.run_script("build", cnb=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        env = self.work / "layers/agentvisor/env.launch"
+        env = self.work / "layers/proofvisor/env.launch"
         self.assertEqual((env / "OPENAI_BASE_URL.override").read_text(), "https://file.example/v1")
         self.assertFalse((env / "OPENAI_API_KEY.default").exists())
         launch = tomllib.loads((self.work / "layers/launch.toml").read_text())
-        self.assertEqual(launch["processes"][0]["type"], "agentvisor-sidecar")
+        self.assertEqual(launch["processes"][0]["type"], "proofvisor-sidecar")
 
     def test_cnb_sidecar_false_packages_nothing(self):
         self.with_vendored_sidecar()
         self.binding(sidecar="false")
         self.assertEqual(self.run_script("build", cnb=True).returncode, 0)
         self.assertFalse((self.work / "layers/launch.toml").exists())
-        self.assertFalse((self.work / "layers/agentvisor/bin/avctl").exists())
+        self.assertFalse((self.work / "layers/proofvisor/bin/pvctl").exists())
 
     def test_cnb_with_sidecar_adds_a_process_type_and_launch_environment(self):
         self.with_vendored_sidecar()
         self.binding(backends="billing, search\nbilling\n", sidecar="true\n")
         result = self.run_script("build", cnb=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        layer = self.work / "layers/agentvisor"
+        layer = self.work / "layers/proofvisor"
         env = layer / "env.launch"
         self.assertEqual((env / "OPENAI_BASE_URL.override").read_text(), "http://127.0.0.1:8485/v1")
-        self.assertEqual((env / "AGENTVISOR_MCP_CONFIG.override").read_text(), str(layer / "mcp.json"))
-        self.assertEqual((env / "OPENAI_API_KEY.default").read_text(), "agentvisor-sidecar")
+        self.assertEqual((env / "PROOFVISOR_MCP_CONFIG.override").read_text(), str(layer / "mcp.json"))
+        self.assertEqual((env / "OPENAI_API_KEY.default").read_text(), "proofvisor-sidecar")
         servers = json.loads((layer / "mcp.json").read_text())["mcpServers"]
-        self.assertEqual(sorted(servers), ["agentvisor", "agentvisor-billing", "agentvisor-search"])
+        self.assertEqual(sorted(servers), ["proofvisor", "proofvisor-billing", "proofvisor-search"])
         launch = tomllib.loads((self.work / "layers/launch.toml").read_text())
-        self.assertEqual(launch["processes"][0]["type"], "agentvisor-sidecar")
-        self.assertEqual(launch["processes"][0]["command"], [str(layer / "bin/avctl")])
+        self.assertEqual(launch["processes"][0]["type"], "proofvisor-sidecar")
+        self.assertEqual(launch["processes"][0]["command"], [str(layer / "bin/pvctl")])
         self.assertEqual(launch["processes"][0]["args"], ["sidecar", "--config", str(layer / "sidecar.json")])
         self.assertFalse(launch["processes"][0]["default"])
         self.assertEqual(json.loads((layer / "sidecar.json").read_text())["credential"],
-                         "token-file:/var/run/secrets/agentvisor/token")
+                         "token-file:/var/run/secrets/proofvisor/token")
 
     def test_new_fields_are_validated(self):
         for field, value in (("backends", ["Bad Name"]), ("backends", [1]), ("backends", {}),

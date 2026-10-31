@@ -1,7 +1,7 @@
-# AgentVisor AI hosted console — API server
+# ProofVisor hosted console — API server
 
-Multi-tenant control plane for the AgentVisor console. Users sign up here,
-register `agentvisord` deployments, and view sessions/receipts posted by
+Multi-tenant control plane for the ProofVisor console. Users sign up here,
+register `proofvisord` deployments, and view sessions/receipts posted by
 those daemons. Live LLM and tool requests run through the customer's daemon.
 Console sync uploads session metadata, captured event messages and observations,
 and Ed25519 signed receipts. Event content can include prompts, completions, and
@@ -14,7 +14,7 @@ uploaded fields and restricts their visibility by role.
 
 ```
 ┌────────────────┐        ┌───────────────────────┐        ┌──────────────┐
-│  agentvisord   │──HTTPS─▶  api.agentvisorai.me  │──HTTPS─▶  console UI  │
+│  proofvisord   │──HTTPS─▶  api.proofvisor.com  │──HTTPS─▶  console UI  │
 │ (self-hosted   │  ingest│  (this server)        │  read  │  (Pages)     │
 │  by customer)  │◀───────│  Postgres (any host)  │◀───────│              │
 └────────────────┘        └───────────────────────┘        └──────────────┘
@@ -54,7 +54,7 @@ exact edits before driving the SPA in headless Chromium):
   `apiFetch("/api/v1/…")`, so a base that already ends in `/api/v1`
   doubles the prefix and 404s everything.
 - `docs/app/index.html` ships a strict meta CSP whose `connect-src`
-  allows only `'self'` and `https://api.agentvisorai.me`. Add your API
+  allows only `'self'` and `https://api.proofvisor.com`. Add your API
   origin there or the browser silently blocks every fetch.
 - Serve the SPA **under `/app/` with `logo.png` one level up** (the
   production topology). The console references `../logo.png` for the
@@ -62,7 +62,7 @@ exact edits before driving the SPA in headless Chromium):
 
 ## Production container
 
-Build the image with `docker build -t agentvisor-api server/` from the repository
+Build the image with `docker build -t proofvisor-api server/` from the repository
 root. The pinned runtime uses Node 22 on Debian 13 Distroless, runs as UID 65532,
 and contains no shell or package manager. The build generates the Prisma client
 on Debian 13 and retains the Prisma CLI and migrations as production dependencies.
@@ -80,7 +80,7 @@ supports a read-only root filesystem with a writable temporary directory:
 ```sh
 docker run --read-only --tmpfs /tmp:uid=65532,gid=65532,mode=0700 \
   --cap-drop ALL --security-opt no-new-privileges \
-  --env-file /secure/path/agentvisor-api.env -p 8080:8080 agentvisor-api
+  --env-file /secure/path/proofvisor-api.env -p 8080:8080 proofvisor-api
 ```
 
 The container healthcheck requests `/readyz`, which checks database availability.
@@ -91,9 +91,9 @@ CLI with Node, for example `docker exec <container> node
 
 Run `node --test server/ci/container-entrypoint.test.mjs` to verify process exit
 and signal handling. `python3 scripts/container-smoke.py --console-image
-agentvisor-api` tests the actual image with its own temporary PostgreSQL container,
+proofvisor-api` tests the actual image with its own temporary PostgreSQL container,
 including migration refusal, native engine loading, API calls, database recovery,
-and clean shutdown. Add `--agentvisord /path/to/agentvisord --avctl /path/to/avctl`
+and clean shutdown. Add `--proofvisord /path/to/proofvisord --pvctl /path/to/pvctl`
 to include the daemon crash and console synchronization drill.
 
 ## API surface
@@ -104,7 +104,7 @@ All routes are prefixed `/api/v1`.
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/auth/signup` | `{ email, password, orgName, displayName? }` — creates user + owner org, sets `av_session` cookie |
+| `POST` | `/auth/signup` | `{ email, password, orgName, displayName? }` — creates user + owner org, sets `pv_session` cookie |
 | `POST` | `/auth/login` | `{ email, password }`; answers `{ mfaRequired: true }` uniformly for passkey-enrolled accounts **and** bad credentials (no oracle) |
 | `POST` | `/auth/logout` | Clears the cookie and fences prior JWTs |
 | `POST` | `/auth/logout-all` | `{ password }` step-up; fences every session, re-mints the caller's cookie — "sign out other devices" |
@@ -124,7 +124,7 @@ All routes are prefixed `/api/v1`.
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/auth/webauthn/register/challenge` + `/verify` | Passkey enrollment (verify requires the account password) |
-| `POST` | `/auth/webauthn/authenticate/challenge` + `/verify` | Passkey MFA step at login; requires the single-use `av_mfa_gate` cookie `/auth/login` sets on its `mfaRequired` response (passkey possession alone cannot sign in) |
+| `POST` | `/auth/webauthn/authenticate/challenge` + `/verify` | Passkey MFA step at login; requires the single-use `pv_mfa_gate` cookie `/auth/login` sets on its `mfaRequired` response (passkey possession alone cannot sign in) |
 | `GET`/`PATCH`/`DELETE` | `/auth/webauthn/credentials[/:id]` | List / rename / revoke (revoke = break-glass: fences sessions, revokes keys) |
 | `GET`  | `/auth/oauth/providers`, `/auth/oauth/:provider/start` + `/callback` | Google / Microsoft / generic-OIDC sign-in when configured |
 | — | `/auth/saml/*` | SAML 2.0 SP: config CRUD, `/:configId/metadata.xml`, `/login`, `/acs`, `/slo`, `/keypair`, `/discover` |
@@ -154,7 +154,7 @@ All routes are prefixed `/api/v1`.
 
 ### Ingest (daemon → API)
 
-Auth: `Authorization: Bearer <ingest_token>` + `X-AV-Deployment: <deployment_id>`.
+Auth: `Authorization: Bearer <ingest_token>` + `X-PV-Deployment: <deployment_id>`.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -185,7 +185,7 @@ prod target) wired into CI:
   (apikey ×2, invite ×2, ip-allowlist, retention, saml ×2, webauthn ×2,
   webhook ×3, oidc, crash-evidence quarantine). Boots a fresh server per drill
   on 204xx and 207xx ports. Needs a Postgres the drills can `docker exec psql` into:
-  `PG_CONTAINER=<container> PG_USER=av PG_DB=avdb bash scripts/run-drill-battery.sh [drill…]`.
+  `PG_CONTAINER=<container> PG_USER=pv PG_DB=pvdb bash scripts/run-drill-battery.sh [drill…]`.
   Runs in CI on every `server/**` change (api-drills workflow).
   Set `SPA_ORIGIN` when running `scripts/quarantine-drill.mjs` directly
   to also check the live browser's incomplete-evidence warning and disabled
@@ -203,7 +203,7 @@ prod target) wired into CI:
   and you get the cached outcome, not a re-execution; use unique ids
   unless you are testing replay.
   With current binaries already built, run the complete console contract with
-  `API_BASE=http://127.0.0.1:8985 AGENTVISORD=/absolute/path/agentvisord AVCTL=/absolute/path/avctl node scripts/daemon-console-drill.mjs`.
+  `API_BASE=http://127.0.0.1:8985 PROOFVISORD=/absolute/path/proofvisord PVCTL=/absolute/path/pvctl node scripts/daemon-console-drill.mjs`.
   This runner creates its own test workspace and credentials, runs the real
   SIGKILL/restart/sync drill, and deletes only that workspace afterward.
   Missing binaries fail the run instead of skipping synchronization.

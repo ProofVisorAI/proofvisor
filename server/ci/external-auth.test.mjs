@@ -92,7 +92,7 @@ test("SAML logout preserves retry state and refuses false success when persisten
   }
   await app.register(samlRoutes);
   const token = await mintSession({ sub: "user-a", orgId: "tenant-a", membershipRole: "owner" });
-  const headers = { cookie: `av_session=${token}` };
+  const headers = { cookie: `pv_session=${token}` };
   await pause(2);
   const failed = await app.inject({ method: "POST", url: "/config-a/slo", headers });
   assert.equal(failed.statusCode, 503, failed.body);
@@ -136,16 +136,16 @@ for (const endpoint of ["start", "callback"]) {
     const bag = app.signCookie(JSON.stringify({ state: "fixture-state", nonce: "fixture-nonce",
       codeVerifier: "fixture-verifier", provider: "oidc" }));
     const response = await app.inject({ url: `/api/v1/auth/oauth/oidc/${endpoint}?code=fixture&state=fixture-state`,
-      headers: { cookie: `av_oauth_state=${encodeURIComponent(bag)}` } });
+      headers: { cookie: `pv_oauth_state=${encodeURIComponent(bag)}` } });
     assert.equal(response.statusCode, 302, response.body);
     assert.equal(response.headers.location, "https://console.example.test/app/#/login?err=oauth_provider_unavailable");
-    assert.ok(!String(response.headers["set-cookie"] || "").includes("av_session="));
+    assert.ok(!String(response.headers["set-cookie"] || "").includes("pv_session="));
     available = true;
     const retry = await app.inject({ url: "/api/v1/auth/oauth/oidc/start" });
     assert.equal(retry.statusCode, 302, retry.body);
     assert.equal(new URL(retry.headers.location).origin, env.OIDC_ISSUER_URL);
     assert.ok(new URL(retry.headers.location).searchParams.get("code_challenge"));
-    assert.match(retry.headers["set-cookie"], /av_oauth_state=/);
+    assert.match(retry.headers["set-cookie"], /pv_oauth_state=/);
   });
 }
 

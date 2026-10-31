@@ -91,13 +91,13 @@ async function signup(email) {
     body: JSON.stringify({ email, password: "correcthorse42x", orgName: "HardOrg" }),
   });
   if (res.status !== 201) throw new Error("signup " + res.status);
-  const cookie = /(av_session=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
+  const cookie = /(pv_session=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
   return { cookie };
 }
 
 // Password-verified MFA gate for the login ceremony: /login with the
 // correct password answers {mfaRequired:true} + the single-use
-// av_mfa_gate cookie the ceremony endpoints require (a challenge
+// pv_mfa_gate cookie the ceremony endpoints require (a challenge
 // without it gets decoy credentials, a verify without it refuses the
 // mint). One gate per ceremony.
 async function mfaGate(email) {
@@ -106,8 +106,8 @@ async function mfaGate(email) {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin" },
     body: JSON.stringify({ email, password: "correcthorse42x" }),
   });
-  const gate = /(av_mfa_gate=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
-  if (!gate) throw new Error("no av_mfa_gate cookie from /login");
+  const gate = /(pv_mfa_gate=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
+  if (!gate) throw new Error("no pv_mfa_gate cookie from /login");
   return gate;
 }
 
@@ -120,7 +120,7 @@ async function registerCredential(cookie, auth) {
     },
     body: JSON.stringify({}),
   });
-  const regCookie = /(av_wa_reg_challenge=[^;]+)/.exec(ch.headers.get("set-cookie") ?? "")?.[1];
+  const regCookie = /(pv_wa_reg_challenge=[^;]+)/.exec(ch.headers.get("set-cookie") ?? "")?.[1];
   const opts = (await ch.json()).options;
   const attObj = await auth.attestationObject({});
   const cdReg = auth.clientDataJSON("reg", opts.challenge);
@@ -169,7 +169,7 @@ async function main() {
     method: "POST",
     headers: {
       "Content-Type": "application/json", Origin: SPA_ORIGIN,
-      "Sec-Fetch-Site": "same-origin", Cookie: aliceCookie, // NO av_wa_reg_challenge cookie
+      "Sec-Fetch-Site": "same-origin", Cookie: aliceCookie, // NO pv_wa_reg_challenge cookie
     },
     body: JSON.stringify({
       label: "no-ch",
@@ -192,7 +192,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin", Cookie: aliceCookie },
     body: JSON.stringify({}),
   });
-  const reg2Cookie = /(av_wa_reg_challenge=[^;]+)/.exec(chRes2.headers.get("set-cookie") ?? "")?.[1];
+  const reg2Cookie = /(pv_wa_reg_challenge=[^;]+)/.exec(chRes2.headers.get("set-cookie") ?? "")?.[1];
   const opts2 = (await chRes2.json()).options;
   const tamperedAtt = await aliceAuth.attestationObject({ tampered: true });
   const cd2 = aliceAuth.clientDataJSON("reg", opts2.challenge);
@@ -232,7 +232,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin", Cookie: gate3 },
     body: JSON.stringify({ email: aliceEmail }),
   });
-  const authCookie3 = /(av_wa_auth_challenge=[^;]+)/.exec(start3.headers.get("set-cookie") ?? "")?.[1];
+  const authCookie3 = /(pv_wa_auth_challenge=[^;]+)/.exec(start3.headers.get("set-cookie") ?? "")?.[1];
   const opts3 = (await start3.json()).options;
   const attackerAuth = buildAuthenticator();
   attackerAuth.credentialId = aliceAuth.credentialId; // Use victim's credential ID
@@ -257,7 +257,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin", Cookie: gate4a },
     body: JSON.stringify({ email: aliceEmail }),
   });
-  const authCookie4a = /(av_wa_auth_challenge=[^;]+)/.exec(start4a.headers.get("set-cookie") ?? "")?.[1];
+  const authCookie4a = /(pv_wa_auth_challenge=[^;]+)/.exec(start4a.headers.get("set-cookie") ?? "")?.[1];
   const opts4a = (await start4a.json()).options;
   const goodAssertion = await aliceAuth.assertion({ challenge: opts4a.challenge, signCount: 5 });
   const ok4 = await fetch(`${API}/api/v1/auth/webauthn/authenticate/verify`, {
@@ -273,7 +273,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin", Cookie: gate4b },
     body: JSON.stringify({ email: aliceEmail }),
   });
-  const authCookie4b = /(av_wa_auth_challenge=[^;]+)/.exec(start4b.headers.get("set-cookie") ?? "")?.[1];
+  const authCookie4b = /(pv_wa_auth_challenge=[^;]+)/.exec(start4b.headers.get("set-cookie") ?? "")?.[1];
   const opts4b = (await start4b.json()).options;
   const regressed = await aliceAuth.assertion({ challenge: opts4b.challenge, signCount: 3 });
   const clone = await fetch(`${API}/api/v1/auth/webauthn/authenticate/verify`, {
@@ -294,7 +294,7 @@ async function main() {
   // The server now consumes sha256(challenge) in
   // webauthn_ceremony_records; replaying section 4's SUCCESSFUL verify
   // byte-for-byte must be refused with the uniform wire shape and MUST
-  // NOT set av_session. (Reuses the section-4 request so this adds
+  // NOT set pv_session. (Reuses the section-4 request so this adds
   // exactly one verify call to the rate-limit budget.)
   console.log("[4d] Captured verify replay");
   if (ok4.status !== 200) {
@@ -305,7 +305,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin", Cookie: `${authCookie4a}; ${gate4a}` },
     body: JSON.stringify({ response: goodAssertion }),
   });
-  if ((replayed.headers.get("set-cookie") ?? "").includes("av_session=")) {
+  if ((replayed.headers.get("set-cookie") ?? "").includes("pv_session=")) {
     throw new Error("replayed verify minted a SECOND session — challenge consumption bypassed!");
   }
   results.push({ drill: "verify-replay-refused", status: replayed.status, expect: 400 });
@@ -321,7 +321,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin" },
     body: JSON.stringify({ email: aliceEmail }),
   });
-  const authCookieNg = /(av_wa_auth_challenge=[^;]+)/.exec(startNg.headers.get("set-cookie") ?? "")?.[1];
+  const authCookieNg = /(pv_wa_auth_challenge=[^;]+)/.exec(startNg.headers.get("set-cookie") ?? "")?.[1];
   const optsNg = (await startNg.json()).options;
   const ngAssertion = await aliceAuth.assertion({ challenge: optsNg.challenge, signCount: 9 });
   const noGate = await fetch(`${API}/api/v1/auth/webauthn/authenticate/verify`, {
@@ -329,7 +329,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin", Cookie: authCookieNg },
     body: JSON.stringify({ response: ngAssertion }),
   });
-  if ((noGate.headers.get("set-cookie") ?? "").includes("av_session=")) {
+  if ((noGate.headers.get("set-cookie") ?? "").includes("pv_session=")) {
     throw new Error("possession-only ceremony minted a session — MFA gate bypassed!");
   }
   results.push({ drill: "possession-only-refused", status: noGate.status, expect: 400 });

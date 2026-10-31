@@ -8,5 +8,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    av_harness::fuzz::sse_frame_end(data);
+    pv_harness::fuzz::sse_frame_end(data);
 });

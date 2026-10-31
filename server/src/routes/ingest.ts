@@ -19,7 +19,7 @@ async function authenticateDaemon(
   req: FastifyRequest,
   reply: FastifyReply,
 ): Promise<{ deploymentId: string; orgId: string } | null> {
-  const deploymentId = req.headers["x-av-deployment"];
+  const deploymentId = req.headers["x-pv-deployment"];
   const auth = req.headers.authorization;
   if (typeof deploymentId !== "string" || !auth?.startsWith("Bearer ")) {
     reply.code(401).send({ error: "unauthenticated" });
@@ -140,7 +140,7 @@ const eventPayload = z.object({
   // sentinel; every other error re-throws as 500 → daemon
   // retries → same error → **session livelock**, the exact
   // class R95 F1 closed for the tx-timeout case. Threat model:
-  // leaked AV_INGEST_TOKEN or a runaway daemon, same as R119
+  // leaked PV_INGEST_TOKEN or a runaway daemon, same as R119
   // F2 / R144 F1 / R151 F1 / R152 F1.
   //
   // Caps sized so a full 500-event batch fits comfortably
@@ -191,18 +191,18 @@ const eventPayload = z.object({
 
 // ── Server-side Ed25519 receipt verification ────────────────────────────────
 //
-// Mirrors the byte framing of the Rust `av-receipts` crate
-// (crates/av-receipts/src/receipt.rs `signing_message`) and the JS
+// Mirrors the byte framing of the Rust `pv-receipts` crate
+// (crates/pv-receipts/src/receipt.rs `signing_message`) and the JS
 // verifier (docs/verify/verify.js `receiptSigningMessage`):
 //   * v1 → bare canonical body bytes
-//   * v2 → b"agentvisor-receipt-v2\0" || u64_be(body.len) || body
+//   * v2 → b"proofvisor-receipt-v2\0" || u64_be(body.len) || body
 // Without this check, the key-id comparison alone gated storage: any
 // holder of a leaked ingest token could POST a receipt whose sigB64 is
 // random bytes; first-write-wins then permanently sealed the session
 // against the LEGITIMATE receipt, and every downstream verifier
-// (console, /verify page, avctl) reported an invalid compliance
+// (console, /verify page, pvctl) reported an invalid compliance
 // artifact for a session the customer trusted.
-const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("agentvisor-receipt-v2\0", "utf8");
+const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("proofvisor-receipt-v2\0", "utf8");
 
 function receiptSigningMessage(rawBody: string): Buffer {
   const canonical = Buffer.from(rawBody, "utf8");
@@ -471,7 +471,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // audit-trail defacement (e.g. mutating workflow to
     // "unsigned" makes a legitimately signed session appear
     // unsigned in the list). Same threat model as R92 F2 / R93
-    // F4 / R118 F2 (leaked AV_INGEST_TOKEN). First-write-wins
+    // F4 / R118 F2 (leaked PV_INGEST_TOKEN). First-write-wins
     // matches the sealed-receipt posture across the file.
     // R141 F3: refuse pre-sealed CREATE. The R119 F2 update-branch
     // freeze covered rewrites of already-sealed rows, but the
@@ -484,7 +484,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // /read/sessions/:id then renders a "sealed but no receipt"
     // row (Receipt was cascade-purged), producing plausible-
     // deniability defacement of forensic history. Same threat
-    // model as R118 F2 / R119 F2 (leaked AV_INGEST_TOKEN). The
+    // model as R118 F2 / R119 F2 (leaked PV_INGEST_TOKEN). The
     // seal transition is by design the receipt row's job
     // (/ingest/receipts sets status:"sealed" atomically with
     // the receipt) — an ingest client should never POST a new
@@ -497,7 +497,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // /ingest/receipts. Result: session.status="sealed" with NO
     // Receipt row, stopReason/stopReasonId null, /events guard at
     // ingest.ts:362 silently drops all further events for that
-    // session — a compromised AV_INGEST_TOKEN holder can race an
+    // session — a compromised PV_INGEST_TOKEN holder can race an
     // in-flight session, force-seal it, and censor the rest of
     // the trail. Same threat model as R141 F3; the invariant
     // needs to hold on UPDATE too.
@@ -792,7 +792,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       // `session.events` / session totals, breaking the
       // compliance story from the OTHER direction R144 F1 /
       // R151 F1 closed for POST /ingest/sessions. Same
-      // threat model (leaked AV_INGEST_TOKEN or benign daemon
+      // threat model (leaked PV_INGEST_TOKEN or benign daemon
       // racing its own seal). Fix: convert the rollup to
       // updateMany with `status: { not: "sealed" }`, throw
       // inside the tx when the guard fails so the whole batch
@@ -997,7 +997,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // R195 F1: validate `keyIdHex` against the deployment's
     // registered pubkey. `derive_key_id(pubkey)` = first 32 hex
     // chars of SHA-256(pubkey_bytes) per Rust
-    // crates/av-receipts/src/keys.rs:115-118. The daemon signs
+    // crates/pv-receipts/src/keys.rs:115-118. The daemon signs
     // receipts with the same keypair whose pubkey it posted via
     // /ingest/pubkey (R91 F3 blocks silent rotation). If the
     // daemon posts a receipt whose `keyIdHex` doesn't match the
@@ -1066,7 +1066,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // garbage bytes and first-write-wins would then refuse the
     // legitimate receipt forever (see the R93 F4 comment below for
     // why sealed receipts are immutable). Same framing as the JS
-    // verifier and `avctl receipt-verify`.
+    // verifier and `pvctl receipt-verify`.
     if (!verifyReceiptSignature(dep.publicKeyHex, r.sigB64, r.body)) {
       req.log.warn(
         {

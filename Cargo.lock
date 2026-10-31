@@ -207,270 +207,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "av-atif"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "jsonschema",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "av-bridge"
-version = "0.1.0"
-dependencies = [
- "async-nats",
- "av-core",
- "av-events",
- "av-receipts",
- "chrono",
- "futures",
- "hex",
- "hmac 0.13.0",
- "jsonschema",
- "object_store",
- "parking_lot",
- "proptest",
- "rdkafka",
- "rskafka",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "av-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "av-atif",
- "av-bridge",
- "av-core",
- "av-events",
- "av-harness",
- "av-identity",
- "av-receipts",
- "axum",
- "base64 0.23.1",
- "clap",
- "futures",
- "hex",
- "httpdate",
- "jsonwebtoken",
- "parking_lot",
- "reqwest 0.12.28",
- "rpassword",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "tempfile",
- "tokio",
- "toml",
- "unicode-general-category",
- "zeroize",
-]
-
-[[package]]
-name = "av-compress"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "hex",
- "hmac 0.13.0",
- "proptest",
- "serde_json",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "av-core"
-version = "0.1.0"
-dependencies = [
- "hex",
- "parking_lot",
- "proptest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "av-events"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "jsonschema",
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "av-harness"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "av-atif",
- "av-bridge",
- "av-compress",
- "av-core",
- "av-events",
- "av-harness",
- "av-identity",
- "av-loopdetect",
- "av-receipts",
- "av-redact",
- "av-sandbox",
- "av-state",
- "axum",
- "base64 0.23.1",
- "criterion",
- "dashmap",
- "futures",
- "hex",
- "hmac 0.13.0",
- "hyper",
- "hyper-util",
- "jsonwebtoken",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "parking_lot",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "toml",
- "tower",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "zeroize",
-]
-
-[[package]]
-name = "av-identity"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "av-events",
- "base64 0.23.1",
- "ed25519-dalek 3.0.0",
- "hex",
- "jsonwebtoken",
- "parking_lot",
- "proptest",
- "rand 0.10.2",
- "regex",
- "rustls-pki-types",
- "rustls-webpki",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "av-loopdetect"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "parking_lot",
- "proptest",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokenizers",
- "tokio",
- "tracing",
- "tract-onnx",
-]
-
-[[package]]
-name = "av-receipts"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "av-events",
- "base64 0.23.1",
- "ed25519-dalek 3.0.0",
- "hex",
- "jsonschema",
- "proptest",
- "rand 0.10.2",
- "ryu",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "zeroize",
-]
-
-[[package]]
-name = "av-redact"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "av-sandbox"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "av-state",
- "jsonschema",
- "proptest",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "wasmtime",
-]
-
-[[package]]
-name = "av-state"
-version = "0.1.0"
-dependencies = [
- "av-core",
- "dashmap",
- "parking_lot",
- "proptest",
- "r2d2",
- "redis",
- "rustls",
- "serde",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
 name = "aws-lc-rs"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3542,6 +3278,270 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "pv-atif"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "proptest",
+ "pv-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "pv-bridge"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "chrono",
+ "futures",
+ "hex",
+ "hmac 0.13.0",
+ "jsonschema",
+ "object_store",
+ "parking_lot",
+ "proptest",
+ "pv-core",
+ "pv-events",
+ "pv-receipts",
+ "rdkafka",
+ "rskafka",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "pv-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "clap",
+ "futures",
+ "hex",
+ "httpdate",
+ "jsonwebtoken",
+ "parking_lot",
+ "pv-atif",
+ "pv-bridge",
+ "pv-core",
+ "pv-events",
+ "pv-harness",
+ "pv-identity",
+ "pv-receipts",
+ "reqwest 0.12.28",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tempfile",
+ "tokio",
+ "toml",
+ "unicode-general-category",
+ "zeroize",
+]
+
+[[package]]
+name = "pv-compress"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac 0.13.0",
+ "proptest",
+ "pv-core",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
+name = "pv-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "parking_lot",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "pv-events"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "proptest",
+ "pv-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "pv-harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "criterion",
+ "dashmap",
+ "futures",
+ "hex",
+ "hmac 0.13.0",
+ "hyper",
+ "hyper-util",
+ "jsonwebtoken",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "parking_lot",
+ "pv-atif",
+ "pv-bridge",
+ "pv-compress",
+ "pv-core",
+ "pv-events",
+ "pv-harness",
+ "pv-identity",
+ "pv-loopdetect",
+ "pv-receipts",
+ "pv-redact",
+ "pv-sandbox",
+ "pv-state",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
+name = "pv-identity"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "jsonwebtoken",
+ "parking_lot",
+ "proptest",
+ "pv-core",
+ "pv-events",
+ "rand 0.10.2",
+ "regex",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "pv-loopdetect"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "proptest",
+ "pv-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+ "tracing",
+ "tract-onnx",
+]
+
+[[package]]
+name = "pv-receipts"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "jsonschema",
+ "proptest",
+ "pv-core",
+ "pv-events",
+ "rand 0.10.2",
+ "ryu",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "zeroize",
+]
+
+[[package]]
+name = "pv-redact"
+version = "0.1.0"
+dependencies = [
+ "pv-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "pv-sandbox"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "proptest",
+ "pv-core",
+ "pv-state",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "wasmtime",
+]
+
+[[package]]
+name = "pv-state"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "parking_lot",
+ "proptest",
+ "pv-core",
+ "r2d2",
+ "redis",
+ "rustls",
+ "serde",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

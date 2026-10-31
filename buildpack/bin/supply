@@ -9,11 +9,11 @@ buildpack_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # shellcheck source=buildpack/lib/outputs.sh
 . "$buildpack_dir/lib/outputs.sh"
 binding=$(read_binding)
-[ "$binding" != null ] || { printf 'error: no agentvisor binding found\n' >&2; exit 1; }
+[ "$binding" != null ] || { printf 'error: no proofvisor binding found\n' >&2; exit 1; }
 deps=$3/$4
 # Paths as the running container sees them (DEPS_DIR is /home/vcap/deps).
 runtime_deps="/home/vcap/deps/$4"
-mkdir -p "$deps/profile.d" "$deps/agentvisor"
+mkdir -p "$deps/profile.d" "$deps/proofvisor"
 
 # The loopback sidecar attaches the instance identity to every request.
 sidecar=false
@@ -21,48 +21,48 @@ if [ "$(printf '%s' "$binding" | jq -r 'if .sidecar == null then true else .side
     binary=$(sidecar_binary)
     if [ -n "$binary" ]; then
         mkdir -p "$deps/bin"
-        cp "$binary" "$deps/bin/avctl"
-        chmod 755 "$deps/bin/avctl"
+        cp "$binary" "$deps/bin/pvctl"
+        chmod 755 "$deps/bin/pvctl"
         sidecar=true
     else
-        printf 'agentvisor: this buildpack package has no sidecar binary for %s; the application must present its own identity token\n' "$(uname -m)"
+        printf 'proofvisor: this buildpack package has no sidecar binary for %s; the application must present its own identity token\n' "$(uname -m)"
     fi
 fi
 base=$(client_base "$binding" "$sidecar")
-mcp_config "$binding" "$base" > "$deps/agentvisor/mcp.json"
-chmod 644 "$deps/agentvisor/mcp.json"
+mcp_config "$binding" "$base" > "$deps/proofvisor/mcp.json"
+chmod 644 "$deps/proofvisor/mcp.json"
 
 # Single quotes and literal newlines cannot escape the generated assignments.
 escape_sq() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
 {
-    printf '#!/bin/sh\n# AgentVisor client configuration, generated at staging from the service binding.\n'
-    client_environment "$binding" "$base" "$runtime_deps/agentvisor/mcp.json" | while IFS= read -r line; do
+    printf '#!/bin/sh\n# ProofVisor client configuration, generated at staging from the service binding.\n'
+    client_environment "$binding" "$base" "$runtime_deps/proofvisor/mcp.json" | while IFS= read -r line; do
         printf "export %s='%s'\n" "${line%%=*}" "$(escape_sq "${line#*=}")"
     done
     if [ "$sidecar" = true ]; then
         # SDKs refuse to start without a key; the sidecar replaces it. The
         # expansion is written literally so it runs when the app starts.
         # shellcheck disable=SC2016
-        printf 'export OPENAI_API_KEY="${OPENAI_API_KEY:-agentvisor-sidecar}"\n'
+        printf 'export OPENAI_API_KEY="${OPENAI_API_KEY:-proofvisor-sidecar}"\n'
     fi
-} > "$deps/profile.d/agentvisor.sh"
-chmod 644 "$deps/profile.d/agentvisor.sh"
-printf 'agentvisor: wrote %s\n' "$deps/profile.d/agentvisor.sh"
+} > "$deps/profile.d/proofvisor.sh"
+chmod 644 "$deps/profile.d/proofvisor.sh"
+printf 'proofvisor: wrote %s\n' "$deps/profile.d/proofvisor.sh"
 
 if [ "$sidecar" = true ]; then
-    sidecar_config "$binding" cf-instance > "$deps/agentvisor/sidecar.json"
-    chmod 644 "$deps/agentvisor/sidecar.json"
+    sidecar_config "$binding" cf-instance > "$deps/proofvisor/sidecar.json"
+    chmod 644 "$deps/proofvisor/sidecar.json"
     # Cloud Foundry starts buildpack-provided sidecars from launch.yml.
     cat > "$deps/launch.yml" <<YAML
 ---
 processes:
-- type: "agentvisor-sidecar"
-  command: "$runtime_deps/bin/avctl sidecar --config $runtime_deps/agentvisor/sidecar.json"
+- type: "proofvisor-sidecar"
+  command: "$runtime_deps/bin/pvctl sidecar --config $runtime_deps/proofvisor/sidecar.json"
   limits:
     memory: 64
   platforms:
     cloudfoundry:
       sidecar_for: ["web"]
 YAML
-    printf 'agentvisor: sidecar declared in %s\n' "$deps/launch.yml"
+    printf 'proofvisor: sidecar declared in %s\n' "$deps/launch.yml"
 fi

@@ -10,7 +10,7 @@
 #   koyeb secret create database-url --value "postgres://…your Neon URL…"
 #   # push to main → Koyeb rebuilds and rolls out.
 
-name: agentvisor
+name: proofvisor
 services:
   - name: api
     type: web
@@ -43,13 +43,13 @@ services:
       - key: SESSION_COOKIE_SECURE
         value: "true"
       - key: ALLOWED_ORIGINS
-        value: https://agentvisorai.me
+        value: https://proofvisor.com
       - key: JWT_ISSUER
-        value: agentvisor-ai
+        value: proofvisor
       - key: JWT_AUDIENCE
-        value: agentvisor-console
+        value: proofvisor-console
       - key: APP_BASE_URL
-        value: https://agentvisorai.me
+        value: https://proofvisor.com
       - key: API_PUBLIC_URL
         # The API's own public origin (this service's Koyeb domain or a
         # custom one). SAML SP endpoints (entityId / ACS / metadata /
@@ -57,7 +57,7 @@ services:
         # without it they fall back to APP_BASE_URL, the static Pages
         # host above, which 404s every IdP round-trip. Mirrors
         # render.yaml; replace with this deployment's real API origin.
-        value: https://api.agentvisorai.me
+        value: https://api.proofvisor.com
       # Koyeb fronts services with its global edge + router — verify
       # the hop depth for this deployment and set it explicitly: a
       # wrong TRUSTED_PROXY_HOP_COUNT (default 1) silently breaks
@@ -66,7 +66,7 @@ services:
       # - key: TRUSTED_PROXY_HOP_COUNT
       #   value: "2"
       - key: EMAIL_FROM
-        value: AgentVisor AI <no-reply@agentvisorai.me>
+        value: ProofVisor <no-reply@proofvisor.com>
       - key: MICROSOFT_TENANT
         value: common
       - key: JWT_SECRET

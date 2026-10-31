@@ -74,18 +74,18 @@ jobs:
           CC_aarch64_unknown_linux_musl: musl-gcc
         run: |
           cargo build --release --target ${{ matrix.target }} \
-            -p av-harness --bin agentvisord \
-            -p av-cli --bin avctl
+            -p pv-harness --bin proofvisord \
+            -p pv-cli --bin pvctl
       - name: Package archive
         id: package
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          stage="agentvisor-ai-${version}-${{ matrix.target }}"
+          stage="proofvisor-${version}-${{ matrix.target }}"
           mkdir -p "$stage"
-          cp target/${{ matrix.target }}/release/agentvisord "$stage/"
-          cp target/${{ matrix.target }}/release/avctl "$stage/"
+          cp target/${{ matrix.target }}/release/proofvisord "$stage/"
+          cp target/${{ matrix.target }}/release/pvctl "$stage/"
           cp LICENSE README.md CHANGELOG.md SECURITY.md "$stage/"
           tar -czf "$stage.tar.gz" "$stage"
           shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256"
@@ -114,20 +114,20 @@ jobs:
           path: musl
           pattern: release-*-unknown-linux-musl
           merge-multiple: true
-      - name: Package the buildpack with the static avctl sidecar binaries
+      - name: Package the buildpack with the static pvctl sidecar binaries
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-            (cd musl && shasum -a 256 -c "agentvisor-ai-${version}-${target}.tar.gz.sha256")
-            tar -xzf "musl/agentvisor-ai-${version}-${target}.tar.gz" -C musl
+            (cd musl && shasum -a 256 -c "proofvisor-${version}-${target}.tar.gz.sha256")
+            tar -xzf "musl/proofvisor-${version}-${target}.tar.gz" -C musl
           done
           python3 scripts/test-package-buildpack.py
           python3 buildpack/tests/test_buildpack.py
           python3 scripts/package-buildpack.py \
-            --avctl-x86_64 "musl/agentvisor-ai-${version}-x86_64-unknown-linux-musl/avctl" \
-            --avctl-aarch64 "musl/agentvisor-ai-${version}-aarch64-unknown-linux-musl/avctl" \
+            --pvctl-x86_64 "musl/proofvisor-${version}-x86_64-unknown-linux-musl/pvctl" \
+            --pvctl-aarch64 "musl/proofvisor-${version}-aarch64-unknown-linux-musl/pvctl" \
             --output buildpack-dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -196,8 +196,8 @@ jobs:
             --notes-file notes.md \
             $prerelease_flag \
             dist/*.tar.gz dist/*.tar.gz.sha256 \
-            dist/agentvisor-buildpack-*.zip dist/agentvisor-buildpack-*.tgz \
-            dist/agentvisor-buildpack-*.sha256 dist/SHA256SUMS
+            dist/proofvisor-buildpack-*.zip dist/proofvisor-buildpack-*.tgz \
+            dist/proofvisor-buildpack-*.sha256 dist/SHA256SUMS
       - name: Chain the installer pin bump
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

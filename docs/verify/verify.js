@@ -25,7 +25,7 @@
     // Rust-parity strictness (round-12 differential): atob() is
     // WHATWG-forgiving (strips ASCII whitespace), and JSON.parse keeps
     // the LAST duplicate key — both places where this page could show
-    // a green tick on a file `avctl receipt-verify` / the daemon
+    // a green tick on a file `pvctl receipt-verify` / the daemon
     // refuse. One file must never verify differently across the
     // toolchain (equivocation vector), so mirror Rust's refusals.
     // NB: b64ToBytes above deliberately maps URL-safe input for the
@@ -41,11 +41,11 @@
       try { return btoa(atob(s)) === s; } catch { return false; }
     }
     // Rust-parity precision gate: receipt integers are u64s capped at
-    // JCS_SAFE_MAX = 2^53 (av-core error.rs; jcs.rs refuses anything
+    // JCS_SAFE_MAX = 2^53 (pv-core error.rs; jcs.rs refuses anything
     // above). JSON.parse rounds bigger integer tokens to the nearest
     // double BEFORE the raw-receipt path re-canonicalizes the body, so
     // a tampered `…992` → `…993` silently rounds BACK to the signed
-    // value and verified green here while `avctl receipt-verify`
+    // value and verified green here while `pvctl receipt-verify`
     // refuses the file. Scan the raw text: any integer token above
     // 2^53 in magnitude is a refusal. Keep in sync with
     // server/scripts/verify-receipt.mjs.
@@ -137,7 +137,7 @@
     // `key_id` field (a 32-hex-char prefix of SHA-256(pubkey))
     // must derive from the pubkey we're verifying against.
     // Rust `Receipt::verify_embedded()` at
-    // crates/av-receipts/src/receipt.rs:371-374 refuses
+    // crates/pv-receipts/src/receipt.rs:371-374 refuses
     // `KeyMismatch` when derived_id != body.key_id. Prior JS
     // verifier accepted a receipt whose body claimed a
     // different `key_id` than the pubkey in the bundle
@@ -161,12 +161,12 @@
       return full.slice(0, 32);
     }
 
-    // R190 F1: build the exact byte message the Rust `av-receipts`
+    // R190 F1: build the exact byte message the Rust `pv-receipts`
     // crate signs. Rust `signing_message(receipt_version, canonical)`
-    // (crates/av-receipts/src/receipt.rs:50-64) dispatches on
+    // (crates/pv-receipts/src/receipt.rs:50-64) dispatches on
     // `receipt_version`:
     //   * v1 → bare canonical bytes (legacy wire format)
-    //   * v2 → RECEIPT_DOMAIN_TAG_V2 (b"agentvisor-receipt-v2\0",
+    //   * v2 → RECEIPT_DOMAIN_TAG_V2 (b"proofvisor-receipt-v2\0",
     //          22 bytes) || u64_be(canonical.len()) || canonical
     // Rust defaults `RECEIPT_VERSION = 2` (receipt.rs:30), so every
     // modern daemon posts v2 receipts. Prior JS verifier used
@@ -175,7 +175,7 @@
     // "Signature does not verify" on this page. Now: parse
     // receipt.body to find `receipt_version`, dispatch to the
     // correct framing.
-    const RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("agentvisor-receipt-v2\0");
+    const RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("proofvisor-receipt-v2\0");
     function receiptSigningMessage(rawBody) {
       const canonical = new TextEncoder().encode(rawBody);
       let receiptVersion = 1;
@@ -214,7 +214,7 @@
     // anchor pinning. Without this, an attacker who generates their
     // own Ed25519 keypair, signs an arbitrary `rawBody`, and embeds
     // their pubkey in a fresh bundle gets the same "✅ authentic"
-    // verdict as a real AgentVisor-signed receipt. The verifier
+    // verdict as a real ProofVisor-signed receipt. The verifier
     // only ever proved self-consistency of (body, sig, pubkey),
     // not authorship. The trusted-anchors list below is the set of
     // Ed25519 pubkey hex strings the daemon publicly commits to.
@@ -223,7 +223,7 @@
     // consistent. Trust anchor NOT verified", NOT the word
     // "authentic". Empty by default (no canonical anchor published
     // yet); populate via a release-hardening round or fetch from
-    // `https://agentvisorai.me/.well-known/receipt-keys.json`
+    // `https://proofvisor.com/.well-known/receipt-keys.json`
     // over TLS.
     const TRUSTED_RECEIPT_KEYS = new Set([
       // Lowercased 64-hex Ed25519 pubkeys.
@@ -255,15 +255,15 @@
       "573c8f249012fbb08b3d79973411bb93141f32719c86ada25306fde5e59e8d57",
     ]);
 
-    // Raw daemon receipts: the file agentvisord writes under
+    // Raw daemon receipts: the file proofvisord writes under
     // spool/atif/receipts/ is {receipt fields…, public_key_b64,
     // signature_b64} — NOT the console-export bundle envelope. The page
-    // copy ("drop an AgentVisor receipt JSON") and `avctl
+    // copy ("drop an ProofVisor receipt JSON") and `pvctl
     // receipt-verify` both promise raw files work, so adapt them to
     // the bundle shape verifyBundle expects. The signed message is the
     // RFC 8785 (JCS) canonicalization of the receipt WITHOUT
     // signature_b64 — same construction console-sync uses when
-    // uploading (av_receipts::canonicalize over Receipt.body).
+    // uploading (pv_receipts::canonicalize over Receipt.body).
     function jcsCanonicalize(value) {
       // Minimal JCS for the receipt value domain: JSON.stringify
       // already emits shortest-form numbers for the integers/floats a
@@ -303,7 +303,7 @@
       }
       const pubHex = bytesToHex(b64ToBytes(parsed.public_key_b64));
       return {
-        format: "agentvisor.receipt.v1",
+        format: "proofvisor.receipt.v1",
         receipt: { rawBody: jcsCanonicalize(body), rawSignatureB64: parsed.signature_b64 },
         publicKey: { hex: pubHex },
       };
@@ -311,7 +311,7 @@
 
     async function verifyBundle(bundle) {
       if (looksLikeRawReceipt(bundle)) bundle = rawReceiptToBundle(bundle);
-      if (bundle.format !== "agentvisor.receipt.v1") {
+      if (bundle.format !== "proofvisor.receipt.v1") {
         throw new Error("Unrecognized bundle format: " + bundle.format);
       }
       const r = bundle.receipt || {};
@@ -319,7 +319,7 @@
       if (!r.rawBody || !r.rawSignatureB64) throw new Error("Receipt is missing rawBody or rawSignatureB64.");
       // Rust-parity: a signature that only decodes under forgiving
       // WHATWG base64 (whitespace / URL-safe chars / bad padding) is a
-      // verification FAILURE, exactly as avctl/daemon report it.
+      // verification FAILURE, exactly as pvctl/daemon report it.
       if (!isStrictStandardB64(r.rawSignatureB64)) {
         return { ok: false, trustedKey: false, demoKey: false, bundle };
       }
@@ -352,7 +352,7 @@
           }
           // R199 F1: enforce body.public_key_b64 ↔ bundle.publicKey.hex
           // binding. Rust `verify_embedded()` at
-          // crates/av-receipts/src/receipt.rs:365-368 uses
+          // crates/pv-receipts/src/receipt.rs:365-368 uses
           // body.public_key_b64 AS the verifying pubkey (self-
           // contained offline verification). Our JS verifier uses
           // bundle.publicKey.hex (envelope). If those refer to
@@ -464,7 +464,7 @@
       // consistent. An attacker can trivially achieve this by
       // generating their own keypair) from "signature verifies AND
       // pubkey is in the trust anchor list" (actually attesting
-      // AgentVisor authorship).
+      // ProofVisor authorship).
       const demo = state.ok && state.trustedKey && state.demoKey;
       const trusted = state.ok && state.trustedKey && !state.demoKey;
       const internallyConsistent = state.ok && !state.trustedKey;
@@ -477,11 +477,11 @@
         ? "⚠️  Signature is internally consistent. Trust anchor NOT verified"
         : "❌  Signature does not verify";
       const subText = trusted
-        ? "This receipt is authentic. It was signed by a key on the AgentVisor trust anchor list, and every byte of the payload matches the signature."
+        ? "This receipt is authentic. It was signed by a key on the ProofVisor trust anchor list, and every byte of the payload matches the signature."
         : demo
         ? "The signature verifies against the demo console's signing key. That key's PRIVATE half ships publicly with the demo, so anyone can sign anything with it — this proves the demo flow end-to-end, but it is NOT a production attestation."
         : internallyConsistent
-        ? "The bundle's signature matches its embedded public key, but that public key is NOT in the trust anchor list this verifier ships with. An attacker can generate a keypair, sign anything, and embed the pubkey, so this alone does NOT attest AgentVisor authorship. Compare the public key against a canonical AgentVisor deployment record before trusting the payload."
+        ? "The bundle's signature matches its embedded public key, but that public key is NOT in the trust anchor list this verifier ships with. An attacker can generate a keypair, sign anything, and embed the pubkey, so this alone does NOT attest ProofVisor authorship. Compare the public key against a canonical ProofVisor deployment record before trusting the payload."
         : "The signature does not match the payload. Either the receipt was modified after signing, or the public key doesn't correspond to the signing key.";
       result.innerHTML = `
         <div class="result-card ${cls}">
@@ -570,7 +570,7 @@
       catch (e) { render({ kind: "err", message: "Not valid JSON: " + e.message }); return; }
       // Rust-parity on the raw-receipt path (both toolchains read the
       // SAME file): duplicate JSON keys and non-strict base64 pubkeys
-      // are refusals in avctl/daemon — never a green tick here.
+      // are refusals in pvctl/daemon — never a green tick here.
       if (looksLikeRawReceipt(bundle)) {
         const dup = firstDuplicateKey(text);
         if (dup !== null) {
@@ -587,7 +587,7 @@
           return;
         }
         // Rust-parity subset of `verify_semantic_invariants`
-        // (crates/av-receipts/src/receipt.rs): the unambiguous shape
+        // (crates/pv-receipts/src/receipt.rs): the unambiguous shape
         // pins that previously split verdicts — Rust flatly refuses
         // these while this page showed a positive-leaning card. The
         // derivational checks (issued_at_iso recomputation, stop-reason
@@ -686,7 +686,7 @@
     loadExample.disabled = false;
 
     // Shareable receipt URL:
-    //     agentvisorai.me/verify/#data=<base64url-encoded-JSON>
+    //     proofvisor.com/verify/#data=<base64url-encoded-JSON>
     // The console's "Share this receipt" button generates this URL. When
     // the recipient opens the link, we base64url-decode the fragment and
     // auto-verify. Fragment (not query) so the payload never touches
@@ -702,7 +702,7 @@
       // R115 F2's comment claimed the fragment path was already
       // capped, but grep showed only file-drop (line 253) and
       // paste (line 284) enforced 5_000_000. A hostile shared
-      // link (agentvisorai.me/verify/#data=<multi-MB base64>)
+      // link (proofvisor.com/verify/#data=<multi-MB base64>)
       // synchronously blocked the main thread on atob + JSON.parse
       // — same self-inflicted-tab-freeze class R115 F2 closed on
       // paste. The base64 encoding is ~4/3 the raw byte length,

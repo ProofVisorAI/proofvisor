@@ -1,6 +1,6 @@
 # Product console (client-side simulation)
 
-A self-contained, clickable version of the AgentVisor AI console, presented
+A self-contained, clickable version of the ProofVisor console, presented
 exactly as the shipped product: setup wizard, one-line integration, a live
 session (including an $8,400 prompt-injection payout refused at the door), the
 fleet overview, signed-receipt verification, and the evidence layout on disk.
@@ -11,7 +11,7 @@ and signatures shown are illustrative, but the behavior mirrors the real Rust
 implementation 1:1 (receipt fields, 403 policy refusals, loop breaker, spool
 layout).
 
-- **Published at:** <https://agentvisorai.me/app/pitch/> (deployed by
+- **Published at:** <https://proofvisor.com/app/pitch/> (deployed by
   `.github/workflows/pages.yml` together with the landing page).
 - **Run locally / offline:** open `index.html` in any browser.
 - **Presenter tour:** append `?tour=1` to the URL to reveal the

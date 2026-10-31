@@ -82,7 +82,7 @@ const tokenModal = await page
   .catch(() => "");
 ok(
   "ingest token revealed once",
-  /av_ingest_|ingest token/i.test(tokenModal),
+  /pv_ingest_|ingest token/i.test(tokenModal),
   tokenModal.slice(0, 60).replace(/\n/g, " ")
 );
 await page.keyboard.press("Escape");
@@ -114,7 +114,7 @@ await page.fill("#inpVal", "browser-ci");
 await page.click('.modal button:has-text("Create")');
 await page.waitForTimeout(1500);
 const keyModal = await page.$eval(".modal", (el) => el.innerText).catch(() => "");
-ok("api key revealed once", keyModal.includes("av_srv_"), keyModal.slice(0, 40));
+ok("api key revealed once", keyModal.includes("pv_srv_"), keyModal.slice(0, 40));
 await page.keyboard.press("Escape");
 
 // 5. Audit log recorded the browser's actions.

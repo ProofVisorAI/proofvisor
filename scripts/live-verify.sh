@@ -12,13 +12,13 @@
 #      admits, streams, closes cleanly. Round-51 §9.1 said this used
 #      to 401 on request one.
 #   2. Signed receipt round-trip (chat -> close -> promote).
-#   3. Public key extraction (§9.1): `avctl pubkey` produces the
+#   3. Public key extraction (§9.1): `pvctl pubkey` produces the
 #      trust anchor the review said had no supported extraction path.
 #   4. Offline receipt verification (VERIFYING-A-RECEIPT.md): the
 #      receipt promoted by the daemon verifies with the extracted
 #      pubkey.
 #   5. Tamper detection (§3.1): a single-byte change to the receipt
-#      body is refused by `avctl receipt-verify`.
+#      body is refused by `pvctl receipt-verify`.
 #   6. Forgery refusal (§3.1): the review's PoC (identity-point
 #      public key + `01 00...00` signature) is refused BEFORE the
 #      verify call -- `add_key_bytes` rejects the small-order key.
@@ -26,8 +26,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-AGENTVISORD="${AGENTVISORD:-$REPO_ROOT/target/release/agentvisord}"
-AVCTL="${AVCTL:-$REPO_ROOT/target/release/avctl}"
+PROOFVISORD="${PROOFVISORD:-$REPO_ROOT/target/release/proofvisord}"
+PVCTL="${PVCTL:-$REPO_ROOT/target/release/pvctl}"
 
 # Ephemeral ports so a stranded prior run cannot block this one.
 # `LISTEN_PORT` / `UPSTREAM_PORT` may still be pinned for debugging.
@@ -44,17 +44,17 @@ LISTEN_PORT="${LISTEN_PORT:-$(pick_free_port)}"
 UPSTREAM_PORT="${UPSTREAM_PORT:-$(pick_free_port)}"
 BASE="http://127.0.0.1:${LISTEN_PORT}"
 
-if [[ ! -x "$AGENTVISORD" || ! -x "$AVCTL" ]]; then
-    echo "Missing release binaries; run: cargo build --release -p av-harness --bin agentvisord -p av-cli --bin avctl" >&2
+if [[ ! -x "$PROOFVISORD" || ! -x "$PVCTL" ]]; then
+    echo "Missing release binaries; run: cargo build --release -p pv-harness --bin proofvisord -p pv-cli --bin pvctl" >&2
     exit 2
 fi
 
-WORK="$(mktemp -d /tmp/av-live-verify.XXXXXX)"
+WORK="$(mktemp -d /tmp/pv-live-verify.XXXXXX)"
 DAEMON_PID=""
 MOCK_PID=""
 cleanup() {
     set +e
-    # SIGKILL, not SIGTERM: agentvisord treats SIGTERM as a graceful
+    # SIGKILL, not SIGTERM: proofvisord treats SIGTERM as a graceful
     # drain start (30s budget), which needlessly blocks this verifier's
     # cleanup AND leaves the daemon holding the port when the script's
     # patience runs out. An ephemeral verification daemon has no
@@ -125,10 +125,10 @@ if [[ "$mock_ready" != 1 ]]; then
     exit 1
 fi
 
-# `exec` inside the subshell so `$!` is the agentvisord PID directly;
+# `exec` inside the subshell so `$!` is the proofvisord PID directly;
 # a bare `( ... ) &` records the wrapper subshell's PID, and killing
 # that leaves the daemon reparented and still holding the port.
-(cd "$WORK" && exec "$AGENTVISORD" --config "$WORK/config/harness.toml" > "$WORK/daemon.log" 2>&1) &
+(cd "$WORK" && exec "$PROOFVISORD" --config "$WORK/config/harness.toml" > "$WORK/daemon.log" 2>&1) &
 DAEMON_PID=$!
 
 # Wait for /readyz
@@ -159,8 +159,8 @@ status=$(curl -s -o "$WORK/hero.body" -w '%{http_code}' \
     "$BASE/v1/chat/completions" \
     -H 'content-type: application/json' \
     -H 'authorization: Bearer sk-anything-at-all' \
-    -H 'x-av-session: live-hero' \
-    -H 'x-av-workflow: signed' \
+    -H 'x-pv-session: live-hero' \
+    -H 'x-pv-workflow: signed' \
     -d '{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hello"}]}')
 [[ "$status" == "200" ]] || fail "hero snippet returned HTTP $status"
 grep -q 'hello from live-verify' "$WORK/hero.body" || fail "hero response body missing streamed content"
@@ -173,19 +173,19 @@ curl -s -X POST "$BASE/v1/sessions/live-hero/promote" > "$WORK/receipt.json"
 grep -q '"receipt_id"' "$WORK/receipt.json" || fail "promote did not return a receipt"
 pass "signed receipt round-trip: chat -> close -> promote"
 
-# --- 3. avctl pubkey extracts the trust anchor.
-PUB=$("$AVCTL" pubkey --seed "$WORK/config/signing.seed" | python3 -c "import json,sys; print(json.load(sys.stdin)['public_key_hex'])")
-[[ ${#PUB} -eq 64 ]] || fail "avctl pubkey produced malformed hex: $PUB"
-pass "avctl pubkey extracts the trust anchor (§9.1)"
+# --- 3. pvctl pubkey extracts the trust anchor.
+PUB=$("$PVCTL" pubkey --seed "$WORK/config/signing.seed" | python3 -c "import json,sys; print(json.load(sys.stdin)['public_key_hex'])")
+[[ ${#PUB} -eq 64 ]] || fail "pvctl pubkey produced malformed hex: $PUB"
+pass "pvctl pubkey extracts the trust anchor (§9.1)"
 
 # --- 4. Offline verify succeeds against that pubkey.
-"$AVCTL" receipt-verify "$WORK/receipt.json" --public-key-hex "$PUB" > "$WORK/verify.out"
+"$PVCTL" receipt-verify "$WORK/receipt.json" --public-key-hex "$PUB" > "$WORK/verify.out"
 grep -q '^verified ' "$WORK/verify.out" || fail "receipt-verify did not report verified: $(cat "$WORK/verify.out")"
 pass "offline receipt verification (VERIFYING-A-RECEIPT.md)"
 
 # --- 5. Single-byte tamper is refused.
 python3 -c "import json; r=json.load(open('$WORK/receipt.json')); r['cost']['prompt_tokens']=999999; json.dump(r, open('$WORK/tampered.json','w'))"
-if "$AVCTL" receipt-verify "$WORK/tampered.json" --public-key-hex "$PUB" > "$WORK/tamper.out" 2>&1; then
+if "$PVCTL" receipt-verify "$WORK/tampered.json" --public-key-hex "$PUB" > "$WORK/tamper.out" 2>&1; then
     fail "receipt-verify accepted a tampered receipt"
 fi
 pass "tampered receipt refused (§3.1)"
@@ -198,7 +198,7 @@ r['public_key_b64'] = base64.b64encode(bytes([1] + [0]*31)).decode()
 r['signature_b64']  = base64.b64encode(bytes([1] + [0]*63)).decode()
 json.dump(r, open('$WORK/forged.json','w'))
 PY
-FORGE_OUT=$("$AVCTL" receipt-verify "$WORK/forged.json" \
+FORGE_OUT=$("$PVCTL" receipt-verify "$WORK/forged.json" \
     --public-key-hex 0100000000000000000000000000000000000000000000000000000000000000 2>&1 || true)
 grep -q 'small-order' <<<"$FORGE_OUT" || fail "forgery PoC not refused at add_key_bytes: $FORGE_OUT"
 pass "§3.1 forgery PoC refused at add_key_bytes (small-order key)"

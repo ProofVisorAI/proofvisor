@@ -1,4 +1,4 @@
-/* AgentVisor console — guided flow tour.
+/* ProofVisor console — guided flow tour.
  *
  * A six-step spotlight walkthrough that carries a first-time visitor
  * (an investor, not an engineer) through the exact loop the pitch
@@ -13,7 +13,7 @@
   "use strict";
   if (!window.MOCK_MODE) return; // guided tour narrates the demo fixtures
 
-  var DISMISS_KEY = "av_tour_dismissed";
+  var DISMISS_KEY = "pv_tour_dismissed";
 
   var STEPS = [
     {
@@ -22,7 +22,7 @@
       target: ".stat.savings",
       title: "Start with the money",
       body: "Northwind's AI agents order stock and pay invoices on their own. " +
-        "This is what AgentVisor kept from leaving the building: <b>$31,840</b> " +
+        "This is what ProofVisor kept from leaving the building: <b>$31,840</b> " +
         "in payments that policy stopped before any money moved.",
     },
     {
@@ -31,7 +31,7 @@
       target: ".stat.blocks",
       title: "Every tool call is checked first",
       body: "Agents don't touch money or systems directly — every tool call " +
-        "passes through AgentVisor's policy engine. Most are allowed. " +
+        "passes through ProofVisor's policy engine. Most are allowed. " +
         "The dangerous ones end up here.",
     },
     {
@@ -85,7 +85,7 @@
   }
 
   function freshMode() {
-    try { return !!localStorage.getItem("av_mock_fresh_t0"); } catch (e) { return false; }
+    try { return !!localStorage.getItem("pv_mock_fresh_t0"); } catch (e) { return false; }
   }
   function inShell() { return !!document.querySelector(".app-shell"); }
 
@@ -120,23 +120,23 @@
   function buildOverlay() {
     var o = el(
       '<div id="avTour" aria-live="polite">' +
-        '<div class="av-tour-hole" aria-hidden="true"></div>' +
-        '<div class="av-tour-card" role="dialog" aria-modal="false">' +
-          '<div class="av-tour-step"></div>' +
+        '<div class="pv-tour-hole" aria-hidden="true"></div>' +
+        '<div class="pv-tour-card" role="dialog" aria-modal="false">' +
+          '<div class="pv-tour-step"></div>' +
           '<h3></h3>' +
           '<p></p>' +
-          '<div class="av-tour-actions">' +
-            '<button type="button" class="av-tour-skip">Skip tour</button>' +
-            '<span class="av-tour-spacer"></span>' +
-            '<button type="button" class="av-tour-back">Back</button>' +
-            '<button type="button" class="av-tour-next">Next</button>' +
+          '<div class="pv-tour-actions">' +
+            '<button type="button" class="pv-tour-skip">Skip tour</button>' +
+            '<span class="pv-tour-spacer"></span>' +
+            '<button type="button" class="pv-tour-back">Back</button>' +
+            '<button type="button" class="pv-tour-next">Next</button>' +
           "</div>" +
         "</div>" +
       "</div>"
     );
-    o.querySelector(".av-tour-skip").addEventListener("click", stop);
-    o.querySelector(".av-tour-back").addEventListener("click", function () { go(state.i - 1); });
-    o.querySelector(".av-tour-next").addEventListener("click", function () {
+    o.querySelector(".pv-tour-skip").addEventListener("click", stop);
+    o.querySelector(".pv-tour-back").addEventListener("click", function () { go(state.i - 1); });
+    o.querySelector(".pv-tour-next").addEventListener("click", function () {
       if (state.i >= STEPS.length - 1) stop();
       else go(state.i + 1);
     });
@@ -156,8 +156,8 @@
   }
 
   function positionAround(target, step) {
-    var hole = state.overlay.querySelector(".av-tour-hole");
-    var card = state.overlay.querySelector(".av-tour-card");
+    var hole = state.overlay.querySelector(".pv-tour-hole");
+    var card = state.overlay.querySelector(".pv-tour-card");
     if (!target) {
       hole.style.display = "none";
       card.classList.add("centered");
@@ -232,13 +232,13 @@
     var anchor = await waitFor(step.waitFor);
     if (state.i !== i) return; // user skipped ahead while we were waiting
 
-    var card = state.overlay.querySelector(".av-tour-card");
-    card.querySelector(".av-tour-step").textContent = "Step " + (i + 1) + " of " + STEPS.length;
+    var card = state.overlay.querySelector(".pv-tour-card");
+    card.querySelector(".pv-tour-step").textContent = "Step " + (i + 1) + " of " + STEPS.length;
     card.querySelector("h3").textContent = step.title;
     card.querySelector("p").innerHTML = step.body;
 
-    var back = card.querySelector(".av-tour-back");
-    var next = card.querySelector(".av-tour-next");
+    var back = card.querySelector(".pv-tour-back");
+    var next = card.querySelector(".pv-tour-next");
     back.style.visibility = i === 0 ? "hidden" : "visible";
     if (step.cta) {
       next.innerHTML = step.cta.label;
@@ -302,10 +302,10 @@
       // re-opening a tour the user already finished/escaped on every
       // refresh was hostile. A fresh visit/tab still auto-starts.
       var autoDone = false;
-      try { autoDone = sessionStorage.getItem("av_tour_autostarted") === "1"; } catch (e) {}
+      try { autoDone = sessionStorage.getItem("pv_tour_autostarted") === "1"; } catch (e) {}
       if (/[?&]tour=1/.test(location.search) && state.i < 0 && !state._autoStarted && !autoDone && !dismissed() && !freshMode()) {
         state._autoStarted = true;
-        try { sessionStorage.setItem("av_tour_autostarted", "1"); } catch (e) {}
+        try { sessionStorage.setItem("pv_tour_autostarted", "1"); } catch (e) {}
         setTimeout(start, 600);
       }
       clearInterval(boot);

@@ -7,7 +7,7 @@ from "it compiles". (Verification rounds 93–99, September 2026.)
 
 ## Tier 1 — prebuilt binaries (installer default)
 
-`curl -fsS https://agentvisorai.me/install.sh | sh` downloads these,
+`curl -fsS https://proofvisor.com/install.sh | sh` downloads these,
 verifies the SHA-256, installs, and smoke-runs them on your machine.
 
 | Target | Notes |
@@ -21,7 +21,7 @@ verifies the SHA-256, installs, and smoke-runs them on your machine.
 ## Tier 2 — build from source (verified working)
 
 The installer falls back to `cargo install` from the public repo on
-any other Unix (or force it with `AV_INSTALL_SOURCE=1`). These
+any other Unix (or force it with `PV_INSTALL_SOURCE=1`). These
 targets were built and run through the full gate battery under
 emulation:
 
@@ -35,10 +35,10 @@ emulation:
 
 ## Receipts are portable
 
-A receipt sealed on any platform above verifies with `avctl
+A receipt sealed on any platform above verifies with `pvctl
 receipt-verify` on any other — across architecture, bitness (32→64),
 and endianness (BE⇄LE) — because verification hashes a canonical
-byte frame (`agentvisor-receipt-v2\0` + big-endian length + body).
+byte frame (`proofvisor-receipt-v2\0` + big-endian length + body).
 
 ## Windows
 
@@ -56,7 +56,7 @@ auto-migrate, non-root, fail-closed production env guard).
 
 - `public-consumer.yml` (nightly): installer on 4 real runners
   (linux x64/arm64, macOS arm64/x64), 3 containers (Ubuntu 22.04,
-  Debian 12, Alpine — old glibc + musl), the `AV_INSTALL_SOURCE=1`
+  Debian 12, Alpine — old glibc + musl), the `PV_INSTALL_SOURCE=1`
   source build, and the full outsider quickstart.
 - `release.yml`: every tag builds all Tier-1 targets; the installer
   pin bump and Pages deploy chain automatically.

@@ -14,7 +14,7 @@ const OUT = "/tmp/video-tour/scenes";
 if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 
-const SITE = process.env.SITE ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? "https://proofvisor.com/app/";
 const LANDING = new URL(SITE).origin;
 
 function cardHtml(opts) {
@@ -116,7 +116,7 @@ function cardHtml(opts) {
       ${sub ? `<div class="subline">${sub}</div>` : ""}
       ${opts.cta ? `<div class="cta"><span class="arrow">→</span> ${opts.cta}</div>` : ""}
     </div>
-    <div class="brand"><div class="brand-mark">A</div>AgentVisor AI · agentvisorai.me</div>
+    <div class="brand"><div class="brand-mark">A</div>ProofVisor · proofvisor.com</div>
   </body></html>`;
 }
 
@@ -164,7 +164,7 @@ async function recordConsoleScene(browser, sceneName, durationMs, hash, waitFor,
   // ── Phase 1: warm up in an unrecorded context, capture its state ──
   const warmCtx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const warm = await warmCtx.newPage();
-  await warm.addInitScript(() => { try { localStorage.setItem("av_mock_signed_out", "1"); } catch {} });
+  await warm.addInitScript(() => { try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {} });
   await warm.goto(SITE + "#/login", { waitUntil: "networkidle" });
   await warm.waitForSelector("input#email", { timeout: 15000 });
   await warm.locator("input#email").fill("olivia.tan@northwind.com");
@@ -191,17 +191,17 @@ async function recordConsoleScene(browser, sceneName, durationMs, hash, waitFor,
   // First-user simulation clock: seed how far along the fresh
   // workspace is when this scene opens (see datasource FRESH_*).
   await ctx.addInitScript(() => {
-    try { localStorage.setItem("av_mock_fastload", "1"); } catch {}
+    try { localStorage.setItem("pv_mock_fastload", "1"); } catch {}
   });
   if (cinematicOpts && cinematicOpts.freshOffset != null) {
     await ctx.addInitScript((off) => {
       try {
-        localStorage.setItem("av_mock_fresh_t0", String(Date.now() - off));
+        localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - off));
         // The identity the signup scene persists — without it the
         // fresh workspace falls back to the anonymous "workspace-prod"
         // daemon (R257 named fresh daemons after the org's slug) and
         // the story's org/actor names vanish from chrome + audit.
-        localStorage.setItem("av_mock_fresh_identity", JSON.stringify({
+        localStorage.setItem("pv_mock_fresh_identity", JSON.stringify({
           user: { id: "usr_olivia", email: "olivia.tan@northwind.com", displayName: "Olivia Tan", role: "owner" },
           org: { id: "org_fresh_nw", name: "Northwind Traders", slug: "northwind-traders", createdAt: new Date(Date.now() - off).toISOString(), role: "owner" },
         }));
@@ -270,13 +270,13 @@ async function showCard(page, html, holdMs) {
  * Inject a visible cursor that follows Playwright's mouse. The OS
  * cursor is never captured by recordVideo, so we draw our own: an
  * arrow that tracks mousemove and pulses on mousedown / synthetic
- * clicks (av-click event).
+ * clicks (pv-click event).
  */
 async function injectCursor(page) {
   await page.evaluate(() => {
-    if (document.getElementById("av-cursor")) return;
+    if (document.getElementById("pv-cursor")) return;
     const c = document.createElement("div");
-    c.id = "av-cursor";
+    c.id = "pv-cursor";
     c.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24"><path d="M4 1.5 L4 19.5 L8.9 15 L12.2 21.6 L15.2 20.1 L11.9 13.6 L18.5 13.2 Z" fill="#ffffff" stroke="#10161d" stroke-width="1.5" stroke-linejoin="round"/></svg>';
     Object.assign(c.style, {
       position: "fixed", left: "0px", top: "0px", zIndex: "2147483647",
@@ -298,14 +298,14 @@ async function injectCursor(page) {
       setTimeout(() => { svg.style.transform = "scale(1)"; }, 140);
     };
     document.addEventListener("mousedown", pulse, true);
-    document.addEventListener("av-click", pulse, true);
+    document.addEventListener("pv-click", pulse, true);
   });
 }
 
 /** Synthetic click with a cursor pulse so the click reads on camera. */
 async function cursorClick(page, selector) {
   await page.evaluate((sel) => {
-    document.dispatchEvent(new CustomEvent("av-click"));
+    document.dispatchEvent(new CustomEvent("pv-click"));
     const el = typeof sel === "string" ? document.querySelector(sel) : sel;
     if (el) el.click();
   }, selector);
@@ -373,7 +373,7 @@ async function applyCinematic(page, opts = {}) {
       0%, 100% { box-shadow: 0 0 0 0 rgba(110, 207, 142, 0), 0 0 0 0 rgba(110, 207, 142, 0); }
       50%      { box-shadow: 0 0 0 6px rgba(110, 207, 142, 0.55), 0 0 40px 8px rgba(110, 207, 142, 0.35); }
     }
-    .av-pulse-target { animation: pulse-glow 1.6s ease-in-out 3 !important; border-radius: 8px; }
+    .pv-pulse-target { animation: pulse-glow 1.6s ease-in-out 3 !important; border-radius: 8px; }
   ` });
   if (pulseSel) {
     // Give the zoom half a beat to breathe, then trigger the pulse
@@ -381,7 +381,7 @@ async function applyCinematic(page, opts = {}) {
       try {
         await page.evaluate((sel) => {
           const el = document.querySelector(sel);
-          if (el) el.classList.add("av-pulse-target");
+          if (el) el.classList.add("pv-pulse-target");
         }, pulseSel);
       } catch {}
     }, 1000);
@@ -403,7 +403,7 @@ const browser = await chromium.launch({ headless: true });
 await recordScene(browser, "01-title", 6500, async (page, ms) => {
   await showCard(page, cardHtml({
     bg: "#0a5c8b",
-    kicker: "AgentVisor AI",
+    kicker: "ProofVisor",
     headline: `The control plane<br>for <span class="accent-yellow">AI agents</span>.`,
     sub: "For companies that let AI agents touch real money and real systems.",
     staticHeadline: true,
@@ -424,7 +424,7 @@ await recordScene(browser, "03-solution", 9000, async (page, ms) => {
     bg: "#0a5c8b",
     kicker: "The fix",
     headline: `Block bad actions<br>before money moves.<br><span class="accent-green">Prove it</span> afterwards.`,
-    sub: "AgentVisor sits between the agent and the money. What follows is the complete flow: a brand-new account, from zero to a verified audit trail.",
+    sub: "ProofVisor sits between the agent and the money. What follows is the complete flow: a brand-new account, from zero to a verified audit trail.",
   }), ms);
 });
 
@@ -444,8 +444,8 @@ await recordScene(browser, "04-landing", 5000, async (page, ms) => {
 await recordScene(browser, "05-signup", 9000, async (page, ms) => {
   await page.addInitScript(() => {
     try {
-      localStorage.setItem("av_mock_signed_out", "1");
-      localStorage.setItem("av_mock_fastload", "1");
+      localStorage.setItem("pv_mock_signed_out", "1");
+      localStorage.setItem("pv_mock_fastload", "1");
     } catch {}
   });
   await page.goto(SITE + "#/signup", { waitUntil: "networkidle" });
@@ -523,7 +523,7 @@ await recordConsoleScene(
     // the connected deployment appears (wall-clock waits proved
     // flaky under recording load).
     await page.evaluate(() => {
-      localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 13500));
+      localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 13500));
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
     await page.waitForSelector("text=northwind-traders-prod", { timeout: 6000 });
@@ -546,13 +546,13 @@ await recordConsoleScene(
     await page.waitForTimeout(2300);
     // First session has arrived — advance the clock, refresh the view.
     await page.evaluate(() => {
-      localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 17500));
+      localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 17500));
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
     await page.waitForTimeout(3400);
     // Second refresh: the featured blocked session lands, $8,400 appears.
     await page.evaluate(() => {
-      localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 22500));
+      localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 22500));
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
     await page.waitForSelector("text=$8,400", { timeout: 6000 }).catch(() => {});
@@ -560,7 +560,7 @@ await recordConsoleScene(
     // Only now pulse the tile — it finally has the first save in it.
     await page.evaluate(() => {
       const el = document.querySelector(".stat.savings");
-      if (el) el.classList.add("av-pulse-target");
+      if (el) el.classList.add("pv-pulse-target");
     });
     const tile = page.locator(".stat.savings");
     const tb = await tile.boundingBox().catch(() => null);
@@ -583,7 +583,7 @@ await recordConsoleScene(
     if (tb) await page.mouse.move(tb.x + 4, tb.y + 4, { steps: 14 });
     await page.waitForTimeout(300);
     await page.evaluate(() => {
-      document.dispatchEvent(new CustomEvent("av-click"));
+      document.dispatchEvent(new CustomEvent("pv-click"));
       const cb = document.querySelector('input[type="checkbox"]');
       if (cb && !cb.checked) cb.click();
     });
@@ -609,7 +609,7 @@ await recordConsoleScene(
     if (bb) await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 14 });
     await page.waitForTimeout(250);
     await page.evaluate(() => {
-      document.dispatchEvent(new CustomEvent("av-click"));
+      document.dispatchEvent(new CustomEvent("pv-click"));
       const ev = Array.from(document.querySelectorAll(".evt")).find(e => /BLOCKED/.test(e.textContent));
       if (ev) ev.click();
     });
@@ -764,7 +764,7 @@ await recordConsoleScene(
       if (bb) await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 10 });
       await page.waitForTimeout(250);
       await page.evaluate((label) => {
-        document.dispatchEvent(new CustomEvent("av-click"));
+        document.dispatchEvent(new CustomEvent("pv-click"));
         const btn = Array.from(document.querySelectorAll(".settings-nav button")).find(x => x.textContent.trim() === label);
         if (btn) btn.click();
       }, tab);
@@ -778,7 +778,7 @@ await recordScene(browser, "18-close", 6500, async (page, ms) => {
   await showCard(page, cardHtml({
     bg: "#0a5c8b",
     headline: `AI agents you can<br>hand to an <span class="accent-yellow">auditor</span>.`,
-    cta: "agentvisorai.me",
+    cta: "proofvisor.com",
   }), ms);
 });
 

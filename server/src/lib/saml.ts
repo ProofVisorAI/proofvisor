@@ -1,5 +1,5 @@
 /**
- * AgentVisor AI — SAML 2.0 Service Provider.
+ * ProofVisor — SAML 2.0 Service Provider.
  *
  * Wraps @node-saml/node-saml so the rest of the codebase can talk in
  * plain "start login" / "consume response" verbs. This module is the
@@ -375,7 +375,7 @@ export async function consumeSamlResponse(
   now: Date = new Date(),
   /**
    * The browser-binding nonce presented by the posting browser (the
-   * unsigned value of the av_saml_txn cookie), or null when absent.
+   * unsigned value of the pv_saml_txn cookie), or null when absent.
    * Only its hash is stored in the shared request table.
    */
   presentedTxnNonce: string | null = null,

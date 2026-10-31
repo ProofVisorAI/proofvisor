@@ -2,7 +2,7 @@
 # the API + SSE stream to the hosted backend.
 #
 # On Cloudflare Pages you upload `docs/` as the site root and set the
-# custom domain to agentvisorai.me. Pages inherits Cloudflare's global
+# custom domain to proofvisor.com. Pages inherits Cloudflare's global
 # edge network — unlimited bandwidth, HTTP/3, Brotli, automatic Argo.
 #
 # Free tier: 500 builds/month, unlimited bandwidth, unlimited requests.
@@ -17,13 +17,13 @@
 # right-hand side to point at your API host (Fly.io, Cloud Run, Koyeb).
 #
 # DISABLED until the hosted API launches with the beta:
-# api.agentvisorai.me has no DNS today, and on any host that honors
+# api.proofvisor.com has no DNS today, and on any host that honors
 # this file the /api/* rule would SHADOW /api/ — which on the current
 # site is the rustdoc export (a working, link-crawled page) — with a
 # proxy to a dead host. Re-enable both lines at beta launch and move
 # the rustdoc to /docs/api/ first.
-# /api/*  https://api.agentvisorai.me/api/:splat  200
-# /healthz  https://api.agentvisorai.me/healthz  200
+# /api/*  https://api.proofvisor.com/api/:splat  200
+# /healthz  https://api.proofvisor.com/healthz  200
 
 # Short-link aliases. NOTE: the site currently deploys to GitHub
 # Pages, which ignores this file; /mockup and /demo actually work via

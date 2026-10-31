@@ -1,12 +1,12 @@
-# AgentVisor AI Reference Documentation
+# ProofVisor Reference Documentation
 
 Operator- and developer-facing reference material. Written for people
 who need to **use** the harness rather than modify its internals; for
 the latter, start with `ARCHITECTURE.md` at the repo root.
 
 * [`VERIFYING-A-RECEIPT.md`](VERIFYING-A-RECEIPT.md) — offline audit
-  chain verification with `avctl receipt-verify` and the
-  `av_receipts::keys::Keyring` API.
+  chain verification with `pvctl receipt-verify` and the
+  `pv_receipts::keys::Keyring` API.
 * [`CONFIGURATION.md`](CONFIGURATION.md) — every `harness.toml` key,
   its default, its purpose, and the `validate()` guards that refuse
   bad combinations.

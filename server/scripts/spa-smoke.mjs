@@ -103,7 +103,7 @@ const staticSrv = createServer(async (req, res) => {
         // Same rewrite console-api.yml applies.
         const before = s;
         s = s.replace(
-          /connect-src 'self' https:\/\/api\.agentvisorai\.me/,
+          /connect-src 'self' https:\/\/api\.proofvisorai\.me/,
           `connect-src 'self' ${API_BASE}`,
         );
         if (s === before) {
@@ -219,7 +219,7 @@ await page.locator("button", { hasText: /Create|Save|Register/i }).last().click(
 await page.waitForTimeout(1500);
 // A token modal should appear; capture its text
 const modalText = await page.locator(".modal-backdrop").innerText().catch(() => "");
-if (!/av_dep_|token|copy/i.test(modalText)) {
+if (!/pv_dep_|token|copy/i.test(modalText)) {
   console.log("modal text:", modalText.slice(0, 300));
   fail("no token modal after create deployment");
 }
@@ -252,7 +252,7 @@ console.log("✅ deployment '" + depName + "' appears in API list");
 // ============================================================
 const sessionExternalId = "sess_" + Math.random().toString(36).slice(2, 8);
 const now = new Date();
-// Ingest requires x-av-deployment + Bearer. Get deployment id via API.
+// Ingest requires x-pv-deployment + Bearer. Get deployment id via API.
 const deploymentId = dList.deployments.find((d) => d.name === depName).id;
 {
   const r = await fetch(API_BASE + "/api/v1/ingest/sessions", {
@@ -260,7 +260,7 @@ const deploymentId = dList.deployments.find((d) => d.name === depName).id;
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer " + ingestToken,
-      "x-av-deployment": deploymentId,
+      "x-pv-deployment": deploymentId,
     },
     body: JSON.stringify({
       externalId: sessionExternalId,
@@ -290,7 +290,7 @@ console.log("✅ daemon simulation: session upserted");
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer " + ingestToken,
-      "x-av-deployment": deploymentId,
+      "x-pv-deployment": deploymentId,
     },
     body: JSON.stringify(evs),
   });
@@ -350,7 +350,7 @@ const liveSessionId = "sess_live_" + Math.random().toString(36).slice(2, 8);
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer " + ingestToken,
-      "x-av-deployment": deploymentId,
+      "x-pv-deployment": deploymentId,
     },
     body: JSON.stringify({
       externalId: liveSessionId,
@@ -365,7 +365,7 @@ const liveSessionId = "sess_live_" + Math.random().toString(36).slice(2, 8);
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer " + ingestToken,
-      "x-av-deployment": deploymentId,
+      "x-pv-deployment": deploymentId,
     },
     body: JSON.stringify([
       {

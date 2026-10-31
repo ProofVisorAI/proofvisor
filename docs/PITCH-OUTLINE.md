@@ -9,7 +9,7 @@ cut if time shrinks*. The demo beats reference
 
 ## 0. One-liner
 
-> **AgentVisor is the policy checkpoint between AI agents and the real
+> **ProofVisor is the policy checkpoint between AI agents and the real
 > world: it blocks unauthorized actions before they execute, and signs
 > cryptographic receipts of everything — so companies can give agents
 > autonomy without giving up control or evidence.**
@@ -37,7 +37,7 @@ trust us."
 
 ## 3. Solution (0:45–1:10)
 
-AgentVisor is a daemon that sits between the agent and everything it
+ProofVisor is a daemon that sits between the agent and everything it
 touches (LLM + tools):
 
 1. **Gates in the request path** — identity, rate, size, budgets
@@ -73,7 +73,7 @@ signed receipt → verified in the hosted console. Offline-safe.
 ## 6. Status & ask (2:50–3:00)
 
 - Live today: installer, daemon, hosted console
-  (agentvisorai.me — public demo needs no signup), signed receipts,
+  (proofvisor.com — public demo needs no signup), signed receipts,
   the security/enterprise surface finished.
 - Ask: **[design partners running agents that move money / seed
   conversation — pick per audience]**.

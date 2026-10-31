@@ -75,10 +75,10 @@ jobs:
             printf '%s\n' \
               '<!DOCTYPE html>' \
               '<meta charset="utf-8">' \
-              '<title>AgentVisor AI — API documentation</title>' \
-              '<meta http-equiv="refresh" content="0; url=av_harness/index.html">' \
-              '<link rel="canonical" href="av_harness/index.html">' \
-              '<p><a href="av_harness/index.html">Continue to <code>av_harness</code></a></p>' \
+              '<title>ProofVisor — API documentation</title>' \
+              '<meta http-equiv="refresh" content="0; url=pv_harness/index.html">' \
+              '<link rel="canonical" href="pv_harness/index.html">' \
+              '<p><a href="pv_harness/index.html">Continue to <code>pv_harness</code></a></p>' \
               > "$site/api/index.html"
           fi
           # Copy the landing files LAST so they always win over anything
@@ -86,7 +86,7 @@ jobs:
           cp docs/index.html "$site/index.html"
           cp docs/style.css "$site/style.css"
           # The daemon installer the console's onboarding snippets curl
-          # (Deployments empty state + detail). get.agentvisorai.me was
+          # (Deployments empty state + detail). get.proofvisor.com was
           # never a real host — the printed command died on DNS the
           # moment anyone pasted it; this serves from the apex instead.
           cp docs/install.sh "$site/install.sh"
@@ -212,8 +212,8 @@ jobs:
       # The monorepo is private and the org is on the free plan, so
       # GitHub Pages cannot serve from here. The assembled site is
       # force-pushed (content snapshot, no history) to the PUBLIC
-      # AgentVisorAI/agentvisorai.github.io repo, whose Pages serves
-      # agentvisorai.me. Auth: write-scoped deploy key held as an
+      # ProofVisorAI/proofvisorai.github.io repo, whose Pages serves
+      # proofvisor.com. Auth: write-scoped deploy key held as an
       # Actions secret here; the public repo holds only built
       # artifacts, never source.
       - name: Push site to the public Pages repo
@@ -225,9 +225,9 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/site_key -o StrictHostKeyChecking=accept-new"
           cd target/doc
           git init -q -b main
-          git config user.name "agentvisor-deploy"
-          git config user.email "deploy@agentvisorai.me"
+          git config user.name "proofvisor-deploy"
+          git config user.email "deploy@proofvisor.com"
           git add -A
-          git commit -qm "Deploy site from agentvisor-ai@${GITHUB_SHA}"
-          git push -f git@github.com:AgentVisorAI/agentvisorai.github.io.git main
+          git commit -qm "Deploy site from proofvisor@${GITHUB_SHA}"
+          git push -f git@github.com:ProofVisorAI/proofvisorai.github.io.git main
           rm -f "$RUNNER_TEMP/site_key"

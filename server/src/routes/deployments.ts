@@ -35,7 +35,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         // R90 F2's rationale for hiding API-key hints from members
         // applies verbatim: ingest tokens routinely leak via
         // Dockerfiles, k8s manifests, CI logs; a hostile member
-        // who greps a public gist for `AV_INGEST_TOKEN=` and
+        // who greps a public gist for `PV_INGEST_TOKEN=` and
         // matches against the org's hint inventory can bind a
         // leaked token to a specific deployment. Similarly
         // `lastIngestAt` reveals "which deployment is currently

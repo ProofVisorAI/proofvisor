@@ -104,14 +104,14 @@ jobs:
           EXPECTED: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           if [ "$EVENT" != "workflow_run" ]; then
-            got="$(curl -fsS "https://agentvisorai.me/build.txt?cb=$RANDOM" || true)"
+            got="$(curl -fsS "https://proofvisor.com/build.txt?cb=$RANDOM" || true)"
             if [ -n "$got" ]; then echo "site alive (build ${got:0:12}…)"; exit 0; fi
             echo "::error::build.txt unreachable — site down or marker missing"
             exit 1
           fi
           echo "waiting for build.txt == $EXPECTED"
           for i in $(seq 1 90); do
-            got="$(curl -fsS "https://agentvisorai.me/build.txt?cb=$RANDOM$i" 2>/dev/null || true)"
+            got="$(curl -fsS "https://proofvisor.com/build.txt?cb=$RANDOM$i" 2>/dev/null || true)"
             if [ "$got" = "$EXPECTED" ]; then
               echo "CDN converged after $((i * 10))s"
               exit 0
@@ -124,56 +124,56 @@ jobs:
       - name: Live SPA smoke
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/live-site-smoke.mjs
 
       - name: Mobile viewport smoke
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/mobile-smoke.mjs
 
       - name: A11y audit (axe-core)
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/a11y-audit.mjs
 
       - name: Receipt verification round-trip
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/receipt-verify-drill.mjs
 
       - name: /verify page drill
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/
+          SITE: https://proofvisor.com/
         run: node scripts/verify-page-drill.mjs
 
       - name: Interactive features drill (tour, attack demo, onboarding, billing, reset)
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/interactive-drill.mjs
 
       - name: Full investor-flow rehearsal (landing → tour → verify → attack → receipt → signup → reset)
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/
+          SITE: https://proofvisor.com/
         run: node scripts/full-flow-rehearsal.mjs
 
       - name: Full investor-flow rehearsal — phone/QR path (iPhone profile)
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/
+          SITE: https://proofvisor.com/
           PROFILE: phone
         run: node scripts/full-flow-rehearsal.mjs
 
       - name: Full investor-flow rehearsal — venue-wifi latency (300–700ms jitter)
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/
+          SITE: https://proofvisor.com/
           SLOW: "1"
         run: node scripts/full-flow-rehearsal.mjs
 
@@ -181,23 +181,23 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/engine-matrix.mjs
 
       - name: Shareable receipt URL drill
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/share-receipt-drill.mjs
 
       - name: CSP + security-headers drill
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/
+          SITE: https://proofvisor.com/
         run: node scripts/csp-drill.mjs
 
       - name: Lighthouse audit (perf + a11y + best-practices)
         working-directory: server
         env:
-          SITE: https://agentvisorai.me/app/
+          SITE: https://proofvisor.com/app/
         run: node scripts/lighthouse-audit.mjs

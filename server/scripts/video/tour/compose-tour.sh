@@ -202,22 +202,22 @@ ffmpeg -y \
   -map "[vout]" \
   -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart \
   -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  "$OUT/agentvisor-mockup-v4.mp4" 2>&1 | tail -3
+  "$OUT/proofvisor-mockup-v4.mp4" 2>&1 | tail -3
 
-ffprobe "$OUT/agentvisor-mockup-v4.mp4" 2>&1 | grep -E "Duration|Stream" | head -3
-ls -lh "$OUT/agentvisor-mockup-v4.mp4"
+ffprobe "$OUT/proofvisor-mockup-v4.mp4" 2>&1 | grep -E "Duration|Stream" | head -3
+ls -lh "$OUT/proofvisor-mockup-v4.mp4"
 
 if [ -f "$OUT/audio/soundtrack-44s.aac" ]; then
   echo "→ Muxing subtle-audio cut (whooshes only)"
-  ffmpeg -y -i "$OUT/agentvisor-mockup-v4.mp4" -i "$OUT/audio/soundtrack-44s.aac" \
+  ffmpeg -y -i "$OUT/proofvisor-mockup-v4.mp4" -i "$OUT/audio/soundtrack-44s.aac" \
     -c:v copy -c:a aac -ar 48000 -shortest -movflags +faststart \
-    "$OUT/agentvisor-mockup-v9-audio.mp4" 2>&1 | tail -1
+    "$OUT/proofvisor-mockup-v9-audio.mp4" 2>&1 | tail -1
 fi
 
 if [ -f "$OUT/audio/narration-44s.aac" ]; then
   echo "→ Muxing narrated cut (definitive tour)"
-  ffmpeg -y -i "$OUT/agentvisor-mockup-v4.mp4" -i "$OUT/audio/narration-44s.aac" \
+  ffmpeg -y -i "$OUT/proofvisor-mockup-v4.mp4" -i "$OUT/audio/narration-44s.aac" \
     -c:v copy -af "volume=5dB,alimiter=attack=5:release=80:limit=0.89:level=false" -c:a aac -ar 48000 -shortest -movflags +faststart \
-    "$OUT/agentvisor-mockup-v20-tour.mp4" 2>&1 | tail -1
-  ls -lh "$OUT/agentvisor-mockup-v20-tour.mp4"
+    "$OUT/proofvisor-mockup-v20-tour.mp4" 2>&1 | tail -1
+  ls -lh "$OUT/proofvisor-mockup-v20-tour.mp4"
 fi

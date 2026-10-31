@@ -9,8 +9,8 @@ import { ipMatchesAny } from "./cidr.js";
  * throws — routes that require auth call `requireSession()` below.
  *
  * Two auth flavors:
- *   1. av_session cookie (JWT) — the console SPA / OAuth / SAML users.
- *   2. Authorization: Bearer av_srv_<plaintext> — programmatic API keys.
+ *   1. pv_session cookie (JWT) — the console SPA / OAuth / SAML users.
+ *   2. Authorization: Bearer pv_srv_<plaintext> — programmatic API keys.
  *
  * Cookie path also confirms that:
  *   1. the (userId, orgId) pair in the token is still an active membership
@@ -34,9 +34,9 @@ export async function authenticate(
 ): Promise<void> {
   // ---------- API key path ----------
   const auth = req.headers.authorization;
-  if (typeof auth === "string" && auth.startsWith("Bearer av_srv_")) {
+  if (typeof auth === "string" && auth.startsWith("Bearer pv_srv_")) {
     const plaintext = auth.slice("Bearer ".length);
-    const hint = plaintext.slice("av_srv_".length, "av_srv_".length + 8);
+    const hint = plaintext.slice("pv_srv_".length, "pv_srv_".length + 8);
     const candidates = await db.apiKey.findMany({
       where: { tokenHint: hint, revokedAt: null },
       select: {
@@ -66,7 +66,7 @@ export async function authenticate(
     }
     // R100 F2: fall through to the cookie path when the API-key
     // lookup finds no match. Prior shape returned early here —
-    // any Authorization header carrying the av_srv_ prefix
+    // any Authorization header carrying the pv_srv_ prefix
     // (attacker-injected via a compromised browser extension,
     // a misconfigured API gateway that appends a stale bearer,
     // or an attacker-controlled fetch from same-site) suppressed

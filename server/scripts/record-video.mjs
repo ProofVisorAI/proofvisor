@@ -1,11 +1,11 @@
 /*
- * Record a ~60s walkthrough of the AgentVisor console for investors.
+ * Record a ~60s walkthrough of the ProofVisor console for investors.
  *
  * Distilled flow — one narrative arc: problem (fleet of agents) →
  * proof (live sessions, policy blocks, receipts) → integration
  * story (SSO + webhooks + audit).
  *
- * Runs against the live site at https://agentvisorai.me/app/ in
+ * Runs against the live site at https://proofvisor.com/app/ in
  * MOCK_MODE=true (built-in Northwind Traders fixtures, already
  * populated, no backend needed). Playwright records to WebM which
  * we then re-encode to MP4.
@@ -14,10 +14,10 @@ import { chromium } from "playwright";
 import { rmSync, existsSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
-const OUT_DIR = "/tmp/av-video";
+const OUT_DIR = "/tmp/pv-video";
 if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true });
 
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/app/";
 
 async function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -43,7 +43,7 @@ const page = await context.newPage();
 // via localStorage BEFORE the SPA JS runs so the login form actually
 // renders for the cinematic "watch someone log in" moment.
 await page.addInitScript(() => {
-  try { localStorage.setItem("av_mock_signed_out", "1"); } catch {}
+  try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {}
 });
 await page.goto(SITE + "#/login", { waitUntil: "networkidle" });
 await page.waitForSelector('input#email', { timeout: 15000 });
@@ -109,6 +109,6 @@ if (files.length === 0) {
   process.exit(1);
 }
 const src = join(OUT_DIR, files[0]);
-const dst = join(OUT_DIR, "agentvisor-console-walkthrough.webm");
+const dst = join(OUT_DIR, "proofvisor-console-walkthrough.webm");
 renameSync(src, dst);
 console.log(dst);

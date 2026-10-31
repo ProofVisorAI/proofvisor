@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 async function fixture(t, migration, api, environment = {}) {
-  const dir = await mkdtemp(join(tmpdir(), "av-container-entrypoint-"));
+  const dir = await mkdtemp(join(tmpdir(), "pv-container-entrypoint-"));
   await mkdir(join(dir, "node_modules/prisma/build"), { recursive: true });
   await mkdir(join(dir, "dist"));
   await mkdir(join(dir, "prisma"));

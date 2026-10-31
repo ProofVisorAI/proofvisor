@@ -1,43 +1,43 @@
 #!/bin/sh
-# AgentVisor AI — daemon installer.
+# ProofVisor — daemon installer.
 #
 # What this does, in order:
 #   1. Detects your platform. For Linux (x86_64/aarch64, any libc —
 #      the Linux binaries are static musl) and macOS (arm64/x86_64)
 #      it downloads the prebuilt release binaries from GitHub, verifies
-#      the SHA-256 checksum, installs `agentvisord` + `avctl`, and
+#      the SHA-256 checksum, installs `proofvisord` + `pvctl`, and
 #      smoke-runs them to prove they execute on YOUR system.
-#   2. Anywhere else — or with AV_INSTALL_SOURCE=1 — it cargo-installs
+#   2. Anywhere else — or with PV_INSTALL_SOURCE=1 — it cargo-installs
 #      both from source, exactly as before:
-#        https://github.com/AgentVisorAI/agentvisor
+#        https://github.com/ProofVisorAI/proofvisor
 #      (Windows: use WSL; the static Linux binaries run there.
 #       Full verified matrix incl. 32-bit ARM, riscv64, ppc64le and
-#       big-endian s390x: https://agentvisorai.me/PLATFORMS.md)
-#   3. Prints the one guided next step (`avctl setup`).
+#       big-endian s390x: https://proofvisor.com/PLATFORMS.md)
+#   3. Prints the one guided next step (`pvctl setup`).
 #
 # Environment overrides:
-#   AV_VERSION=0.1.0-rc.5   release to install (default: pinned below)
-#   AV_INSTALL_DIR=~/bin    where prebuilt binaries land
-#   AV_INSTALL_SOURCE=1     skip prebuilt path, build from source
+#   PV_VERSION=0.1.0-rc.5   release to install (default: pinned below)
+#   PV_INSTALL_DIR=~/bin    where prebuilt binaries land
+#   PV_INSTALL_SOURCE=1     skip prebuilt path, build from source
 #
 # Nothing here touches your shell profile, sudo, or anything outside
 # the install dir / ~/.cargo. Uninstall: remove the two binaries, or
-# `cargo uninstall av-harness av-cli` for source installs.
+# `cargo uninstall pv-harness pv-cli` for source installs.
 set -eu
 
-REPO="https://github.com/AgentVisorAI/agentvisor"
-RELEASE_REPO="https://github.com/AgentVisorAI/agentvisor-ai"
+REPO="https://github.com/ProofVisorAI/proofvisor"
+RELEASE_REPO="https://github.com/ProofVisorAI/proofvisor"
 # Pinned to the latest published release; bump alongside each tag.
-AV_VERSION="${AV_VERSION:-0.1.0-rc.5}"
+PV_VERSION="${PV_VERSION:-0.1.0-rc.5}"
 
 say()  { printf '\033[1m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 
-say "AgentVisor AI installer"
+say "ProofVisor installer"
 
 # ── Platform → release target triple ────────────────────────────────
 target=""
-if [ "${AV_INSTALL_SOURCE:-}" != "1" ]; then
+if [ "${PV_INSTALL_SOURCE:-}" != "1" ]; then
   os="$(uname -s 2>/dev/null || echo unknown)"
   arch="$(uname -m 2>/dev/null || echo unknown)"
   case "$os/$arch" in
@@ -61,11 +61,11 @@ install_prebuilt() {
     note "'tar' is missing — install it (e.g. dnf/zypper/apt install tar) and re-run."
     return 1
   fi
-  stage="agentvisor-ai-${AV_VERSION}-${target}"
-  url="${RELEASE_REPO}/releases/download/v${AV_VERSION}/${stage}.tar.gz"
+  stage="proofvisor-${PV_VERSION}-${target}"
+  url="${RELEASE_REPO}/releases/download/v${PV_VERSION}/${stage}.tar.gz"
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
-  say "Downloading prebuilt binaries (${target}, v${AV_VERSION}) …"
+  say "Downloading prebuilt binaries (${target}, v${PV_VERSION}) …"
   if ! curl -fsSL "$url" -o "$tmp/pkg.tar.gz" || ! curl -fsSL "$url.sha256" -o "$tmp/pkg.sha256"; then
     return 1
   fi
@@ -95,14 +95,14 @@ install_prebuilt() {
   }
   # Default into ~/.cargo/bin when it exists (already on PATH for every
   # Rust user and the CI consumer); otherwise ~/.local/bin.
-  if [ -n "${AV_INSTALL_DIR:-}" ]; then dest="$AV_INSTALL_DIR"
+  if [ -n "${PV_INSTALL_DIR:-}" ]; then dest="$PV_INSTALL_DIR"
   elif [ -d "$HOME/.cargo/bin" ]; then dest="$HOME/.cargo/bin"
   else dest="$HOME/.local/bin"; fi
   mkdir -p "$dest" || {
     note "cannot create $dest"
     return 1
   }
-  install -m 0755 "$tmp/$stage/agentvisord" "$tmp/$stage/avctl" "$dest/" || {
+  install -m 0755 "$tmp/$stage/proofvisord" "$tmp/$stage/pvctl" "$dest/" || {
     note "copying binaries into $dest failed"
     return 1
   }
@@ -110,9 +110,9 @@ install_prebuilt() {
   # arrived intact — not that they execute HERE (round-93 find: glibc
   # mismatches passed every check, then died at first run). On failure,
   # remove the dead binaries and fall back to the source build.
-  if ! "$dest/avctl" --version >/dev/null 2>&1 || ! "$dest/agentvisord" --version >/dev/null 2>&1; then
+  if ! "$dest/pvctl" --version >/dev/null 2>&1 || ! "$dest/proofvisord" --version >/dev/null 2>&1; then
     note "installed binaries do not run on this system (libc mismatch?)"
-    rm -f "$dest/avctl" "$dest/agentvisord"
+    rm -f "$dest/pvctl" "$dest/proofvisord"
     return 1
   fi
   say "Installed to $dest (checksum verified, binaries smoke-tested)."
@@ -140,19 +140,19 @@ if [ -z "$installed" ]; then
     note "then re-run this script."
     exit 1
   fi
-  say "Installing agentvisord (runtime daemon) from $REPO …"
-  cargo install --locked --git "$REPO" av-harness
-  say "Installing avctl (operator CLI) …"
-  cargo install --locked --git "$REPO" av-cli
+  say "Installing proofvisord (runtime daemon) from $REPO …"
+  cargo install --locked --git "$REPO" pv-harness
+  say "Installing pvctl (operator CLI) …"
+  cargo install --locked --git "$REPO" pv-cli
   say "Installed."
 fi
 note "Get a working proxy in one guided step:"
 note ""
-note "  avctl setup"
+note "  pvctl setup"
 note ""
-note "It writes agentvisor.toml, checks your provider key, and prints"
+note "It writes proofvisor.toml, checks your provider key, and prints"
 note "the localhost URL to point your AI app at. The hosted-console"
-note "link (AV_INGEST_TOKEN from Deployments → New deployment) ships"
+note "link (PV_INGEST_TOKEN from Deployments → New deployment) ships"
 note "with the beta — tokens you mint now stay valid."
 note ""
-note "Docs: https://agentvisorai.me/api/  ·  Console: https://agentvisorai.me/app/"
+note "Docs: https://proofvisor.com/api/  ·  Console: https://proofvisor.com/app/"

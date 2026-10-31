@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Verify a locally built AgentVisor image against an isolated mock provider.
+"""Verify a locally built ProofVisor image against an isolated mock provider.
 
-Usage: python3 scripts/container-smoke.py --image agentvisor-ai:local
-       python3 scripts/container-smoke.py --console-image agentvisor-api:local
+Usage: python3 scripts/container-smoke.py --image proofvisor:local
+       python3 scripts/container-smoke.py --console-image proofvisor-api:local
 Docker is required. Only this run's uniquely named resources are removed.
 """
 import argparse
@@ -54,7 +54,7 @@ class Smoke:
         self.image = image
         self.port = port
         self.container_port = 8484
-        self.prefix = "av-container-smoke-" + uuid.uuid4().hex[:12]
+        self.prefix = "pv-container-smoke-" + uuid.uuid4().hex[:12]
         self.work = Path(tempfile.mkdtemp(prefix=self.prefix + "-"))
         self.containers, self.volumes, self.images, self.networks = [], [], [], []
         self.step = 0
@@ -111,7 +111,7 @@ class Smoke:
         configuration = json.loads(self.run(["docker", "image", "inspect", self.image]))[0]["Config"]
         if configuration.get("User", "").split(":")[0] != "65532":
             raise RuntimeError("Production image does not declare non-root UID 65532")
-        if configuration.get("Entrypoint") != ["agentvisord"]:
+        if configuration.get("Entrypoint") != ["proofvisord"]:
             raise RuntimeError("Production image has an unexpected entry point")
         self.mock_image = self.prefix + "-provider"
         self.images.append(self.mock_image)
@@ -151,19 +151,19 @@ class Smoke:
         self.run(["docker", "run", "-d", "--name", self.gateway, "--network", network,
                   "--read-only", "--tmpfs", "/tmp:uid=65532,gid=65532,mode=0700",
                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "512",
-                  "-p", "127.0.0.1:{}:8484".format(self.port or ""), "-e", "AV_UPSTREAM_URL=http://provider:8080",
-                  "-e", "AV_UPSTREAM_API_KEY=smoke-provider-key",
+                  "-p", "127.0.0.1:{}:8484".format(self.port or ""), "-e", "PV_UPSTREAM_URL=http://provider:8080",
+                  "-e", "PV_UPSTREAM_API_KEY=smoke-provider-key",
                   "-e", "RUST_LOG=info",
-                  "-e", "AV_SIGNING_SEED_FILE=/app/data/signing.seed"] + mounts + [self.image])
+                  "-e", "PV_SIGNING_SEED_FILE=/app/data/signing.seed"] + mounts + [self.image])
         self.refresh_port()
         self.ready()
-        self.run(["docker", "exec", self.gateway, "avctl", "health", "--url", "http://127.0.0.1:8484/readyz"])
+        self.run(["docker", "exec", self.gateway, "pvctl", "health", "--url", "http://127.0.0.1:8484/readyz"])
         print("PASS: production image boots as UID 65532 with read-only root and writable data/spool; readiness and CLI health", flush=True)
         session = "container-" + uuid.uuid4().hex
         status, body = self.request("/v1/chat/completions", {
             "model": "container-smoke", "stream": True,
             "messages": [{"role": "user", "content": "hello"}]
-        }, {"Content-Type": "application/json", "x-av-session": session, "x-av-workflow": "signed"})
+        }, {"Content-Type": "application/json", "x-pv-session": session, "x-pv-workflow": "signed"})
         if status != 200 or b"hello from container provider" not in body or b"[DONE]" not in body:
             raise RuntimeError("Proxy request failed: {} {}".format(status, body.decode(errors="replace")))
         print("PASS: real streaming request reaches isolated provider with configured credentials", flush=True)
@@ -181,7 +181,7 @@ class Smoke:
         self.verify_receipt(body.decode(), pubkey)
         receipt["cost"]["prompt_tokens"] = 999999
         self.verify_receipt(json.dumps(receipt), pubkey, expected=1)
-        print("PASS: packaged avctl verifies the signed receipt and refuses a modified receipt", flush=True)
+        print("PASS: packaged pvctl verifies the signed receipt and refuses a modified receipt", flush=True)
         self.run(["docker", "restart", "--time", "30", self.gateway], timeout=45)
         self.refresh_port()
         self.ready()
@@ -215,7 +215,7 @@ class Smoke:
         events = []
         for partition in range(8):
             output = self.run([
-                "docker", "exec", self.gateway, "avctl", "event-tail",
+                "docker", "exec", self.gateway, "pvctl", "event-tail",
                 "--data-dir", "/app/data/bridge", "--topic", "agent.receipt",
                 "--partition", str(partition), "--offset", "0", "--max", "100"])
             for line in output.splitlines():
@@ -240,11 +240,11 @@ class Smoke:
         self.base = "http://127.0.0.1:" + port["HostPort"]
 
     def public_key(self):
-        return json.loads(self.run(["docker", "exec", self.gateway, "avctl", "pubkey",
+        return json.loads(self.run(["docker", "exec", self.gateway, "pvctl", "pubkey",
                                    "--seed", "/app/data/signing.seed"]))["public_key_hex"]
 
     def verify_receipt(self, receipt, key, expected=0):
-        # avctl refuses pipes and special files. Docker also refuses cp into
+        # pvctl refuses pipes and special files. Docker also refuses cp into
         # a container with a read-only root, even when the destination is a
         # tmpfs. Put a normal file in a separate volume, then run the packaged
         # CLI with that volume mounted read-only and no network access.
@@ -259,7 +259,7 @@ class Smoke:
                   "p.unlink(missing_ok=True); p.write_text(sys.stdin.read()); p.chmod(0o444)"], input=receipt)
         output = self.run(["docker", "run", "--rm", "--network", "none", "--read-only",
                            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-                           "-v", self.receipt_volume + ":/evidence:ro", "--entrypoint", "avctl", self.image,
+                           "-v", self.receipt_volume + ":/evidence:ro", "--entrypoint", "pvctl", self.image,
                            "receipt-verify", "/evidence/receipt.json", "--public-key-hex", key], expected=expected)
         if expected == 0 and not output.startswith("verified "):
             raise RuntimeError("Receipt verifier did not report verified")
@@ -303,7 +303,7 @@ class ConsoleSmoke(Smoke):
                 # TCP check: the image's temporary init server listens only
                 # on its local socket and is not the server clients reach.
                 self.run(["docker", "exec", self.database, "pg_isready", "-h", "127.0.0.1",
-                          "-U", "agentvisor", "-d", "agentvisor"])
+                          "-U", "proofvisor", "-d", "proofvisor"])
                 return
             except RuntimeError:
                 if time.monotonic() >= deadline:
@@ -326,9 +326,9 @@ class ConsoleSmoke(Smoke):
         self.run(["docker", "network", "create", network])
         password = secrets.token_hex(24)
         db_environment = self.environment_file("database.env", {
-            "POSTGRES_USER": "agentvisor", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "agentvisor"})
+            "POSTGRES_USER": "proofvisor", "POSTGRES_PASSWORD": password, "POSTGRES_DB": "proofvisor"})
         api_environment = self.environment_file("api.env", {
-            "DATABASE_URL": "postgresql://agentvisor:" + password + "@database:5432/agentvisor?connect_timeout=2",
+            "DATABASE_URL": "postgresql://proofvisor:" + password + "@database:5432/proofvisor?connect_timeout=2",
             "JWT_SECRET": secrets.token_hex(32), "NODE_ENV": "production", "PORT": "8080",
             "APP_BASE_URL": "https://console.example.test", "ALLOWED_ORIGINS": "https://console.example.test",
             "SMTP_URL": "smtp://fixture:fixture@127.0.0.1:2525"})
@@ -344,7 +344,7 @@ class ConsoleSmoke(Smoke):
                   "--read-only", "--tmpfs", "/tmp:uid={},gid={},mode=0700".format(uid, uid),
                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                   "--memory", "512m", "--pids-limit", "256", "--env-file", api_environment,
-                  "-e", "DATABASE_URL=postgresql://agentvisor:intentionally-invalid@database:5432/agentvisor?connect_timeout=2",
+                  "-e", "DATABASE_URL=postgresql://proofvisor:intentionally-invalid@database:5432/proofvisor?connect_timeout=2",
                   self.image])
         deadline = time.monotonic() + 25
         while True:
@@ -403,7 +403,7 @@ console.log(JSON.stringify({node:process.version, uid:process.getuid(), prisma:r
                           timeout=180, env=environment)
         print(output, end="", flush=True)
         if self.daemon_binaries:
-            environment.update(AGENTVISORD=self.daemon_binaries[0], AVCTL=self.daemon_binaries[1])
+            environment.update(PROOFVISORD=self.daemon_binaries[0], PVCTL=self.daemon_binaries[1])
             output = self.run(["node", str(Path(__file__).resolve().parents[1] /
                                          "server/scripts/daemon-console-drill.mjs")], timeout=180, env=environment)
             print(output, end="", flush=True)
@@ -426,19 +426,19 @@ console.log(JSON.stringify({node:process.version, uid:process.getuid(), prisma:r
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     images = parser.add_mutually_exclusive_group(required=True)
-    images.add_argument("--image", help="AgentVisor daemon image")
-    images.add_argument("--console-image", help="AgentVisor Node console API image")
+    images.add_argument("--image", help="ProofVisor daemon image")
+    images.add_argument("--console-image", help="ProofVisor Node console API image")
     parser.add_argument("--port", type=int, default=0, help="Loopback host port; default chooses a free port")
-    parser.add_argument("--agentvisord", help="Also run the real daemon crash drill against the console image")
-    parser.add_argument("--avctl", help="CLI binary for the real daemon crash drill")
+    parser.add_argument("--proofvisord", help="Also run the real daemon crash drill against the console image")
+    parser.add_argument("--pvctl", help="CLI binary for the real daemon crash drill")
     args = parser.parse_args()
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
-    if bool(args.agentvisord) != bool(args.avctl) or (args.agentvisord and not args.console_image):
-        parser.error("--agentvisord and --avctl must be used together with --console-image")
+    if bool(args.proofvisord) != bool(args.pvctl) or (args.proofvisord and not args.console_image):
+        parser.error("--proofvisord and --pvctl must be used together with --console-image")
     smoke = ConsoleSmoke(args.console_image, args.port) if args.console_image else Smoke(args.image, args.port)
-    if args.agentvisord:
-        smoke.daemon_binaries = [str(Path(binary).resolve()) for binary in (args.agentvisord, args.avctl)]
+    if args.proofvisord:
+        smoke.daemon_binaries = [str(Path(binary).resolve()) for binary in (args.proofvisord, args.pvctl)]
         if not all(os.access(binary, os.X_OK) and Path(binary).is_file() for binary in smoke.daemon_binaries):
             parser.error("Both daemon crash-drill binaries must exist and be executable")
     print("Container verification logs: " + str(smoke.work), flush=True)

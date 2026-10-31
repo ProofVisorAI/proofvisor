@@ -7,7 +7,7 @@
 # Round-44 F5 (see deny.toml for the full analysis): RUSTSEC-2023-0071
 # (Marvin Attack on `rsa` 0.9.x) is UNREACHABLE from our runtime. `rsa`
 # arrives transitively via jsonwebtoken's monolithic `rust_crypto`
-# feature; the JWT validator (crates/av-identity/src/validator.rs)
+# feature; the JWT validator (crates/pv-identity/src/validator.rs)
 # whitelists exactly EdDSA + HS256 and rejects any other `alg` before
 # decode, so the RSA timing side-channel code path never executes. No
 # fixed upstream release exists (RustCrypto/RSA#626). Revisit if

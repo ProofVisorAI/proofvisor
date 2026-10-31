@@ -64,7 +64,7 @@ def mint(secret, subject):
         return base64.urlsafe_b64encode(value).rstrip(b'=').decode()
     now = int(time.time())
     header = {'alg': 'HS256', 'typ': 'JWT', 'kid': 'dev-hmac'}
-    claims = {'sub': subject, 'iss': 'provider-smoke', 'aud': 'agentvisor-ai',
+    claims = {'sub': subject, 'iss': 'provider-smoke', 'aud': 'proofvisor',
               'iat': now, 'exp': now + 300, 'jti': str(uuid.uuid4()),
               'instance_uid': subject, 'charter': 'validation', 'version': '1.0',
               'scopes': ['*']}
@@ -147,7 +147,7 @@ def request(base, path, token=None, data=None, session=None):
     if token:
         headers['Authorization'] = 'Bearer ' + token
     if session:
-        headers['X-AV-Session'] = session
+        headers['X-PV-Session'] = session
     req = Request(base + path, headers=headers,
                   data=json.dumps(data).encode() if data is not None else None)
     opener = build_opener(ProxyHandler({}), NoRedirect())
@@ -173,9 +173,9 @@ def run(args):
         raise ValidationError('Configure a valid OPENAI_API_KEY in the environment')
     if not 10 <= args.timeout_seconds <= 300:
         raise ValidationError('Timeout must be between 10 and 300 seconds')
-    binaries = {name: Path(getattr(args, name)).resolve() for name in ['agentvisord', 'avctl']}
+    binaries = {name: Path(getattr(args, name)).resolve() for name in ['proofvisord', 'pvctl']}
     if any(not p.is_file() or not os.access(p, os.X_OK) for p in binaries.values()):
-        raise ValidationError('Build agentvisord and avctl before running the drill')
+        raise ValidationError('Build proofvisord and pvctl before running the drill')
     output = Path(args.output_dir).absolute()
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     if (output.is_symlink() or output.stat().st_uid != os.getuid()
@@ -220,9 +220,9 @@ def run(args):
                   'bridge_data_dir': str(work / 'bridge'), 'shutdown_drain_timeout_s': 5}
         (work / 'config.toml').write_text('\n'.join(k+' = '+json.dumps(v) for k, v in config.items())+'\n')
         environment = {k: v for k, v in os.environ.items() if k in ('PATH', 'HOME', 'TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR')}
-        environment.update(OPENAI_API_KEY=key, AV_SIGNING_SEED_FILE=str(work / 'signing.seed'), RUST_LOG='warn')
+        environment.update(OPENAI_API_KEY=key, PV_SIGNING_SEED_FILE=str(work / 'signing.seed'), RUST_LOG='warn')
         with (work / 'daemon.log').open('wb') as log:
-            process = subprocess.Popen([str(work / 'agentvisord'), '--config', str(work / 'config.toml')],
+            process = subprocess.Popen([str(work / 'proofvisord'), '--config', str(work / 'config.toml')],
                                        cwd=work, env=environment, stdout=log, stderr=subprocess.STDOUT,
                                        start_new_session=True)
         ready = time.monotonic() + 20
@@ -255,16 +255,16 @@ def run(args):
         check('receipt records actual provider token usage', all(parsed['cost'][k] == report['stream']['usage'][k]
                                                                for k in ['prompt_tokens', 'completion_tokens']))
         (work / 'receipt.json').write_bytes(receipt)
-        cli_env = {k: v for k, v in environment.items() if k not in ('OPENAI_API_KEY', 'AV_SIGNING_SEED_FILE')}
-        public = subprocess.run([str(work / 'avctl'), 'pubkey', '--seed', str(work / 'signing.seed')],
+        cli_env = {k: v for k, v in environment.items() if k not in ('OPENAI_API_KEY', 'PV_SIGNING_SEED_FILE')}
+        public = subprocess.run([str(work / 'pvctl'), 'pubkey', '--seed', str(work / 'signing.seed')],
                                 env=cli_env, capture_output=True, text=True, timeout=10, check=True)
         public_key = json.loads(public.stdout)['public_key_hex']
-        verify = subprocess.run([str(work / 'avctl'), 'receipt-verify', str(work / 'receipt.json'),
+        verify = subprocess.run([str(work / 'pvctl'), 'receipt-verify', str(work / 'receipt.json'),
                                  '--public-key-hex', public_key], env=cli_env, capture_output=True, timeout=10)
         check('receipt verifies against the fixture signing key', verify.returncode == 0)
         parsed['cost']['prompt_tokens'] += 1
         (work / 'tampered.json').write_text(json.dumps(parsed))
-        tampered = subprocess.run([str(work / 'avctl'), 'receipt-verify', str(work / 'tampered.json'),
+        tampered = subprocess.run([str(work / 'pvctl'), 'receipt-verify', str(work / 'tampered.json'),
                                    '--public-key-hex', public_key], env=cli_env, capture_output=True, timeout=10)
         check('receipt tampering is refused', tampered.returncode != 0)
         check('receipt contains no provider or client credentials', all(s.encode() not in receipt for s in secrets))
@@ -327,8 +327,8 @@ def main():
     parser.add_argument('--base-url', default='https://api.openai.com')
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--timeout-seconds', type=int, default=120)
-    parser.add_argument('--agentvisord', default=str(ROOT/'target/release/agentvisord'))
-    parser.add_argument('--avctl', default=str(ROOT/'target/release/avctl'))
+    parser.add_argument('--proofvisord', default=str(ROOT/'target/release/proofvisord'))
+    parser.add_argument('--pvctl', default=str(ROOT/'target/release/pvctl'))
     os.umask(0o077)
     try:
         report = run(parser.parse_args())

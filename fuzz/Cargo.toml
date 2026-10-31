@@ -1,5 +1,5 @@
 [package]
-name = "av-fuzz"
+name = "pv-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -17,14 +17,14 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 
 # `otel` is required: `bounded_attribute` fuzzes
-# `av_harness::otel_content::bounded`, and that module only exists when
+# `pv_harness::otel_content::bounded`, and that module only exists when
 # the `otel` feature is on.
-av-harness = { path = "../crates/av-harness", features = ["otel"] }
-av-core = { path = "../crates/av-core" }
-av-compress = { path = "../crates/av-compress" }
-av-receipts = { path = "../crates/av-receipts" }
-av-sandbox = { path = "../crates/av-sandbox" }
-av-identity = { path = "../crates/av-identity" }
+pv-harness = { path = "../crates/pv-harness", features = ["otel"] }
+pv-core = { path = "../crates/pv-core" }
+pv-compress = { path = "../crates/pv-compress" }
+pv-receipts = { path = "../crates/pv-receipts" }
+pv-sandbox = { path = "../crates/pv-sandbox" }
+pv-identity = { path = "../crates/pv-identity" }
 
 [[bin]]
 name = "canonicalize_receipt_subject"

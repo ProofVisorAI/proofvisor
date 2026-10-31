@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in a released version of AgentVisor AI.
+description: Report a defect in a released version of ProofVisor.
 title: "bug: "
 labels:
   - bug
@@ -16,7 +16,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `avctl --version` or the release/commit you ran.
+      description: Output of `pvctl --version` or the release/commit you ran.
       placeholder: v0.1.0 (or 68e4d1b)
     validations:
       required: true

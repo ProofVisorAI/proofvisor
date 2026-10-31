@@ -1,4 +1,4 @@
-# AgentVisor AI — Investor Mockup Video Storyboard
+# ProofVisor — Investor Mockup Video Storyboard
 # Duration: ~44 seconds (v21 distilled cut). Target: 30-second understanding.
 
 ## THE PITCH (in one line)
@@ -9,7 +9,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 00:00 - 00:06  TITLE CARD "AI agents are making real decisions"        │
 │                Fade in on brand color. One sentence, huge type.         │
-│                Bottom: "AgentVisor AI" logo (small).                    │
+│                Bottom: "ProofVisor" logo (small).                    │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ 00:06 - 00:12  TITLE CARD "$8,400 problem"                              │
 │                "One AI agent, one bad tool call — a $8,400 mistake     │
@@ -28,13 +28,13 @@
 │                Caption: "Cryptographically signed. Verifiable offline."│
 ├─────────────────────────────────────────────────────────────────────────┤
 │ 00:32 - 00:42  /verify PAGE — the "twist"                              │
-│                Cut to agentvisorai.me/verify. Drop the sample.         │
+│                Cut to proofvisor.com/verify. Drop the sample.         │
 │                Green ✅ SIGNATURE VERIFIES fills the screen.            │
 │                Caption: "Anyone with the link can verify."             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ 00:42 - 00:50  CLOSING CARD                                             │
 │                "AI agents you can hand to an auditor."                  │
-│                "agentvisorai.me"                                        │
+│                "proofvisor.com"                                        │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ## Design decisions

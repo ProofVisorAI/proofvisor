@@ -95,15 +95,15 @@ class StreamContracts(unittest.TestCase):
 class RealDaemonContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.daemon = Path(os.environ.get('AGENTVISORD', ROOT/'target/debug/agentvisord'))
-        cls.cli = Path(os.environ.get('AVCTL', ROOT/'target/debug/avctl'))
+        cls.daemon = Path(os.environ.get('PROOFVISORD', ROOT/'target/debug/proofvisord'))
+        cls.cli = Path(os.environ.get('PVCTL', ROOT/'target/debug/pvctl'))
         if not cls.daemon.is_file() or not cls.cli.is_file():
-            raise RuntimeError('Build agentvisord and avctl or set AGENTVISORD and AVCTL; this suite does not skip live contracts')
+            raise RuntimeError('Build proofvisord and pvctl or set PROOFVISORD and PVCTL; this suite does not skip live contracts')
 
     def execute(self, directory, origin, extra=(), allow=True, key=KEY, timeout=45):
         command = [sys.executable, str(ROOT/'scripts/provider-smoke.py'), '--model', 'loopback-fixture',
                    '--base-url', origin, '--output-dir', str(directory),
-                   '--agentvisord', str(self.daemon), '--avctl', str(self.cli), '--timeout-seconds', '30']
+                   '--proofvisord', str(self.daemon), '--pvctl', str(self.cli), '--timeout-seconds', '30']
         if allow:
             command.append('--allow-live-request')
         environment = os.environ.copy()
@@ -170,7 +170,7 @@ class RealDaemonContracts(unittest.TestCase):
             output = Path(folder)/'result'
             command = [sys.executable, str(ROOT/'scripts/provider-smoke.py'), '--allow-live-request',
                        '--model', 'loopback-fixture', '--base-url', origin, '--output-dir', str(output),
-                       '--agentvisord', str(self.daemon), '--avctl', str(self.cli)]
+                       '--proofvisord', str(self.daemon), '--pvctl', str(self.cli)]
             environment = os.environ.copy()
             environment['OPENAI_API_KEY'] = KEY
             process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -195,7 +195,7 @@ class RealDaemonContracts(unittest.TestCase):
     def test_startup_failure_cleans_up(self):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder)/'result'
-            result = self.execute(output, 'http://127.0.0.1:1', extra=['--agentvisord', '/usr/bin/false'])
+            result = self.execute(output, 'http://127.0.0.1:1', extra=['--proofvisord', '/usr/bin/false'])
             self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
             report = json.loads((output/'result.json').read_text())
             self.assertEqual(report['status'], 'failed')

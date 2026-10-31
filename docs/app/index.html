@@ -12,19 +12,19 @@
   <!--
     Strict CSP: no inline scripts (they're extracted to config.js +
     crash-guard.js), no third-party origins, connect-src limited to
-    self + the deployed AgentVisor API. Any XSS payload landed in
+    self + the deployed ProofVisor API. Any XSS payload landed in
     daemon-supplied event body is inert. base-uri prevents <base> tag
     hijacking. object-src / frame-src none blocks embed/plugin abuse.
   -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.agentvisorai.me; img-src 'self' data:; font-src 'self' data:; manifest-src 'self'; object-src 'none'; frame-src 'none'; media-src 'none'" />
-  <title>AgentVisor AI · Console</title>
-  <meta name="description" content="AgentVisor AI console. Sign in, view your fleet of policed agent sessions, and manage daemon deployments." />
-  <meta property="og:title" content="AgentVisor AI · Console" />
+        content="default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.proofvisor.com; img-src 'self' data:; font-src 'self' data:; manifest-src 'self'; object-src 'none'; frame-src 'none'; media-src 'none'" />
+  <title>ProofVisor · Console</title>
+  <meta name="description" content="ProofVisor console. Sign in, view your fleet of policed agent sessions, and manage daemon deployments." />
+  <meta property="og:title" content="ProofVisor · Console" />
   <meta property="og:description" content="A live demo workspace: 32 policed agent sessions, 7 blocked actions, $31,840 kept from bad orders. Click everything." />
   <meta property="og:type" content="website" />
-  <meta property="og:url" content="https://agentvisorai.me/app/" />
-  <meta property="og:image" content="https://agentvisorai.me/social-preview.png" />
+  <meta property="og:url" content="https://proofvisor.com/app/" />
+  <meta property="og:image" content="https://proofvisor.com/social-preview.png" />
   <meta name="twitter:card" content="summary_large_image" />
 
   <link rel="icon" type="image/png" href="../logo.png" />
@@ -39,7 +39,7 @@
   <noscript>
     <div style="max-width: 640px; margin: 80px auto; font: 14px/1.5 sans-serif;">
       <h1>JavaScript required</h1>
-      <p>The AgentVisor console is a client-side application. Please enable JavaScript to continue.</p>
+      <p>The ProofVisor console is a client-side application. Please enable JavaScript to continue.</p>
     </div>
   </noscript>
 

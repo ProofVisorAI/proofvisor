@@ -77,7 +77,7 @@ try {
   await page.getByText("No SSO configured for that domain. Ask your admin to add your IdP in Settings → SSO.", { exact: true }).waitFor();
   check("A successful empty discovery explains the missing workspace configuration", true);
   mode = "available";
-  await page.evaluate(() => sessionStorage.setItem("av_return_to", "#/sessions?status=live"));
+  await page.evaluate(() => sessionStorage.setItem("pv_return_to", "#/sessions?status=live"));
   await submit();
   await page.waitForURL(origin + "/api/v1/auth/saml/fixture/login?**");
   check("Retry after recovery navigates to the discovered login endpoint with its return path", new URL(page.url()).searchParams.get("RelayState") === "#/sessions?status=live");

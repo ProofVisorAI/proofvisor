@@ -74,9 +74,9 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: agentvisor
+          POSTGRES_USER: proofvisor
           POSTGRES_PASSWORD: devpw
-          POSTGRES_DB: agentvisor
+          POSTGRES_DB: proofvisor
           # Round-112 TZ guard: run the database in a non-UTC zone so
           # any naive-timestamp vs timestamptz comparison (the class
           # behind the zeroed /overview series and the 4.5h-stalled
@@ -87,12 +87,12 @@ jobs:
           PGTZ: America/New_York
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U agentvisor"
+          --health-cmd "pg_isready -U proofvisor"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://agentvisor:devpw@127.0.0.1:5432/agentvisor
+      DATABASE_URL: postgres://proofvisor:devpw@127.0.0.1:5432/proofvisor
       JWT_SECRET: ci_only_secret_at_least_32_bytes_of_entropy_here_ok
       ALLOWED_ORIGINS: http://127.0.0.1:8787
       PORT: "8985"
@@ -124,7 +124,7 @@ jobs:
       - name: Build daemon and CLI for console integration
         env:
           CARGO_BUILD_JOBS: "2"
-        run: cargo build --locked -p av-harness --bin agentvisord -p av-cli --bin avctl
+        run: cargo build --locked -p pv-harness --bin proofvisord -p pv-cli --bin pvctl
       - name: Prisma generate
         working-directory: server
         run: npx prisma generate
@@ -155,8 +155,8 @@ jobs:
         with:
           name: console-recovery-evidence
           path: |
-            ${{ runner.temp }}/av-console-recovery-*/report.json
-            ${{ runner.temp }}/av-console-recovery-*/api-*.log
+            ${{ runner.temp }}/pv-console-recovery-*/report.json
+            ${{ runner.temp }}/pv-console-recovery-*/api-*.log
           if-no-files-found: ignore
       - name: Migrate DB
         working-directory: server
@@ -171,7 +171,7 @@ jobs:
           # emails, OAuth redirect_uri, WebAuthn rpID), so the real
           # public origin satisfies the guard without changing what the
           # smoke/e2e suites hit.
-          APP_BASE_URL: https://agentvisorai.me
+          APP_BASE_URL: https://proofvisor.com
           # Prod mode fail-fasts without a mailer (by design — silently
           # swallowing password resets is the wrong failure mode). The
           # SmtpMailer constructs lazily so a dummy URL satisfies boot;
@@ -215,7 +215,7 @@ jobs:
           done
           sed -i 's/window.MOCK_MODE = true;/window.MOCK_MODE = false;/' /tmp/console-root/app/config.js
           sed -i 's#window.API_BASE = "";#window.API_BASE = "http://127.0.0.1:8985";#' /tmp/console-root/app/config.js
-          sed -i 's#connect-src '\''self'\'' https://api.agentvisorai.me#connect-src '\''self'\'' http://127.0.0.1:8985#' /tmp/console-root/app/index.html
+          sed -i 's#connect-src '\''self'\'' https://api.proofvisor.com#connect-src '\''self'\'' http://127.0.0.1:8985#' /tmp/console-root/app/index.html
           grep -q 'MOCK_MODE = false' /tmp/console-root/app/config.js
           grep -q 'connect-src .self. http://127.0.0.1:8985' /tmp/console-root/app/index.html
           (cd /tmp/console-root && python3 -m http.server 8787 >/dev/null 2>&1 &)
@@ -257,15 +257,15 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
           API_BASE: http://127.0.0.1:8985
-          AGENTVISORD: ${{ github.workspace }}/target/debug/agentvisord
-          AVCTL: ${{ github.workspace }}/target/debug/avctl
+          PROOFVISORD: ${{ github.workspace }}/target/debug/proofvisord
+          PVCTL: ${{ github.workspace }}/target/debug/pvctl
         run: node scripts/daemon-console-drill.mjs
       - name: Preserve daemon startup failure logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: console-daemon-startup-logs
-          path: ${{ runner.temp }}/av-crash-*/daemon-boot.log
+          path: ${{ runner.temp }}/pv-crash-*/daemon-boot.log
           if-no-files-found: ignore
       # This 15-second load test measures /healthz only, using 20
       # connections without a request-rate cap. It requires p99 <= 250 ms,
@@ -329,14 +329,14 @@ jobs:
           context: server
           push: false
           load: true
-          tags: agentvisor-api:ci
+          tags: proofvisor-api:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Verify production migrations, API, health, and database recovery
         timeout-minutes: 10
         env:
           TMPDIR: ${{ runner.temp }}
-        run: python3 scripts/container-smoke.py --console-image agentvisor-api:ci
+        run: python3 scripts/container-smoke.py --console-image proofvisor-api:ci
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: "22"
@@ -356,12 +356,12 @@ jobs:
             --cap-drop ALL --security-opt no-new-privileges \
             --env BUS_TEST_DIST=1 \
             --mount "type=bind,src=$GITHUB_WORKSPACE/server/ci,dst=/app/ci,readonly" \
-            agentvisor-api:ci --test /app/ci/bus-query-recovery.test.mjs
+            proofvisor-api:ci --test /app/ci/bus-query-recovery.test.mjs
       - name: Verify packaged replicas recover from a real database outage
         timeout-minutes: 4
         working-directory: server
         env:
-          CONSOLE_RECOVERY_IMAGE: agentvisor-api:ci
+          CONSOLE_RECOVERY_IMAGE: proofvisor-api:ci
           # Reuse the exact PostgreSQL image loaded by container-smoke.py.
           PG_IMAGE: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
           TMPDIR: ${{ runner.temp }}
@@ -370,7 +370,7 @@ jobs:
         timeout-minutes: 10
         working-directory: server
         env:
-          CONSOLE_AUTH_IMAGE: agentvisor-api:ci
+          CONSOLE_AUTH_IMAGE: proofvisor-api:ci
           AUTH_DRILL_OUTPUT_PARENT: ${{ runner.temp }}
         # Reuse the exact image built above. The script copies its current
         # helper and temporary TLS files through Docker's API, then removes
@@ -380,7 +380,7 @@ jobs:
         timeout-minutes: 10
         working-directory: server
         env:
-          CONSOLE_SAML_IMAGE: agentvisor-api:ci
+          CONSOLE_SAML_IMAGE: proofvisor-api:ci
           SAML_DRILL_OUTPUT_PARENT: ${{ runner.temp }}
         run: node scripts/saml-shared-drill.mjs
       - name: Preserve container verification logs
@@ -389,14 +389,14 @@ jobs:
         with:
           name: console-container-logs
           path: |
-            ${{ runner.temp }}/av-container-smoke-*/*.log
-            ${{ runner.temp }}/av-container-smoke-*/native-runtime.json
-            ${{ runner.temp }}/av-auth-*/*.log
-            ${{ runner.temp }}/av-auth-*/report.json
-            ${{ runner.temp }}/av-saml-shared-*/*.log
-            ${{ runner.temp }}/av-saml-shared-*/report.json
-            ${{ runner.temp }}/av-console-recovery-*/*.log
-            ${{ runner.temp }}/av-console-recovery-*/report.json
+            ${{ runner.temp }}/pv-container-smoke-*/*.log
+            ${{ runner.temp }}/pv-container-smoke-*/native-runtime.json
+            ${{ runner.temp }}/pv-auth-*/*.log
+            ${{ runner.temp }}/pv-auth-*/report.json
+            ${{ runner.temp }}/pv-saml-shared-*/*.log
+            ${{ runner.temp }}/pv-saml-shared-*/report.json
+            ${{ runner.temp }}/pv-console-recovery-*/*.log
+            ${{ runner.temp }}/pv-console-recovery-*/report.json
           if-no-files-found: ignore
 
   encrypted-backup:

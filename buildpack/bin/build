@@ -11,12 +11,12 @@ buildpack_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # shellcheck source=buildpack/lib/outputs.sh
 . "$buildpack_dir/lib/outputs.sh"
 binding=$(read_binding)
-[ "$binding" != null ] || { printf 'error: no agentvisor binding found\n' >&2; exit 1; }
-layer=$layers_dir/agentvisor
+[ "$binding" != null ] || { printf 'error: no proofvisor binding found\n' >&2; exit 1; }
+layer=$layers_dir/proofvisor
 mkdir -p "$layer/env.launch"
 
 # In a Kubernetes pod the sidecar is a second container running this
-# image's `agentvisor-sidecar` process; containers share 127.0.0.1. The
+# image's `proofvisor-sidecar` process; containers share 127.0.0.1. The
 # image always offers that process when a sidecar binary is packaged, but
 # SDK traffic goes to loopback only when the binding says `sidecar: true`,
 # because nothing starts the second container automatically.
@@ -28,12 +28,12 @@ if [ "$choice" != false ]; then
     binary=$(sidecar_binary)
     if [ -n "$binary" ]; then
         mkdir -p "$layer/bin"
-        cp "$binary" "$layer/bin/avctl"
-        chmod 755 "$layer/bin/avctl"
+        cp "$binary" "$layer/bin/pvctl"
+        chmod 755 "$layer/bin/pvctl"
         packaged=true
         [ "$choice" = true ] && sidecar=true
     elif [ "$choice" = true ]; then
-        printf 'agentvisor: this buildpack package has no sidecar binary for %s; the application must present its own identity token\n' "$(uname -m)"
+        printf 'proofvisor: this buildpack package has no sidecar binary for %s; the application must present its own identity token\n' "$(uname -m)"
     fi
 fi
 base=$(client_base "$binding" "$sidecar")
@@ -44,21 +44,21 @@ client_environment "$binding" "$base" "$layer/mcp.json" | while IFS= read -r lin
 done
 if [ "$sidecar" = true ]; then
     # `.default` applies only when the variable is unset.
-    printf 'agentvisor-sidecar' > "$layer/env.launch/OPENAI_API_KEY.default"
+    printf 'proofvisor-sidecar' > "$layer/env.launch/OPENAI_API_KEY.default"
 fi
 if [ "$packaged" = true ]; then
-    sidecar_config "$binding" token-file:/var/run/secrets/agentvisor/token > "$layer/sidecar.json"
-    jq -rn --arg avctl "$layer/bin/avctl" --arg config "$layer/sidecar.json" '
+    sidecar_config "$binding" token-file:/var/run/secrets/proofvisor/token > "$layer/sidecar.json"
+    jq -rn --arg pvctl "$layer/bin/pvctl" --arg config "$layer/sidecar.json" '
         "[[processes]]",
-        "type = \"agentvisor-sidecar\"",
-        "command = [\($avctl | @json)]",
+        "type = \"proofvisor-sidecar\"",
+        "command = [\($pvctl | @json)]",
         "args = [\"sidecar\", \"--config\", \($config | @json)]",
         "default = false"' > "$layers_dir/launch.toml"
 fi
-cat > "$layers_dir/agentvisor.toml" <<'TOML'
+cat > "$layers_dir/proofvisor.toml" <<'TOML'
 [types]
 build = false
 launch = true
 cache = false
 TOML
-printf 'agentvisor: wrote launch environment layer\n'
+printf 'proofvisor: wrote launch environment layer\n'

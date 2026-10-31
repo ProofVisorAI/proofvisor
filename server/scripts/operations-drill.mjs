@@ -28,7 +28,7 @@ const eventTarget = integer("EVENTS", 100_000, 1000, 1_000_000);
 const requestTarget = integer("REQUESTS", 3000, 40, 5000);
 const concurrency = integer("CONCURRENCY", 12, 1, 32);
 const offeredRps = integer("OFFERED_RPS", 50, 1, 100);
-const id = "av-console-ops-" + randomBytes(6).toString("hex");
+const id = "pv-console-ops-" + randomBytes(6).toString("hex");
 const output = await mkdtemp(join(tmpdir(), id + "-"));
 await chmod(output, 0o700);
 const password = randomBytes(24).toString("hex");
@@ -114,13 +114,13 @@ async function request(app, path, { method = "GET", body, auth, ip = "198.51.100
 async function tenant(app, label) {
   const user = await request(app, "/auth/signup", { method: "POST", expected: 201,
     body: { email: `${id}-${label}@example.test`, password, orgName: `${id}-${label}` } });
-  const cookie = user.headers.getSetCookie().find((c) => c.startsWith("av_session="))?.split(";")[0];
+  const cookie = user.headers.getSetCookie().find((c) => c.startsWith("pv_session="))?.split(";")[0];
   assert.ok(cookie);
   const auth = { Cookie: cookie };
   const deployment = await request(app, "/deployments", { method: "POST", expected: 201, auth,
     body: { name: label, environment: "development" } });
   return { label, auth, deployment: deployment.data.deployment.id,
-    daemon: { Authorization: "Bearer " + deployment.data.ingestToken, "X-AV-Deployment": deployment.data.deployment.id } };
+    daemon: { Authorization: "Bearer " + deployment.data.ingestToken, "X-PV-Deployment": deployment.data.deployment.id } };
 }
 async function stream(app, owner, ip) {
   const abort = new AbortController();
@@ -179,7 +179,7 @@ try {
   report.postgresImage = { name: image, id: imageInfo.Id, digests: imageInfo.RepoDigests };
   const envFile = join(output, "postgres.env");
   await writeFile(envFile, `POSTGRES_USER=avops\nPOSTGRES_PASSWORD=${password}\nPOSTGRES_DB=avops\n`, { mode: 0o600 });
-  await command("docker", ["run", "--detach", "--pull=never", "--name", id, "--label", `agentvisor.drill=${id}`,
+  await command("docker", ["run", "--detach", "--pull=never", "--name", id, "--label", `proofvisor.drill=${id}`,
     "--memory", "512m", "--cpus", "2", "--env-file", envFile, "-p", "127.0.0.1::5432", image]);
   containerCreated = true;
   const binding = JSON.parse(await command("docker", ["inspect", id]))[0].NetworkSettings.Ports["5432/tcp"][0];
@@ -230,7 +230,7 @@ try {
     const detail = await request(a, "/sessions/" + owner.session, { auth: owner.auth });
     check(`${owner.label} rollups match concurrent unique events`, detail.data.session.eventCount === 160 && detail.data.session.toolsAllowed === 128 && detail.data.session.toolsBlocked === 32 && detail.data.session.costUsdMicros === "1120");
   }
-  await request(b, "/ingest/events", { method: "POST", auth: { ...owners[0].daemon, "X-AV-Deployment": owners[1].deployment }, body: [event(owners[1].external, 900, "foreign")], expected: 401 });
+  await request(b, "/ingest/events", { method: "POST", auth: { ...owners[0].daemon, "X-PV-Deployment": owners[1].deployment }, body: [event(owners[1].external, 900, "foreign")], expected: 401 });
   check("one tenant's ingest token cannot write the other deployment", true);
   for (const feed of streams) feed.abort.abort();
   await Promise.all(streams.map((feed) => feed.reading));
@@ -248,7 +248,7 @@ try {
     const body = JSON.stringify({ receipt_version: 2, receipt_id: receiptId, session_id: "sealed-restore", issued_at: issued,
       stop_reason: "completed", stop_reason_id: 0, subject: { kind: "event_chain", event_count: 1 } });
     const size = Buffer.alloc(8); size.writeBigUInt64BE(BigInt(Buffer.byteLength(body)));
-    owner.receiptMessage = Buffer.concat([Buffer.from("agentvisor-receipt-v2\0"), size, Buffer.from(body)]);
+    owner.receiptMessage = Buffer.concat([Buffer.from("proofvisor-receipt-v2\0"), size, Buffer.from(body)]);
     owner.receiptBody = body;
     await request(a, "/ingest/receipts", { method: "POST", auth: owner.daemon, body: { sessionExternalId: "sealed-restore",
       receiptId, body, sigB64: sign(null, owner.receiptMessage, privateKey).toString("base64"),
@@ -262,7 +262,7 @@ try {
   const statuses = [];
   for (let n = 0; n < 301; n++) statuses.push((await request(a, "/deployments", { auth: owners[n % 2].auth, ip: rateIp, expected: null })).status);
   check("global rate bucket shares 300 requests across users at one IP", statuses.slice(0, 300).every((s) => s === 200) && statuses[300] === 429);
-  await request(a, "/deployments", { auth: { Cookie: "av_session=" + randomBytes(24).toString("hex") }, ip: rateIp, expected: 429 });
+  await request(a, "/deployments", { auth: { Cookie: "pv_session=" + randomBytes(24).toString("hex") }, ip: rateIp, expected: 429 });
   check("changing an unvalidated cookie does not bypass the IP bucket", true);
   await request(a, "/ingest/events", { method: "POST", auth: owners[0].daemon, ip: rateIp, body: [] });
   check("authenticated ingest remains exempt after the IP bucket is exhausted", true);
@@ -383,7 +383,7 @@ try {
   if (containerCreated) {
     try {
       const own = JSON.parse(await command("docker", ["inspect", id]))[0];
-      assert.equal(own.Config.Labels["agentvisor.drill"], id, "refuse cleanup of an unowned container");
+      assert.equal(own.Config.Labels["proofvisor.drill"], id, "refuse cleanup of an unowned container");
       await command("docker", ["rm", "--force", "--volumes", id]);
     } catch (error) { cleanupErrors.push(String(error)); }
   }

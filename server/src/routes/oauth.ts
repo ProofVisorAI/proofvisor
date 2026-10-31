@@ -129,7 +129,7 @@ async function getConfig(p: ProviderCfg): Promise<oidc.Configuration> {
 // Signed cookie holding {state, codeVerifier, nonce, provider}. Short
 // TTL — the whole redirect dance is normally 5-30 s. 10 min is generous
 // but bounded.
-const OAUTH_STATE_COOKIE = "av_oauth_state";
+const OAUTH_STATE_COOKIE = "pv_oauth_state";
 const OAUTH_STATE_TTL_S = 600;
 
 function orgSlug(domain: string): string {
@@ -538,7 +538,7 @@ export async function oauthRoutes(app: FastifyInstance): Promise<void> {
     //   2. User also links Google OAuth (email matches).
     //   3. Attacker phishes / SIM-swaps the Google account.
     //   4. Attacker hits /api/v1/auth/oauth/callback → email
-    //      verified → prior shape minted a full-role AV session
+    //      verified → prior shape minted a full-role PV session
     //      cookie with ZERO passkey ceremony.
     // Fail-closed refusal is the smallest surgical change — the
     // user is told to use password login (which will then trigger

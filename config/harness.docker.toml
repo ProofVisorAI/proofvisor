@@ -17,7 +17,7 @@ upstream_read_timeout_s = 300
 shutdown_drain_timeout_s = 110
 # tool_upstream_url = "http://host.docker.internal:3000/mcp"
 require_identity = true
-audience = "agentvisor-ai"
+audience = "proofvisor"
 identity_hmac_secret_file = "/run/secrets/identity_hmac"
 identity_hmac_kid = "docker-idp"
 identity_allowed_issuers = ["https://idp.example"]
@@ -26,7 +26,7 @@ chat_scope = "chat:write"
 session_close_scope = "session:close"
 session_promote_scope = "session:promote"
 # "signed" is the product's core promise (every session close mints an
-# Ed25519 receipt); matches avctl init and the README headline claim.
+# Ed25519 receipt); matches pvctl init and the README headline claim.
 default_workflow = "signed"
 consequential_tools = ["db_write", "payout", "merge", "deploy"]
 session_idle_close_s = 900

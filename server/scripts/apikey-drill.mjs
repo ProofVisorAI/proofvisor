@@ -25,7 +25,7 @@ async function req(path, opts = {}) {
 }
 
 function parseCookie(setCookie) {
-  const m = /av_session=([^;]+)/.exec(setCookie ?? "");
+  const m = /pv_session=([^;]+)/.exec(setCookie ?? "");
   return m ? m[1] : null;
 }
 
@@ -35,13 +35,13 @@ let csrfCookie = null;
 async function jsonReq(method, path, body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (cookie) headers["Cookie"] = `av_session=${cookie}` + (csrfCookie ? `; av_csrf=${csrfCookie}` : "");
-  if (csrfCookie) headers["x-av-csrf"] = csrfCookie;
+  if (cookie) headers["Cookie"] = `pv_session=${cookie}` + (csrfCookie ? `; pv_csrf=${csrfCookie}` : "");
+  if (csrfCookie) headers["x-pv-csrf"] = csrfCookie;
   const r = await fetch(BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const setC = r.headers.get("set-cookie") ?? "";
   const nc = parseCookie(setC);
   if (nc) cookie = nc;
-  const cs = /av_csrf=([^;]+)/.exec(setC);
+  const cs = /pv_csrf=([^;]+)/.exec(setC);
   if (cs) csrfCookie = cs[1];
   return r;
 }
@@ -70,11 +70,11 @@ let plaintext, keyId, hint;
   plaintext = j.plaintextToken;
   keyId = j.key.id;
   hint = j.key.hint;
-  if (!plaintext?.startsWith("av_srv_")) {
+  if (!plaintext?.startsWith("pv_srv_")) {
     console.log("❌ plaintext missing prefix:", plaintext);
     process.exit(1);
   }
-  if (!hint.startsWith("av_srv_") || hint.length < 12) {
+  if (!hint.startsWith("pv_srv_") || hint.length < 12) {
     console.log("❌ hint malformed:", hint);
     process.exit(1);
   }
@@ -154,7 +154,7 @@ let plaintext, keyId, hint;
 // 7. Wholly invalid token
 {
   const r = await fetch(BASE + "/api/v1/sessions", {
-    headers: { Authorization: "Bearer av_srv_notarealtokenatall000000000" },
+    headers: { Authorization: "Bearer pv_srv_notarealtokenatall000000000" },
   });
   if (r.status !== 401) {
     console.log("❌ invalid token accepted:", r.status);

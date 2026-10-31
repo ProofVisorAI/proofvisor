@@ -1,5 +1,5 @@
 #![no_main]
-//! `av_compress::compress` documents five hard invariants (lib.rs):
+//! `pv_compress::compress` documents five hard invariants (lib.rs):
 //! byte-identical first system message, byte-identical tail,
 //! idempotence, and a never-increasing token count. This target feeds
 //! arbitrary JSON payloads (including hostile `messages` shapes:
@@ -15,13 +15,13 @@ fuzz_target!(|data: &[u8]| {
     };
     // Engage the passes on small inputs too — the default 512-token
     // floor would make most fuzz inputs a no-op.
-    let cfg = av_compress::CompressionConfig {
+    let cfg = pv_compress::CompressionConfig {
         min_tokens_to_engage: 0,
         keep_tail: 2,
         tool_output_stub_threshold: 4,
-        ..av_compress::CompressionConfig::default()
+        ..pv_compress::CompressionConfig::default()
     };
-    let outcome = av_compress::compress(&payload, &cfg);
+    let outcome = pv_compress::compress(&payload, &cfg);
 
     // Invariant 5: output token count never exceeds the input's.
     assert!(
@@ -42,7 +42,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Invariant 4: idempotence.
-    let second = av_compress::compress(&outcome.payload, &cfg);
+    let second = pv_compress::compress(&outcome.payload, &cfg);
     assert_eq!(
         second.payload, outcome.payload,
         "compress is not idempotent on this input"

@@ -17,7 +17,7 @@ import pg from "pg";
 import { closeDrillClient } from "./auth-drill-cleanup.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const id = "av-saml-shared-" + randomBytes(6).toString("hex");
+const id = "pv-saml-shared-" + randomBytes(6).toString("hex");
 const output = await mkdtemp(join(process.env.SAML_DRILL_OUTPUT_PARENT || tmpdir(), id + "-"));
 await chmod(output, 0o700);
 const image = process.env.CONSOLE_SAML_IMAGE;
@@ -59,7 +59,7 @@ async function envFile(label, values) {
 }
 async function container(label, args) {
   const name = id + "-" + label; containers.push(name);
-  await command("docker", ["run", "--pull=never", "-d", "--name", name, "--label", `agentvisor.saml-drill=${id}`,
+  await command("docker", ["run", "--pull=never", "-d", "--name", name, "--label", `proofvisor.saml-drill=${id}`,
     "--network", id, ...args]); return name;
 }
 async function endpoint(name, port) {
@@ -132,7 +132,7 @@ function cookie(response, name) { const value = response.headers.getSetCookie().
 async function signup(app, suffix) {
   const email = `${id}-${suffix}@example.test`;
   const result = await request(app, "/auth/signup", { method: "POST", body: { email, password, orgName: suffix }, expected: 201 });
-  return { email, userId: result.data.user.id, orgId: result.data.org.id, cookie: cookie(result, "av_session") };
+  return { email, userId: result.data.user.id, orgId: result.data.org.id, cookie: cookie(result, "pv_session") };
 }
 async function config(app, owner, label, cert) {
   return (await request(app, "/auth/saml", { method: "POST", cookie: owner.cookie, expected: 201,
@@ -145,7 +145,7 @@ async function begin(app, cfg) {
   const location = new URL(result.headers.get("location"));
   assert.equal(location.origin, "https://idp.example.test");
   const xml = inflateRawSync(Buffer.from(location.searchParams.get("SAMLRequest"), "base64")).toString();
-  const requestId = xml.match(/\bID="([^"]+)"/)?.[1], txnCookie = cookie(result, "av_saml_txn");
+  const requestId = xml.match(/\bID="([^"]+)"/)?.[1], txnCookie = cookie(result, "pv_saml_txn");
   assert.ok(requestId && txnCookie);
   secrets.add(decodeURIComponent(txnCookie.split("=").slice(1).join("=")).split(".")[0]);
   return { requestId, cookie: txnCookie };
@@ -172,7 +172,7 @@ function signedResponse(cfg, login, email, key, cert, options = {}) {
 async function consume(app, cfg, login, response, label) {
   const result = await request(app, `/auth/saml/${cfg.id}/acs`, { method: "POST", form: true,
     cookie: login?.cookie, body: { SAMLResponse: response }, expected: null });
-  const session = cookie(result, "av_session");
+  const session = cookie(result, "pv_session");
   report.responses.push({ label, status: result.status, location: result.headers.get("location"), mintedSession: !!session });
   return { ...result, session };
 }
@@ -181,7 +181,7 @@ try {
   report.fixtureSha256 = createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex");
   if (image) report.consoleImageId = await command("docker", ["image", "inspect", "--format", "{{.Id}}", image]);
   else report.samlImplementationSha256 = createHash("sha256").update(await readFile(join(root, "dist/lib/saml.js"))).digest("hex");
-  networkAttempted = true; await command("docker", ["network", "create", "--label", `agentvisor.saml-drill=${id}`, id]);
+  networkAttempted = true; await command("docker", ["network", "create", "--label", `proofvisor.saml-drill=${id}`, id]);
   const pgFile = await envFile("postgres", { POSTGRES_USER: "avadmin", POSTGRES_PASSWORD: password, POSTGRES_DB: "avsaml" });
   // Docker can reassign an ephemeral published port on stop/start. Reserve a
   // fixed owned port for this drill so the database outage test keeps the
@@ -254,7 +254,7 @@ try {
   const unknownNonce = randomBytes(16).toString("hex"); secrets.add(unknownNonce);
   const signedNonce = unknownNonce + "." + createHmac("sha256", jwt).update(unknownNonce).digest("base64").replace(/=/g, "");
   check("A correctly signed but unknown browser nonce has no authority", !(await consume(a, cfg,
-    { ...wrongBrowser, cookie: "av_saml_txn=" + encodeURIComponent(signedNonce) },
+    { ...wrongBrowser, cookie: "pv_saml_txn=" + encodeURIComponent(signedNonce) },
     signedResponse(cfg, wrongBrowser, owner.email, key, cert), "unknown browser nonce")).session);
 
   for (const [label, target, targetOwner] of [["configuration", sibling, owner], ["tenant", other, foreign]]) {
@@ -279,7 +279,7 @@ try {
   await admin.query(`CREATE FUNCTION fixture_deny_saml_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected SAML state insert failure'; END $$;
     CREATE TRIGGER fixture_deny_saml_insert BEFORE INSERT ON saml_authn_requests FOR EACH ROW EXECUTE FUNCTION fixture_deny_saml_insert()`);
   const failedStart = await request(a, `/auth/saml/${cfg.id}/login`, { expected: 302 });
-  check("Failed shared-state persistence issues neither an IdP redirect nor a browser nonce", failedStart.headers.get("location").includes("err=saml_request_unavailable") && !cookie(failedStart, "av_saml_txn"));
+  check("Failed shared-state persistence issues neither an IdP redirect nor a browser nonce", failedStart.headers.get("location").includes("err=saml_request_unavailable") && !cookie(failedStart, "pv_saml_txn"));
   await admin.query("DROP TRIGGER fixture_deny_saml_insert ON saml_authn_requests; DROP FUNCTION fixture_deny_saml_insert()");
   const retryStart = await begin(a, cfg);
   const deleteResponse = signedResponse(cfg, retryStart, owner.email, key, cert);
@@ -323,7 +323,7 @@ finally {
     try {
       const found = await command("docker", ["container", "ls", "--all", "--filter", `name=^/${name}$`, "--format", "{{.ID}}"]);
       if (!found) continue; assert.ok(!found.includes("\n"));
-      assert.equal(await command("docker", ["inspect", "--format", '{{index .Config.Labels "agentvisor.saml-drill"}}', found]), id);
+      assert.equal(await command("docker", ["inspect", "--format", '{{index .Config.Labels "proofvisor.saml-drill"}}', found]), id);
       try { await writeFile(join(output, name.slice(id.length + 1) + ".log"), redact(await command("docker", ["logs", found])), { mode: 0o600 }); }
       catch (error) { errors.push("container logs: " + redact(error.message)); }
       await command("docker", ["rm", "-f", "-v", found]);
@@ -331,7 +331,7 @@ finally {
   }
   if (networkAttempted) try {
     const found = await command("docker", ["network", "ls", "--filter", `name=^${id}$`, "--format", "{{.ID}}"]);
-    if (found) { assert.ok(!found.includes("\n")); assert.equal(await command("docker", ["network", "inspect", "--format", '{{index .Labels "agentvisor.saml-drill"}}', found]), id);
+    if (found) { assert.ok(!found.includes("\n")); assert.equal(await command("docker", ["network", "inspect", "--format", '{{index .Labels "proofvisor.saml-drill"}}', found]), id);
       await command("docker", ["network", "rm", found]); }
   } catch (error) { errors.push("network: " + redact(error.message)); }
   for (const file of privateFiles) await rm(file, { force: true }).catch((error) => errors.push("private file: " + error.message));

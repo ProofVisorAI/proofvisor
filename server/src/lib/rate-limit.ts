@@ -7,7 +7,7 @@
  * `Authorization: Bearer …`. That covers api-key sessions that
  * every step-up handler in the auth tree rejects at a
  * `cookie_session_required` branch before touching argon2. The
- * skip prevents an attacker with ANY valid `av_srv_` token on the
+ * skip prevents an attacker with ANY valid `pv_srv_` token on the
  * same IP as a legitimate cookie caller from burning the cookie
  * caller's rate-limit budget by hammering the endpoint with a
  * bearer header — the covert lock-out primitive R141 F4 closed

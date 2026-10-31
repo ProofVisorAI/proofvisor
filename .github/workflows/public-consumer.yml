@@ -41,10 +41,10 @@ jobs:
       - name: curl | sh from the live site, then smoke
         run: |
           set -euo pipefail
-          curl -fsSL "https://agentvisorai.me/install.sh?cb=$RANDOM" -o /tmp/install.sh
-          AV_INSTALL_DIR="$HOME/av-bin" sh /tmp/install.sh
-          "$HOME/av-bin/agentvisord" --version
-          "$HOME/av-bin/avctl" --version
+          curl -fsSL "https://proofvisor.com/install.sh?cb=$RANDOM" -o /tmp/install.sh
+          PV_INSTALL_DIR="$HOME/pv-bin" sh /tmp/install.sh
+          "$HOME/pv-bin/proofvisord" --version
+          "$HOME/pv-bin/pvctl" --version
 
   installer-containers:
     runs-on: ubuntu-latest
@@ -63,10 +63,10 @@ jobs:
         run: |
           set -eu
           # $$ not $RANDOM: this step runs under dash on debian/ubuntu.
-          curl -fsSL "https://agentvisorai.me/install.sh?cb=$$" -o /tmp/install.sh
-          AV_INSTALL_DIR=/opt/av sh /tmp/install.sh
-          /opt/av/agentvisord --version
-          /opt/av/avctl --version
+          curl -fsSL "https://proofvisor.com/install.sh?cb=$$" -o /tmp/install.sh
+          PV_INSTALL_DIR=/opt/pv sh /tmp/install.sh
+          /opt/pv/proofvisord --version
+          /opt/pv/pvctl --version
 
   # Round 95: the cargo fallback is the path every platform WITHOUT a
   # prebuilt target hits (riscv64/ppc64le/s390x/armv7/386 …). It builds
@@ -76,13 +76,13 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - name: AV_INSTALL_SOURCE=1 curl | sh, then smoke
+      - name: PV_INSTALL_SOURCE=1 curl | sh, then smoke
         run: |
           set -euo pipefail
-          curl -fsSL "https://agentvisorai.me/install.sh?cb=$RANDOM" -o /tmp/install.sh
-          AV_INSTALL_SOURCE=1 sh /tmp/install.sh
-          "$HOME/.cargo/bin/agentvisord" --version
-          "$HOME/.cargo/bin/avctl" --version
+          curl -fsSL "https://proofvisor.com/install.sh?cb=$RANDOM" -o /tmp/install.sh
+          PV_INSTALL_SOURCE=1 sh /tmp/install.sh
+          "$HOME/.cargo/bin/proofvisord" --version
+          "$HOME/.cargo/bin/pvctl" --version
 
   outsider-chain:
     runs-on: ubuntu-latest
@@ -94,7 +94,7 @@ jobs:
       - name: The installer the console prints (curl | sh)
         run: |
           set -euo pipefail
-          curl -fsSL "https://agentvisorai.me/install.sh?cb=$RANDOM" -o /tmp/install.sh
+          curl -fsSL "https://proofvisor.com/install.sh?cb=$RANDOM" -o /tmp/install.sh
           head -1 /tmp/install.sh | grep -qx '#!/bin/sh'
           sh /tmp/install.sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -102,20 +102,20 @@ jobs:
       - name: The binaries the installer promised
         run: |
           set -euo pipefail
-          agentvisord --version
-          avctl --version
+          proofvisord --version
+          pvctl --version
 
       - name: The setup wizard the installer prints (piped, headless)
         run: |
           set -euo pipefail
           mkdir -p /tmp/wizard && cd /tmp/wizard
           # Answers: preset 1 (OpenAI) → dummy key → no console → don't start.
-          printf '1\nsk-outsider-dummy-key-123\nn\nn\n' | avctl setup
-          test -f "$HOME/.agentvisor/agentvisor.toml"
+          printf '1\nsk-outsider-dummy-key-123\nn\nn\n' | pvctl setup
+          test -f "$HOME/.proofvisor/proofvisor.toml"
           # Key stays out of the config and lands 0600 in keys/.
-          ! grep -q sk-outsider-dummy "$HOME/.agentvisor/agentvisor.toml"
-          [ "$(stat -c %a "$HOME/.agentvisor/keys/openai.key")" = "600" ]
-          avctl config-validate "$HOME/.agentvisor/agentvisor.toml"
+          ! grep -q sk-outsider-dummy "$HOME/.proofvisor/proofvisor.toml"
+          [ "$(stat -c %a "$HOME/.proofvisor/keys/openai.key")" = "600" ]
+          pvctl config-validate "$HOME/.proofvisor/proofvisor.toml"
 
       - name: The quickstart the README prints (init → doctor → start → proxy)
         env:
@@ -123,17 +123,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/quickstart && cd /tmp/quickstart
-          avctl init --preset openai
-          avctl config-validate agentvisor.toml
-          avctl doctor --offline
-          AV_LISTEN=127.0.0.1:18484 avctl start &
+          pvctl init --preset openai
+          pvctl config-validate proofvisor.toml
+          pvctl doctor --offline
+          PV_LISTEN=127.0.0.1:18484 pvctl start &
           DAEMON=$!
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:18484/health >/dev/null 2>&1 && break
             sleep 1
           done
           curl -fsS http://127.0.0.1:18484/health | grep -q '"status":"ok"'
-          avctl health --url http://127.0.0.1:18484
+          pvctl health --url http://127.0.0.1:18484
           # A real request must go THROUGH the proxy to the upstream;
           # the provider's own auth error (not a local crash) proves
           # the pipe. Upstream 401 -> curl exit 22 with -f; drop -f
@@ -147,8 +147,8 @@ jobs:
       - name: The verifier the /verify/ page offers as the CLI fallback
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/AgentVisorAI/agentvisor /tmp/pub
-          curl -fsS "https://agentvisorai.me/verify/sample-receipt.json?cb=$RANDOM" -o /tmp/sample-receipt.json
+          git clone --depth 1 https://github.com/ProofVisorAI/proofvisor /tmp/pub
+          curl -fsS "https://proofvisor.com/verify/sample-receipt.json?cb=$RANDOM" -o /tmp/sample-receipt.json
           node /tmp/pub/tools/verify-receipt.mjs /tmp/sample-receipt.json
 
       - name: The docker line the README prints (compose build from the export)
@@ -161,10 +161,10 @@ jobs:
       - name: The image must RUN, not just build (boot → gate → SIGTERM drain)
         run: |
           set -euo pipefail
-          # Round-102/103: agentvisord is PID 1 in this image (no init
+          # Round-102/103: proofvisord is PID 1 in this image (no init
           # shim) — prove SIGTERM lands, the drain finishes fast, and
           # the shutdown finalizer seals the still-open session.
-          docker run -d --name avd -p 127.0.0.1:8484:8484 agentvisor-ai:local
+          docker run -d --name avd -p 127.0.0.1:8484:8484 proofvisor:local
           for i in $(seq 1 60); do
             curl -fsS http://127.0.0.1:8484/health >/dev/null 2>&1 && break
             sleep 1
@@ -173,7 +173,7 @@ jobs:
           # $60 payout: schema caps amount_usd at 50 → blocked at the
           # gate, no upstream needed. Session left UNCLOSED on purpose.
           BODY=$(curl -sS -X POST http://127.0.0.1:8484/mcp \
-            -H "Content-Type: application/json" -H "x-av-session: ci-sigterm" \
+            -H "Content-Type: application/json" -H "x-pv-session: ci-sigterm" \
             -d '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"payout","arguments":{"amount_usd":60,"recipient":"acme"}}}')
           echo "$BODY" | grep -q '"error"' || { echo "gate did not block: $BODY"; exit 1; }
           T0=$(date +%s)

@@ -1,4 +1,4 @@
-// AgentVisor AI hosted-console data model.
+// ProofVisor hosted-console data model.
 //
 // PostgreSQL is the canonical datasource — portable across Neon, Supabase,
 // Fly Postgres, Google Cloud SQL, AWS RDS, or a self-hosted docker container.
@@ -145,10 +145,10 @@ model Org {
 
 // Server-side API key for programmatic console access. Wire scripts,
 // CI jobs, and dashboards can authenticate as an org (not a user) with
-// `Authorization: Bearer av_srv_<plaintext>`. Only the argon2 hash is
+// `Authorization: Bearer pv_srv_<plaintext>`. Only the argon2 hash is
 // stored; plaintext is returned once at create time.
 //
-// A hint (first 8 chars) is stored so the UI can show 'av_srv_a091…'
+// A hint (first 8 chars) is stored so the UI can show 'pv_srv_a091…'
 // without a lookup. lastUsedAt is bumped opportunistically on
 // authenticate. createdBy snapshots the operator email so a revoked
 // user's audit trail still shows who created what.
@@ -347,7 +347,7 @@ model Membership {
   @@map("memberships")
 }
 
-// A `agentvisord` instance registered with the console. The daemon uses
+// A `proofvisord` instance registered with the console. The daemon uses
 // `ingestToken` to POST events; the org holds `publicKeyHex` so the console
 // can verify receipts offline. Provider secrets never enter this database.
 model Deployment {
@@ -488,14 +488,14 @@ model Policy {
   @@map("policies")
 }
 
-// An outbound webhook subscription. Operators wire AgentVisor into their
+// An outbound webhook subscription. Operators wire ProofVisor into their
 // Slack channel, PagerDuty routing key, Datadog event stream, or their
 // own internal notification bus. Each endpoint subscribes to one or more
 // event names (policy.block, session.blocked, apikey.created, etc.).
 //
 // Payloads are signed with HMAC-SHA256 over the raw body using `secret`.
 // Consumers verify by computing the same HMAC and constant-time comparing
-// with the X-AgentVisor-Signature header. A ts-nonce anti-replay
+// with the X-ProofVisor-Signature header. A ts-nonce anti-replay
 // mechanism sits on the same headers.
 model WebhookEndpoint {
   id        String   @id @default(cuid())

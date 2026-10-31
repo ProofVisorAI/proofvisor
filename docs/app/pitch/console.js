@@ -1,5 +1,5 @@
 /*
- * AgentVisor AI console.
+ * ProofVisor console.
  *
  * MOCK_MODE controls whether this page runs the built-in Northwind demo
  * (true. Used for the marketing site and investor pitch) or talks to a real
@@ -9,7 +9,7 @@
  * defined in datasource.js. Flip the flag, deploy the backend, done.
  */
 window.MOCK_MODE = true;
-window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (origin only — paths already carry /api/v1)
+window.API_BASE = "";  // e.g. "https://api.proofvisor.com" once deployed (origin only — paths already carry /api/v1)
 
 (function () {
   "use strict";
@@ -102,7 +102,7 @@ window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (orig
       '<span class="k">default_workflow</span> = <span class="s">"' + (c.signed ? "signed" : "unsigned") + '"</span>',
       "",
       '<span class="k">upstream_url</span> = <span class="s">"' + state.providerUrl + '"</span>',
-      '<span class="k">upstream_api_key_file</span> = <span class="s">"~/.agentvisor/keys/' + state.provider + '"</span> <span class="c"># chmod 600</span>',
+      '<span class="k">upstream_api_key_file</span> = <span class="s">"~/.proofvisor/keys/' + state.provider + '"</span> <span class="c"># chmod 600</span>',
       "",
       '[<span class="k">budget</span>] <span class="c"># session ledger</span>',
       '<span class="k">per_min_tokens</span> = <span class="n">' + c.tpm + "</span>",
@@ -162,13 +162,13 @@ window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (orig
   $("btn-launch").addEventListener("click", function () { launch(); });
 
   var LAUNCH_LINES = [
-    "$ avctl start",
+    "$ pvctl start",
     "  config-validate .......... <span class=\"ok\">ok</span>",
     "  doctor: provider reachable <span class=\"ok\">ok</span>",
     "  signing key c8f2a911 ..... <span class=\"ok\">loaded</span>",
     "  journal + spool .......... <span class=\"ok\">fsync ready</span>",
     "",
-    "  <span class=\"ok\">AgentVisor AI is running on http://127.0.0.1:8484</span>",
+    "  <span class=\"ok\">ProofVisor is running on http://127.0.0.1:8484</span>",
     "  Point any OpenAI-compatible SDK at it. Ctrl-C to stop."
   ];
 
@@ -201,7 +201,7 @@ window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (orig
         "from openai import OpenAI\n\n" +
         "client = OpenAI(\n" +
         '    api_key=os.environ["API_KEY"],\n' +
-        '<span class="add">    base_url="http://127.0.0.1:8484/v1",  # &larr; AgentVisor AI</span>\n' +
+        '<span class="add">    base_url="http://127.0.0.1:8484/v1",  # &larr; ProofVisor</span>\n' +
         ")\n\n" +
         "client.chat.completions.create(\n" +
         '    model="gpt-4o-mini",\n' +
@@ -213,7 +213,7 @@ window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (orig
         'import OpenAI from "openai";\n\n' +
         "const client = new OpenAI({\n" +
         "  apiKey: process.env.API_KEY,\n" +
-        '<span class="add">  baseURL: "http://127.0.0.1:8484/v1", // &larr; AgentVisor AI</span>\n' +
+        '<span class="add">  baseURL: "http://127.0.0.1:8484/v1", // &larr; ProofVisor</span>\n' +
         "});\n\n" +
         "await client.chat.completions.create({\n" +
         '  model: "gpt-4o-mini",\n' +
@@ -780,7 +780,7 @@ window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (orig
         cam("#wstep-guardrails");
         later(next, 3600);
       }],
-      ["Launch. AgentVisor AI is now standing between the agent and the outside world.", function (next) {
+      ["Launch. ProofVisor is now standing between the agent and the outside world.", function (next) {
         cam("#wstep-launch", "start");
         launch(function () { later(next, 1500); });
       }],
@@ -796,7 +796,7 @@ window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (orig
       ["Customer one is legitimate. Refund approved, every step journaled.", function (next) {
         runSession(function () { next(); });
         later(function () {
-          if (state.autoplay) caption("Customer two demands $8,400. The model falls for it. And AgentVisor AI refuses the call before any money moves.");
+          if (state.autoplay) caption("Customer two demands $8,400. The model falls for it. And ProofVisor refuses the call before any money moves.");
         }, 8000);
         later(function () {
           if (state.autoplay) caption("The agent retries, re-words, slices the amount. Blocked, blocked. Then the loop breaker opens the circuit.");
@@ -844,7 +844,7 @@ window.API_BASE = "";  // e.g. "https://api.agentvisorai.me" once deployed (orig
       ["That's the whole flow: onboard, one line, hard caps, a dashboard, and proof you can hand to an auditor.", function (next) {
         later(next, 4200);
       }],
-      ["AgentVisor AI. AI agents you can hand to an auditor.", function (next) {
+      ["ProofVisor. AI agents you can hand to an auditor.", function (next) {
         later(next, 3500);
       }]
     ];

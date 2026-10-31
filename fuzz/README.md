@@ -1,4 +1,4 @@
-# AgentVisor AI Fuzz Suite
+# ProofVisor Fuzz Suite
 
 Coverage-guided libFuzzer targets for the parsers on the audit path.
 Requires [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html)

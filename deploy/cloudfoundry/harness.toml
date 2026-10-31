@@ -7,7 +7,7 @@ require_identity = true
 enforce_identity_scopes = true
 identity_jwks_url = "https://identity.example.invalid/.well-known/jwks.json"
 identity_allowed_issuers = ["https://identity.example.invalid"]
-audience = "agentvisor-ai"
+audience = "proofvisor"
 dashboard_enabled = false
 default_workflow = "signed"
 atif_spool_dir = "/app/spool/atif"
@@ -15,7 +15,7 @@ bridge_data_dir = "/app/data/bridge"
 bridge_backend = "embedded"
 tool_schema_dir = "/app/config/tool-schemas"
 wasm_policy_paths = ["/app/config/policies/payload_limit.wat"]
-# The required manifest variable supplies AV_STATE_ENDPOINT at runtime.
+# The required manifest variable supplies PV_STATE_ENDPOINT at runtime.
 state_backend = "redis"
 state_endpoint = "rediss://redis.example.invalid:6379"
 embedder_backend = "hash"

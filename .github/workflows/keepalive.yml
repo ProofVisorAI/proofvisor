@@ -20,4 +20,4 @@ jobs:
     steps:
       - name: Ping /healthz
         run: |
-          curl -fsS -m 30 --retry 2 https://api.agentvisorai.me/healthz
+          curl -fsS -m 30 --retry 2 https://api.proofvisor.com/healthz

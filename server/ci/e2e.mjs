@@ -112,7 +112,7 @@ try {
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${dep.ingestToken}`,
-        "X-AV-Deployment": dep.deployment.id,
+        "X-PV-Deployment": dep.deployment.id,
       },
       body: JSON.stringify(body),
     });
@@ -217,7 +217,7 @@ try {
   check("overview range=7d has 7 daily buckets", Array.isArray(ov7.series) && ov7.series.length === 7, "len="+(ov7.series||[]).length);
   const historical = await ds.createDeployment({ name: "historical", environment: "development" });
   const oldTime = new Date(Date.now() - 3 * 24 * 3600000).toISOString();
-  const oldHeaders = { "Content-Type": "application/json", Authorization: "Bearer " + historical.ingestToken, "X-AV-Deployment": historical.deployment.id };
+  const oldHeaders = { "Content-Type": "application/json", Authorization: "Bearer " + historical.ingestToken, "X-PV-Deployment": historical.deployment.id };
   const oldSession = await origFetch(`${API_BASE}/api/v1/ingest/sessions`, { method: "POST", headers: oldHeaders, body: JSON.stringify({ externalId: "old-session", agent: "historical", openedAt: oldTime }) });
   check("historical session fixture accepted", oldSession.status === 200);
   const oldEvents = await origFetch(`${API_BASE}/api/v1/ingest/events`, { method: "POST", headers: oldHeaders, body: JSON.stringify([{ sessionExternalId: "old-session", seq: 0, kind: "tool", tag: "OLD", body: "old activity", occurredAt: oldTime, addToolsAllowed: 9, addCostUsdMicros: 9000000 }]) });
@@ -526,7 +526,7 @@ try {
   check("audit cursor walk distinct", aud2.entries.length > 0 && aud2.entries[0].at !== aud1.entries[0].at);
 
   // Workspace-context pin (header form): a mutation stamped with a
-  // stale X-AV-Org (another tab switched the shared cookie) must 409
+  // stale X-PV-Org (another tab switched the shared cookie) must 409
   // before side effects; the matching stamp passes. The real
   // ApiDataSource's apiFetch reads window.__avActiveOrgId — set it the
   // way the SPA's live getter would.
@@ -536,10 +536,10 @@ try {
     let pinErr = "";
     try { await ds.createApiKey("pin-probe-stale"); }
     catch (e) { pinErr = e.errorCode || e.message; }
-    check("stale X-AV-Org mutation refused", pinErr === "org_context_changed", pinErr);
+    check("stale X-PV-Org mutation refused", pinErr === "org_context_changed", pinErr);
     globalThis.window.__avActiveOrgId = sess.org.id;
     const pinOkKey = await ds.createApiKey("pin-probe-live");
-    check("matching X-AV-Org mutation ok", !!(pinOkKey && pinOkKey.key), JSON.stringify(pinOkKey).slice(0, 80));
+    check("matching X-PV-Org mutation ok", !!(pinOkKey && pinOkKey.key), JSON.stringify(pinOkKey).slice(0, 80));
     await ds.revokeApiKey(pinOkKey.key.id);
     delete globalThis.window.__avActiveOrgId;
   }

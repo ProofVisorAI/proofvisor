@@ -187,7 +187,7 @@ async function main(): Promise<void> {
     keyGenerator: (req) => {
       // R93 F1 + R100 F1: bucket the global 300 rpm cap on IP,
       // period. Prior R93 shape derived the key from sha256 of
-      // the raw av_session cookie value or Authorization token,
+      // the raw pv_session cookie value or Authorization token,
       // pre-auth, without validating anything. An attacker could
       // plant a fresh RANDOM cookie value per request → fresh
       // bucket per request → the entire global backstop was
@@ -250,7 +250,7 @@ async function main(): Promise<void> {
   //
   // Skipped when:
   //   • Method is safe (GET/HEAD/OPTIONS).
-  //   • Path is /api/v1/ingest — daemons attach an X-AV-Deployment token
+  //   • Path is /api/v1/ingest — daemons attach an X-PV-Deployment token
   //     which is cryptographically verified before any state mutation.
   //   • No Origin/Referer at all — same-origin fetches from most modern
   //     browsers, curl/scripts (no cookie either), and health checks.
@@ -349,7 +349,7 @@ async function main(): Promise<void> {
   // the cookie now names (retention changes, API keys, webhooks,
   // policies, invites — generalizing the per-endpoint invite pin). The
   // SPA stamps every request with the org id it is RENDERING
-  // (X-AV-Org); a mismatch against the authenticated claims means the
+  // (X-PV-Org); a mismatch against the authenticated claims means the
   // context moved underneath the user and the mutation must not
   // proceed. Scope: cookie-session mutations only — API-key sessions
   // are org-fixed (no cross-tab cookie to race), scripts/daemons don't
@@ -359,7 +359,7 @@ async function main(): Promise<void> {
   app.addHook("preHandler", async (req, reply) => {
     const method = req.method.toUpperCase();
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
-    const pinned = req.headers["x-av-org"];
+    const pinned = req.headers["x-pv-org"];
     if (typeof pinned !== "string" || pinned.length === 0) return;
     if (!req.session || req.session.sub.startsWith("apikey:")) return;
     if (
@@ -728,11 +728,11 @@ function problemDetail(slug: string): string {
   // just the static docs. Researchers scanning the origin should always
   // find a machine-readable disclosure path.
   const securityTxt = [
-    "Contact: mailto:security@agentvisorai.me",
+    "Contact: mailto:security@proofvisor.com",
     "Expires: 2027-08-25T00:00:00.000Z",
     "Preferred-Languages: en",
-    "Canonical: https://api.agentvisorai.me/.well-known/security.txt",
-    "Policy: https://github.com/AgentVisorAI/agentvisor-ai/blob/main/SECURITY.md",
+    "Canonical: https://api.proofvisor.com/.well-known/security.txt",
+    "Policy: https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY.md",
     "",
   ].join("\n");
   app.get("/.well-known/security.txt", async (_req, reply) => {

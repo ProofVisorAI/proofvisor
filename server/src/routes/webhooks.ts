@@ -56,7 +56,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
     // 'All routes are RBAC-gated: owners + admins only. Members:
     // 403.' but the two GET routes were missing the check. A plain
     // member could list every endpoint's URL and POST to it
-    // directly to bypass AgentVisor entirely (post as the org into
+    // directly to bypass ProofVisor entirely (post as the org into
     // Slack, fire fake pages, etc). Matches the CRUD gate.
     if (!assertNotMember(claims)) {
       return reply.code(403).send({ error: "forbidden" });
@@ -340,7 +340,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       // admin clicking 'Send test' on webhook A woke up on-call
       // via PagerDuty webhook B.
       onlyEndpointId: ep.id,
-      data: { message: "This is a test event from AgentVisor.", endpointId: ep.id },
+      data: { message: "This is a test event from ProofVisor.", endpointId: ep.id },
       logger: req.log,
     });
     writeAudit(
@@ -457,7 +457,7 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
   // recreate — the new endpoint got a new id and URL binding,
   // breaking every downstream integration referring to the old
   // endpoint and losing WebhookDelivery history. Meanwhile
-  // attackers could continue forging X-AgentVisor-Signature
+  // attackers could continue forging X-ProofVisor-Signature
   // payloads against consumers until the endpoint was destroyed.
   // Compare the sibling deployment token which correctly exposes
   // POST /:id/rotate-token. This adds the analog for webhooks:

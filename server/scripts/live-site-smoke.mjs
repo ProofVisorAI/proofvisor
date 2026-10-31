@@ -1,5 +1,5 @@
 /*
- * Live-site smoke test: hits https://agentvisorai.me/app/ (the actual
+ * Live-site smoke test: hits https://proofvisor.com/app/ (the actual
  * deployed console) and asserts the SPA works end-to-end from a real
  * browser against the real GitHub Pages CDN.
  *
@@ -16,7 +16,7 @@
  */
 import { chromium } from "playwright";
 
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/app/";
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -26,7 +26,7 @@ const jsErrors = [];
 const netErrors = [];
 page.on("pageerror", (e) => jsErrors.push(e.message));
 page.on("response", (r) => {
-  if ((r.url().includes("agentvisorai.me") || r.url().includes("127.0.0.1")) && r.status() >= 400) {
+  if ((r.url().includes("proofvisor.com") || r.url().includes("127.0.0.1")) && r.status() >= 400) {
     netErrors.push(r.url() + " -> " + r.status());
   }
 });
@@ -40,7 +40,7 @@ async function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // 1-2. Load the SPA. Force signed-out so login form renders.
 await page.addInitScript(() => {
-  try { localStorage.setItem("av_mock_signed_out", "1"); } catch {}
+  try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {}
 });
 await page.goto(SITE, { waitUntil: "networkidle" });
 if (!page.url().includes("/app")) fail("wrong URL: " + page.url());
@@ -149,7 +149,7 @@ console.log("✅ Environment pill present: " + pillText);
         // verify deliverability after the crawl; the check self-heals
         // the day MX lands.
         const m = l.href.match(/^mailto:([^?]+)/);
-        if (m && /@agentvisorai\.me$/i.test(m[1])) mailtos.push(`/${p}: ${m[1]}`);
+        if (m && /@proofvisorai\.me$/i.test(m[1])) mailtos.push(`/${p}: ${m[1]}`);
         continue;
       }
       if (l.href.startsWith("#")) {
@@ -195,7 +195,7 @@ console.log("✅ Environment pill present: " + pillText);
   for (const m of media) if (!m.tracks || !m.cues) problems.push("pitch video captions missing/unparsed: " + JSON.stringify(m));
   if (mailtos.length) {
     let mx = [];
-    try { mx = await (await import("node:dns/promises")).resolveMx("agentvisorai.me"); } catch { mx = []; }
+    try { mx = await (await import("node:dns/promises")).resolveMx("proofvisor.com"); } catch { mx = []; }
     if (mx.length === 0) problems.push("dead mailtos (domain has no MX):\n    " + mailtos.join("\n    "));
   }
   if (problems.length) fail("link/media integrity:\n  " + problems.join("\n  "));
@@ -208,7 +208,7 @@ console.log("✅ Environment pill present: " + pillText);
     if (!html.includes('http-equiv="refresh"') || !html.includes(want)) fail("/" + alias + " alias stub broken (wants " + want + ")");
   }
   const h404 = await page.evaluate(async (u) => (await fetch(u)).text(), origin + "404.html");
-  if (!/AgentVisor/i.test(h404) || !h404.includes('href="/pitch/"') || !h404.includes('href="/app/"') || !h404.includes('href="/verify/"'))
+  if (!/ProofVisor/i.test(h404) || !h404.includes('href="/pitch/"') || !h404.includes('href="/app/"') || !h404.includes('href="/verify/"'))
     fail("404 page missing brand line or escape links");
   // Machine surfaces: browsers auto-request /favicon.ico on every
   // visit (it 404'd since launch); robots.txt states the allow-all
@@ -245,7 +245,7 @@ console.log("✅ Environment pill present: " + pillText);
       const ogImage = g('meta[property="og:image"]');
       let imgStatus = 0;
       if (ogImage && /^https?:\/\//.test(ogImage)) {
-        try { imgStatus = (await fetch(ogImage.replace("https://agentvisorai.me/", orig))).status; } catch {}
+        try { imgStatus = (await fetch(ogImage.replace("https://proofvisor.com/", orig))).status; } catch {}
       }
       const iconHref = document.querySelector('link[rel~="icon"]')?.getAttribute("href");
       let iconStatus = 0;
@@ -334,7 +334,7 @@ console.log("✅ Environment pill present: " + pillText);
 // Every fresh onboarding + the deployments pages show
 // `curl -fsSL <url>/install.sh | sh`. That URL must (a) be exactly
 // the one the deployed app.js prints, (b) serve a real POSIX script,
-// (c) install from the PUBLIC repo. get.agentvisorai.me shipped in
+// (c) install from the PUBLIC repo. get.proofvisor.com shipped in
 // the snippet for weeks without ever existing in DNS — the first
 // investor to paste it got "Could not resolve host".
 {
@@ -353,20 +353,20 @@ console.log("✅ Environment pill present: " + pillText);
   if (res.status !== 200) fail("install.sh promise broken: " + fetchUrl + " → " + res.status);
   const body = await res.text();
   if (!body.startsWith("#!/bin/sh")) fail("install.sh is not a POSIX script (starts: " + body.slice(0, 30) + ")");
-  if (!/REPO="https:\/\/github\.com\/AgentVisorAI\/agentvisor"/.test(body) || !/cargo install --locked --git "\$REPO"/.test(body))
+  if (!/REPO="https:\/\/github\.com\/ProofVisorAI\/proofvisor"/.test(body) || !/cargo install --locked --git "\$REPO"/.test(body))
     fail("install.sh does not install from the public repo");
-  if (!/avctl setup/.test(body)) fail("install.sh next-steps missing the guided avctl setup line");
+  if (!/pvctl setup/.test(body)) fail("install.sh next-steps missing the guided pvctl setup line");
   // The public repo's README is the same promise surface: its first
-  // printed command was `cargo install av-harness av-cli` — crates
+  // printed command was `cargo install pv-harness pv-cli` — crates
   // that were NEVER published to crates.io ("does not exist" from the
   // registry). The quickstart must lead with a command that works
   // today. Live-only: the public repo has no local artifact, and the
   // export (publish-tool.yml) lands with the same push being smoked.
   if (!local) {
-    const readme = await (await fetch("https://raw.githubusercontent.com/AgentVisorAI/agentvisor/main/README.md?cb=" + Date.now())).text();
-    if (!/curl -fsSL https:\/\/agentvisorai\.me\/install\.sh \| sh/.test(readme))
+    const readme = await (await fetch("https://raw.githubusercontent.com/ProofVisorAI/proofvisor/main/README.md?cb=" + Date.now())).text();
+    if (!/curl -fsSL https:\/\/proofvisorai\.me\/install\.sh \| sh/.test(readme))
       fail("public README quickstart lost the installer one-liner");
-    if (!/cargo install --locked --git https:\/\/github\.com\/AgentVisorAI\/agentvisor/.test(readme))
+    if (!/cargo install --locked --git https:\/\/github\.com\/ProofVisorAI\/proofvisor/.test(readme))
       fail("public README quickstart lost the working --git install form");
   }
   console.log("✅ install promise: " + url + " serves the real installer" + (local ? "" : "; public README leads with working commands"));

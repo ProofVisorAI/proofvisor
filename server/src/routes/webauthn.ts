@@ -17,7 +17,7 @@
  *                                     allowCredentials matching the user, sets
  *                                     a challenge cookie tied to that user id.
  *     POST /authenticate/verify     — client posts the assertion. Server
- *                                     verifies, mints an av_session.
+ *                                     verifies, mints an pv_session.
  *
  *   CRUD:
  *     GET    /credentials
@@ -96,8 +96,8 @@ function acceptedOrigins(): string[] {
 // attached header. Signing removes minting; the embedded issued-at,
 // enforced server-side in readChallengeCookie, bounds replay of a
 // captured cookie+assertion pair to CHALLENGE_TTL_S.
-const REG_CHALLENGE_COOKIE = "av_wa_reg_challenge";
-const AUTH_CHALLENGE_COOKIE = "av_wa_auth_challenge";
+const REG_CHALLENGE_COOKIE = "pv_wa_reg_challenge";
+const AUTH_CHALLENGE_COOKIE = "pv_wa_auth_challenge";
 const CHALLENGE_TTL_S = 300; // 5 min — plenty for user prompt
 
 function setChallengeCookie(
@@ -303,7 +303,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     const claims = requireSession(req, reply);
     if (!claims) return;
     // R107 F1: API-key sessions have no user row and can't own a
-    // passkey (the auth material is the plaintext av_srv_ token,
+    // passkey (the auth material is the plaintext pv_srv_ token,
     // not a hardware credential). Reject up-front with the same
     // slug siblings use — /saml/slo (R105 F5), /logout (R106 F2),
     // stream (R100). The prior implicit guard here (findUnique
@@ -320,7 +320,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     if (!user) return reply.code(401).send({ error: "unauthenticated" });
 
     const options = await generateRegistrationOptions({
-      rpName: "AgentVisor AI",
+      rpName: "ProofVisor",
       rpID: rpID(),
       userID: Buffer.from(user.id, "utf8"),
       userName: user.email,
@@ -357,7 +357,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     // fires only on success). Same primitive R86 F3 hardened
     // for /login. Also amplifies argon2 CPU spend for DoS.
     // R142 F2: use perIpCookieOnly so a Bearer-header hammer
-    // from an attacker with any valid av_srv_ token can't burn
+    // from an attacker with any valid pv_srv_ token can't burn
     // the legitimate cookie caller's budget — R141 F4's
     // covert lock-out primitive fix generalized to every
     // step-up sibling.
@@ -1048,13 +1048,13 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     //      check on enrollment). Attacker's own hardware key is
     //      now enrolled on the victim's user row.
     //   3. If attacker's cookie role is admin+, they mint an
-    //      av_srv_ token as their persistence primitive.
+    //      pv_srv_ token as their persistence primitive.
     //   4. Victim opens Settings, sees an unfamiliar passkey
     //      label ("Yubikey #2" they never enrolled), clicks
     //      Delete. Prior shape: only the credential row was
     //      removed — victim's cookie still worked, attacker's
     //      cookie still worked (up to 7-day exp), and any
-    //      av_srv_ token from step 3 kept authenticating.
+    //      pv_srv_ token from step 3 kept authenticating.
     // Fix mirrors R123 F3 (reset-confirm apikey fence): wrap
     // the credential delete + sessionRevokedAt bump +
     // apiKey.updateMany in one db.$transaction so a crash

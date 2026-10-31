@@ -1,4 +1,4 @@
-# Render blueprint — one-click deploy for the AgentVisor API + Postgres.
+# Render blueprint — one-click deploy for the ProofVisor API + Postgres.
 #
 # https://render.com/docs/blueprint-spec
 #
@@ -16,14 +16,14 @@
 #   4. Deploy. First boot runs `prisma migrate deploy` before serving traffic.
 #
 # To move OFF Render later:
-#   docker build -t agentvisor-api server/
-#   docker push $REG/agentvisor-api
+#   docker build -t proofvisor-api server/
+#   docker push $REG/proofvisor-api
 #   pg_dump $OLD_DB | psql $NEW_DB
 #   # redeploy the image + point DATABASE_URL at the new DB. Done.
 
 services:
   - type: web
-    name: agentvisor-api
+    name: proofvisor-api
     runtime: docker
     dockerfilePath: ./server/Dockerfile
     dockerContext: ./server
@@ -39,32 +39,32 @@ services:
         value: "true"
       - key: ALLOWED_ORIGINS
         # Adjust for your custom domain(s). Multiple values are comma-separated.
-        value: https://agentvisorai.me
+        value: https://proofvisor.com
       - key: JWT_ISSUER
-        value: agentvisor-ai
+        value: proofvisor
       - key: JWT_AUDIENCE
-        value: agentvisor-console
+        value: proofvisor-console
       - key: JWT_SECRET
         # Render generates a fresh 32-byte hex secret on first apply.
         # Rotate later with a dashboard update — Render reboots the service,
         # invalidating all outstanding JWTs on the next boot.
         generateValue: true
       - key: APP_BASE_URL
-        value: https://agentvisorai.me
+        value: https://proofvisor.com
       - key: API_PUBLIC_URL
         # The API's own public origin. SAML SP endpoints (entityId /
         # ACS / metadata / login) and the OAuth redirect_uri are built
         # from this — without it they'd point at the static Pages host
         # above, which 404s every IdP round-trip.
-        value: https://api.agentvisorai.me
+        value: https://api.proofvisor.com
       - key: EMAIL_FROM
         # MUST be a Resend-verified domain sender or Resend rejects
         # every send at request time (the API still 202s — check logs
         # for resend_send_failed). Until the domain is verified in
         # Resend, use their sandbox sender, which only delivers to the
         # Resend account owner's own address:
-        #   AgentVisor AI <onboarding@resend.dev>
-        value: AgentVisor AI <no-reply@agentvisorai.me>
+        #   ProofVisor <onboarding@resend.dev>
+        value: ProofVisor <no-reply@proofvisor.com>
       - key: MICROSOFT_TENANT
         value: common
       # Render fronts apps with Cloudflare edge + its own router: 3
@@ -89,11 +89,11 @@ services:
         sync: false
       - key: DATABASE_URL
         fromDatabase:
-          name: agentvisor-db
+          name: proofvisor-db
           property: connectionString
 
 databases:
-  - name: agentvisor-db
+  - name: proofvisor-db
     plan: free
-    databaseName: agentvisor
-    user: agentvisor
+    databaseName: proofvisor
+    user: proofvisor

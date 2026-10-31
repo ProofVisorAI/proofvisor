@@ -1,4 +1,4 @@
-# AgentVisor AI console backend — local dev stack.
+# ProofVisor console backend — local dev stack.
 #
 # Runs:
 #   - Postgres 16 (identical major version to Neon free tier + Fly Postgres)
@@ -22,15 +22,15 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: agentvisor
+      POSTGRES_USER: proofvisor
       POSTGRES_PASSWORD: dev_password_replace_me
-      POSTGRES_DB: agentvisor
+      POSTGRES_DB: proofvisor
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agentvisor"]
+      test: ["CMD-SHELL", "pg_isready -U proofvisor"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -44,7 +44,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://agentvisor:dev_password_replace_me@db:5432/agentvisor
+      DATABASE_URL: postgres://proofvisor:dev_password_replace_me@db:5432/proofvisor
       JWT_SECRET: dev_only_change_me_for_prod_use_openssl_rand_hex_48
       PORT: "8080"
       HOST: "0.0.0.0"
