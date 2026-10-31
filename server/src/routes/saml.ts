@@ -125,7 +125,12 @@ function fingerprintPem(pem: string): string {
 
 // ---------- Zod validation ---------------------------------------------
 
-const createConfigSchema = z.object({
+// Field schemas WITHOUT defaults. zod 4 changed `.partial()` so that a
+// field carrying `.default()` is filled in when the key is absent; a
+// PATCH that only renamed a config would then silently reset every other
+// setting (and trip the jitEnabled/allowedDomains guard below). Defaults
+// therefore live only on the create schema.
+const configFieldSchemas = {
   // R211 F1: .max().trim().min() ordering — see auth.ts
   // orgNameSchema.
   displayName: z.string().max(80).trim().min(1),
@@ -133,9 +138,9 @@ const createConfigSchema = z.object({
   sloUrl: z.string().url().max(2048).optional().nullable(),
   entityIdIdp: z.string().min(1).max(2048),
   x509Cert: z.string().min(1).max(16_000),
-  wantAssertionsSigned: z.boolean().default(true),
-  wantResponseSigned: z.boolean().default(false),
-  allowEncryptedAssertions: z.boolean().default(true),
+  wantAssertionsSigned: z.boolean(),
+  wantResponseSigned: z.boolean(),
+  allowEncryptedAssertions: z.boolean(),
   // R88 F5: dropped "sha1". SHA-1 is chosen-prefix collision-broken
   // since Leurent/Peyrin 2020 (SHAmbles — ~$45k of cloud compute).
   // With SHA-1 as the digest, an attacker with access to a legitimate
@@ -148,16 +153,29 @@ const createConfigSchema = z.object({
   // requires SHA-1, the fix is an env-gated allow-list (not a per-org
   // schema field) so security posture is a deployment decision, not
   // a form-field.
-  signatureAlgorithm: z.enum(["sha256", "sha512"]).default("sha256"),
-  digestAlgorithm: z.enum(["sha256", "sha512"]).default("sha256"),
-  nameIdFormat: z.string().max(256).default(
+  signatureAlgorithm: z.enum(["sha256", "sha512"]),
+  digestAlgorithm: z.enum(["sha256", "sha512"]),
+  nameIdFormat: z.string().max(256),
+  jitEnabled: z.boolean(),
+  jitDefaultRole: z.enum(["member", "admin"]),
+  allowedDomains: z.string().max(2048),
+};
+const createConfigSchema = z.object({
+  ...configFieldSchemas,
+  wantAssertionsSigned: configFieldSchemas.wantAssertionsSigned.default(true),
+  wantResponseSigned: configFieldSchemas.wantResponseSigned.default(false),
+  allowEncryptedAssertions: configFieldSchemas.allowEncryptedAssertions.default(true),
+  signatureAlgorithm: configFieldSchemas.signatureAlgorithm.default("sha256"),
+  digestAlgorithm: configFieldSchemas.digestAlgorithm.default("sha256"),
+  nameIdFormat: configFieldSchemas.nameIdFormat.default(
     "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
   ),
-  jitEnabled: z.boolean().default(true),
-  jitDefaultRole: z.enum(["member", "admin"]).default("member"),
-  allowedDomains: z.string().max(2048).default(""),
+  jitEnabled: configFieldSchemas.jitEnabled.default(true),
+  jitDefaultRole: configFieldSchemas.jitDefaultRole.default("member"),
+  allowedDomains: configFieldSchemas.allowedDomains.default(""),
 });
-const updateConfigSchema = createConfigSchema.partial().extend({
+// Every field optional and nothing defaulted: absent keys stay absent.
+const updateConfigSchema = z.object(configFieldSchemas).partial().extend({
   isActive: z.boolean().optional(),
 });
 

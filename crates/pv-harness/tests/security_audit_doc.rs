@@ -20,7 +20,7 @@ const ONNX_EMBED: &str = include_str!("../../pv-loopdetect/src/onnx_embed.rs");
 /// The whole wasmtime advisory triage rests on this exact feature set.
 #[test]
 fn wasmtime_feature_containment_matches_the_audit() {
-    let line = r#"wasmtime = { version = "47", default-features = false, features = ["runtime", "cranelift", "wat"] }"#;
+    let line = r#"wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "wat"] }"#;
     assert!(
         ROOT_MANIFEST.contains(line),
         "root Cargo.toml wasmtime declaration changed — re-run the advisory \
@@ -135,11 +135,11 @@ fn resolved_dependency_states_hold_in_the_lockfile() {
         .split("name = \"wasmtime\"\n")
         .nth(1)
         .expect("wasmtime in lockfile")
-        .starts_with("version = \"47.");
+        .starts_with("version = \"48.");
     assert!(
         wasmtime_pinned,
-        "Cargo.lock wasmtime left 47.x — SECURITY-AUDIT.md's post-audit \
-         resolution note pins 47.x as post-dating every analyzed advisory; \
+        "Cargo.lock wasmtime left 48.x — SECURITY-AUDIT.md's post-audit \
+         resolution note pins 48.x as post-dating every analyzed advisory; \
          re-triage and update the doc"
     );
     let pemfile = LOCKFILE

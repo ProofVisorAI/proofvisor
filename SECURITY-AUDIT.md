@@ -48,10 +48,12 @@ this containment invariant:
 - `crates/pv-sandbox/src/wasm_policy.rs::tests::memory_bomb_policy_fails_closed_via_store_limits` (new)
 - `crates/pv-sandbox/src/wasm_policy.rs::tests::hostile_return_codes_all_deny` (new)
 
-*Resolved after this audit:* the workspace now pins wasmtime 47.x
-(`Cargo.lock`), which post-dates every wasmtime 27 advisory analyzed
-above; the containment invariants and their pinned regression tests
-are unchanged.
+*Resolved after this audit:* the workspace now pins wasmtime 48.x
+(`Cargo.lock`; 48.0.8 since 2026-10-31, which also closes
+RUSTSEC-2026 "panic lowering a host-created component model stream"
+for the 46.0–48.0.6 range), which post-dates every wasmtime 27 advisory
+analyzed above; the containment invariants and their pinned regression
+tests are unchanged.
 
 **wasmtime 2026-0222 (stores mix type indices between engines) NOT reachable.**
 Each `WasmPolicy` owns exactly one `Engine`; stores are never shared across
@@ -146,3 +148,26 @@ all-feature clippy/test gates pass.
   (including the 84 s 64-agent contention run).
 - Sandbox tests: `cargo test -p pv-sandbox` — 29 pass (2 new adversarial).
 - Embedded contract: 18 pass (7 added prior session, unchanged this session).
+
+## Update — 2026-10-31
+
+`cargo deny check advisories` reported ten new advisories after the
+rename work. All but one were resolved by taking the patched releases in
+`Cargo.lock` and `fuzz/Cargo.lock`; the daemon and CLI test suites,
+clippy and the loopback provider contracts pass on the new versions.
+
+| Advisory | Crate | Resolution |
+|---|---|---|
+| RUSTSEC-2026-0346, 0347, 0348, 0349 | `rustls` 0.23.45 | upgraded to 0.23.46 |
+| RUSTSEC-2026-0382 | `rustls-webpki` 0.103.15 | upgraded to 0.103.16 |
+| RUSTSEC-2026-0381, 0383 | `webpki-roots` / `webpki-root-certs` 1.0.9 | upgraded to 1.0.11 |
+| RUSTSEC-2026-0386 (unsound `AsyncFd::new`) | `tokio` 1.53.1 | upgraded to 1.54.1 |
+| RUSTSEC-2026-0385 | `ctutils` 0.4.2 (via `curve25519-dalek` 5) | upgraded to 0.4.7 |
+| GitHub advisory for wasmtime 46.0–48.0.6 | `wasmtime` 47.0.4 | upgraded to 48.0.8 (root manifest now `version = "48"`) |
+| RUSTSEC-2026-0387 (timing variability in `crypto-bigint` 0.5) | `crypto-bigint` 0.5.5 via `jsonwebtoken` → `p256`/`p384` | **Not reachable**, ignored in `deny.toml`: the ECDSA code path is rejected by the identity validator's EdDSA/HS256 whitelist before decoding (same argument as RUSTSEC-2023-0071). The patched 0.7 line needs `elliptic-curve` 0.14, which `jsonwebtoken` 11.1 does not use yet. |
+
+The Node API (`server/`) was updated the same day for its own advisories:
+`fastify` 5.12.7, `undici` 8.12.3, `nodemailer` 10.3.1 and `fast-uri`
+4.2.3 / 3.1.9. The remaining `npm audit` finding (`zod` < 4.6.6, memory
+exhaustion on oversized constrained strings) is being addressed by the
+zod 4 upgrade recorded in the changelog.

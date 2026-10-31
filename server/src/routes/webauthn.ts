@@ -379,7 +379,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     }
     const body = z
       .object({
-        response: z.record(z.unknown()),
+        response: z.record(z.string(), z.unknown()),
         // R113 F2: trim before min(1) so whitespace-only labels
         // are rejected. Prior shape z.string().min(1).max(80)
         // accepted '   ' (3 spaces, length 3) which passed
@@ -472,7 +472,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     // R135 F3: filter WebAuthn transports to the WebAuthn Level 3
     // spec-defined enum and bound array length. Prior shape cast
     // through `as { response?: { transports?: string[] } }` on
-    // body.data.response (which zod-typed as z.record(z.unknown())
+    // body.data.response (which zod-typed as z.record(z.string(), z.unknown())
     // at line 264 — untyped nested object), then unconditionally
     // .join(",")'d the raw values into an unbounded Prisma column.
     // An authenticated attacker POSTing
@@ -660,7 +660,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
       // outcome. Parse the body, burn a DB lookup, clear cookie,
       // return the same `unknown_credential` string.
       const bodyDecoy = z
-        .object({ response: z.record(z.unknown()) })
+        .object({ response: z.record(z.string(), z.unknown()) })
         .safeParse(req.body);
       void bodyDecoy; // parsed for timing parity only
       // Match the real path's DB timing by running a lookup that
@@ -699,7 +699,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     // cookie, return unknown_credential) whenever the real path
     // would take an early exit before the credential lookup.
     const body = z
-      .object({ response: z.record(z.unknown()) })
+      .object({ response: z.record(z.string(), z.unknown()) })
       .safeParse(req.body);
     const rawId = body.success
       ? ((body.data.response as { rawId?: string; id?: string }).rawId
