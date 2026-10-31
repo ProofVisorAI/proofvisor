@@ -18,7 +18,9 @@ const PATCH_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
 let api;
 let pg;
 before(async () => {
-  api = await startApi();
+  // Plan gating is opt-in (PLAN_LIMITS_ENFORCED) and needs Stripe configured;
+  // the key is a placeholder, no Stripe call is made by these tests.
+  api = await startApi({ PLAN_LIMITS_ENFORCED: "true", STRIPE_SECRET_KEY: "sk_test_scim_fixture" });
   pg = new Client({ connectionString: DATABASE_URL });
   await pg.connect();
 });

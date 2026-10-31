@@ -22,6 +22,11 @@
  * 0 (or the word "unlimited") removes the cap. Booleans accept
  * true/false/1/0.
  *
+ * Enforcement is opt-in: nothing is refused unless the operator sets
+ * PLAN_LIMITS_ENFORCED=true (which needs Stripe configured). Without
+ * it, every workspace keeps every feature and GET /api/v1/billing
+ * reports `enforced: false`.
+ *
  * Rejections are RFC 7807 problem+json with status 402 and
  * errorCode `plan_limit_reached`; the body names the limit that was
  * hit, the current plan, and the cheapest plan that lifts it, so the
@@ -30,6 +35,12 @@
 
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../db.js";
+import { env } from "../env.js";
+
+/** True when plan limits are enforced on this instance. */
+export function limitsEnforced(): boolean {
+  return env.PLAN_LIMITS_ENFORCED;
+}
 
 export type Plan = "free" | "team" | "enterprise";
 export const PLANS: readonly Plan[] = ["free", "team", "enterprise"] as const;
@@ -209,6 +220,7 @@ export function refuseIfOverLimit(
   current: number,
   wanted = 1,
 ): boolean {
+  if (!limitsEnforced()) return false;
   const p = normalizePlan(plan);
   const cap = LIMITS[p][limit];
   if (cap === null || current + wanted <= cap) return false;
@@ -244,6 +256,7 @@ export function refuseIfRetentionTooLong(
   plan: string | null | undefined,
   days: number,
 ): boolean {
+  if (!limitsEnforced()) return false;
   const p = normalizePlan(plan);
   const cap = LIMITS[p].retentionDays;
   if (cap === null) return false;
@@ -282,6 +295,7 @@ export function refuseIfFeatureMissing(
   plan: string | null | undefined,
   feature: FeatureName,
 ): boolean {
+  if (!limitsEnforced()) return false;
   const p = normalizePlan(plan);
   if (LIMITS[p][feature]) return false;
   const upgradeTo = planThatEnables(feature);

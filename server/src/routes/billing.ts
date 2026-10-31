@@ -29,7 +29,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { env } from "../env.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
-import { allLimits, limitsFor, normalizePlan, planUsage, type Plan } from "../lib/entitlements.js";
+import { allLimits, limitsEnforced, limitsFor, normalizePlan, planUsage, type Plan } from "../lib/entitlements.js";
 import { requireSession } from "../lib/session-middleware.js";
 
 type PaidPlan = "team" | "enterprise";
@@ -137,8 +137,17 @@ type Tx = Parameters<Parameters<typeof db.$transaction>[0]>[0];
 /** Apply one verified event. Returns the org it touched (for the audit row). */
 async function applyEvent(tx: Tx, event: Stripe.Event, log: FastifyRequest["log"]): Promise<string | null> {
   switch (event.type) {
-    case "checkout.session.completed": {
+    case "checkout.session.completed":
+    case "checkout.session.async_payment_succeeded": {
       const session = event.data.object as Stripe.Checkout.Session;
+      // A delayed payment method (bank debit) completes the checkout
+      // before the money arrives: payment_status is "unpaid" and Stripe
+      // confirms later with checkout.session.async_payment_succeeded.
+      // Upgrading on the first event would grant a plan nobody paid for.
+      if (session.payment_status === "unpaid") {
+        log.info({ eventId: event.id }, "billing_checkout_awaiting_payment");
+        return null;
+      }
       const orgId = session.metadata?.orgId ?? session.client_reference_id ?? null;
       const plan = session.metadata?.plan;
       if (!orgId || (plan !== "team" && plan !== "enterprise")) {
@@ -258,6 +267,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const usage = await planUsage(claims.orgId);
     return reply.send({
       configured: billingConfigured(),
+      enforced: limitsEnforced(),
       plan,
       planStatus: org.planStatus,
       planRenewsAt: org.planRenewsAt,

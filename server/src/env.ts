@@ -353,9 +353,26 @@ const Env = z.object({
       "STRIPE_API_BASE must be an http(s) URL and is only allowed outside production.",
     ),
   EMAIL_FROM: z.string().default("ProofVisor <no-reply@proofvisor.com>"),
+  // Plan limits (lib/entitlements.ts) are enforced only when this is
+  // "true". Off by default: an instance without paid plans keeps every
+  // feature for everyone, as the Free tier promises. Turning it on
+  // requires STRIPE_SECRET_KEY, so a refused workspace can always pay
+  // to lift the limit instead of hitting a wall with no way through.
+  PLAN_LIMITS_ENFORCED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
-const parsed = Env.safeParse(process.env);
+const parsed = Env.superRefine((v, ctx) => {
+  if (v.PLAN_LIMITS_ENFORCED && !v.STRIPE_SECRET_KEY) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PLAN_LIMITS_ENFORCED"],
+      message: "PLAN_LIMITS_ENFORCED=true needs STRIPE_SECRET_KEY: refused workspaces must be able to upgrade.",
+    });
+  }
+}).safeParse(process.env);
 if (!parsed.success) {
   // eslint-disable-next-line no-console
   console.error("Environment validation failed. Missing or invalid:");

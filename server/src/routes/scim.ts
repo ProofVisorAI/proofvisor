@@ -48,6 +48,7 @@ import { apiPublicBase } from "../env.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
 import { hashPassword, randomToken, verifyPassword } from "../lib/auth.js";
 import {
+  limitsEnforced,
   limitsFor,
   planThatLifts,
   planUsage,
@@ -1216,7 +1217,7 @@ export async function scimAdminRoutes(app: FastifyInstance): Promise<void> {
       deprovisionAction: org.scimDeprovisionAction,
       baseUrl: scimBase(),
       plan: org.plan,
-      planAllows: limitsFor(org.plan).scim,
+      planAllows: !limitsEnforced() || limitsFor(org.plan).scim,
       groupMapping: { owner: "owner", admin: "admin", member: "member" },
     };
   };
