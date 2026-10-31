@@ -163,7 +163,7 @@ jobs:
         run: npx prisma migrate deploy
       - name: SCIM provisioning and billing contracts (fake Stripe, no account)
         working-directory: server
-        run: node --import tsx --test ci/scim.test.mjs ci/billing.test.mjs
+        run: node --import tsx --test ci/scim.test.mjs ci/billing.test.mjs ci/metrics-exposure.test.mjs
       - name: Start API
         working-directory: server
         env:

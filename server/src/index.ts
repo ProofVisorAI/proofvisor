@@ -630,9 +630,15 @@ function problemDetail(slug: string): string {
   // public internet — allow-list contains the scraper's egress IPs
   // (Grafana Cloud, Prometheus server, k8s cluster ranges, etc). Set
   // ALLOW_METRICS_IPS="0.0.0.0/0" only if the metrics scraper is on the
-  // same private network.
+  // same private network. In production an unset list means 404.
   app.get("/metrics", async (req, reply) => {
     const allowed = env.ALLOW_METRICS_IPS;
+    // Fail closed in production: with no allow-list the counters were
+    // served to anyone on the internet. An operator who really wants
+    // them public sets ALLOW_METRICS_IPS=0.0.0.0/0,::/0 explicitly.
+    if (allowed.length === 0 && env.NODE_ENV === "production") {
+      return reply.code(404).send({ error: "not_found" });
+    }
     if (allowed.length > 0) {
       const ip = req.ip;
       // R77 F2 (MEDIUM-HIGH): route allowlist checks through

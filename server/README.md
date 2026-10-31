@@ -321,6 +321,10 @@ prod target) wired into CI:
 Full production checklist is in [DEPLOY.md](./DEPLOY.md#security-posture-2026-baseline).
 In short:
 
+- `/metrics` (Prometheus) answers 404 in production unless
+  `ALLOW_METRICS_IPS` lists the scraper's addresses or CIDRs; it used to
+  be public whenever that variable was unset.
+
 - Argon2id password hashing.
 - HttpOnly, SameSite=Lax, Secure session cookies. HS256 JWT.
 - Uniform login response time regardless of user existence.
