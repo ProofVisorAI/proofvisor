@@ -351,8 +351,52 @@ await uploadJson(JSON.stringify(wrongFormat));
   console.log("✅ text drop: selected receipt text verifies green; garbage text shows the error card");
 }
 
+// ── 16. Deployment pin from a console share link ──────────────────
+// A link carrying &deployment=<id>&api=<origin> makes the page fetch the
+// key the console pinned for that deployment (GET
+// /api/v1/public/receipt-keys/:id) and compare it with the receipt's
+// embedded key. The page's own origin is a trusted API origin, so the
+// fake endpoint is served there by request interception. An api origin
+// the page does not trust is never contacted.
+{
+  const sample = await (await fetch(new URL("sample-receipt.json", VERIFY_URL).href)).text();
+  const sampleKey = JSON.parse(sample).publicKey.hex;
+  const b64 = Buffer.from(sample, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const pageOrigin = new URL(VERIFY_URL).origin;
+  const cases = [
+    { label: "matching pin", api: pageOrigin, status: 200, key: sampleKey, expect: /signed by the exact Ed25519 key the ProofVisor console pinned for this deployment/ },
+    { label: "mismatching pin", api: pageOrigin, status: 200, key: "22".repeat(32), expect: /does NOT match the pinned deployment key/ },
+    { label: "pin lookup failure", api: pageOrigin, status: 404, key: null, expect: /pinned key could not be fetched/ },
+    { label: "untrusted api origin", api: "https://untrusted-api.example", status: 200, key: sampleKey, expect: /pinned key could not be fetched/ },
+  ];
+  for (const c of cases) {
+    const pg = await context.newPage();
+    pg.on("pageerror", (e) => jsErrors.push(e.message));
+    const contacted = [];
+    pg.on("request", (r) => { if (/\/api\/v1\/public\/receipt-keys\//.test(r.url())) contacted.push(new URL(r.url()).origin); });
+    await pg.route("**/api/v1/public/receipt-keys/**", (route) =>
+      route.fulfill({
+        status: c.status,
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        body: c.status === 200
+          ? JSON.stringify({ deploymentId: "dep_drill", deploymentName: "drill-prod", publicKeyHex: c.key, publicKeyB64: "", keyId: "k", pinnedAt: "2026-10-01T12:00:00.000Z", orgName: "Drill Org" })
+          : JSON.stringify({ error: "not_found" }),
+      }),
+    );
+    await pg.goto(VERIFY_URL + "#data=" + b64 + "&deployment=dep_drill&api=" + encodeURIComponent(c.api), { waitUntil: "domcontentloaded" });
+    await waitVerifyStable(pg);
+    await pg.waitForFunction((re) => new RegExp(re).test(document.body.innerText), c.expect.source, { timeout: 8000 }).catch(() => {});
+    const text = await pg.evaluate(() => document.body.innerText);
+    if (!c.expect.test(text)) fail(c.label + ": expected " + c.expect + " in the verdict, got: " + text.slice(0, 300));
+    if (c.api !== pageOrigin && contacted.some((o) => o === new URL(c.api).origin)) fail(c.label + ": the page contacted an untrusted api origin");
+    if (c.api === pageOrigin && contacted.length !== 1) fail(c.label + ": expected exactly one pin lookup, saw " + contacted.length);
+    await pg.close();
+  }
+  console.log("✅ deployment pin: match is trusted, mismatch is flagged, failed or untrusted lookups fall back to the embedded key");
+}
+
 if (jsErrors.length) fail("JS errors during drill: " + JSON.stringify(jsErrors));
 console.log("✅ zero uncaught JS errors");
 
 await browser.close();
-console.log("\nAll 15 /verify page drill checks passed.");
+console.log("\nAll 16 /verify page drill checks passed.");
