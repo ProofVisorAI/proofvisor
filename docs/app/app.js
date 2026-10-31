@@ -598,6 +598,7 @@
   // could otherwise make identifiers render REVERSED (Trojan-Source
   // display spoofing) in the audit trail. ZWJ/ZWNJ are deliberately
   // kept so emoji sequences in org/display names still render.
+  function stripBidi(s) { return String(s == null ? "" : s).replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, ""); }
   function esc(s) { return String(s == null ? "" : s).replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "").replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
   // Array.from splits by code point, not UTF-16 unit — .slice(0,1) on
   // an emoji-leading name ("🚀 Rocket Corp") rendered a broken "�".
@@ -2125,16 +2126,21 @@
       // "Allowed 0 / Blocked 0". The pointer arrow is a CSS
       // pseudo-element on .chart-tip (see styles.css) so no
       // extra markup lands here.
-      var total = s.allowed + s.blocked;
-      var blockPct = total > 0 ? Math.round((s.blocked / total) * 100) : 0;
+      // Counts arrive from the API; coerce so a non-numeric value can
+      // never reach innerHTML as markup (it renders as 0 instead).
+      var allowed = Number(s.allowed) || 0;
+      var blocked = Number(s.blocked) || 0;
+      var spendUsd = Number(s.spendUsd) || 0;
+      var total = allowed + blocked;
+      var blockPct = total > 0 ? Math.round((blocked / total) * 100) : 0;
       var rateBadge = total > 0
         ? '<span class="tip-rate' + (blockPct > 0 ? ' danger' : '') + '">' + blockPct + '% blocked</span>'
         : '<span class="tip-rate quiet">quiet</span>';
       tip.innerHTML =
         '<div class="tip-label">' + esc(s.label || "") + rateBadge + "</div>" +
-        '<div class="tip-row"><span class="d" style="background: var(--accent)"></span>Allowed <b>' + s.allowed.toLocaleString() + "</b></div>" +
-        '<div class="tip-row"><span class="d" style="background: var(--danger-solid)"></span>Blocked <b>' + s.blocked.toLocaleString() + "</b></div>" +
-        (s.spendUsd > 0 ? '<div class="tip-row muted">Spend $' + s.spendUsd.toFixed(2) + "</div>" : "");
+        '<div class="tip-row"><span class="d" style="background: var(--accent)"></span>Allowed <b>' + allowed.toLocaleString() + "</b></div>" +
+        '<div class="tip-row"><span class="d" style="background: var(--danger-solid)"></span>Blocked <b>' + blocked.toLocaleString() + "</b></div>" +
+        (spendUsd > 0 ? '<div class="tip-row muted">Spend $' + spendUsd.toFixed(2) + "</div>" : "");
     }
     function hideTip() { tip.style.display = "none"; cursor.style.opacity = "0"; clearBarHover(); }
     chart.addEventListener("mousemove", function (e) {
@@ -2449,7 +2455,8 @@
     if (fD && deps) {
       deps.forEach(function (d) {
         var o = document.createElement("option");
-        o.value = d.id; o.textContent = d.name;
+        // Same bidi-control stripping esc() applies to markup.
+        o.value = d.id; o.textContent = stripBidi(d.name);
         if (sessionsFilter.deploymentId === d.id) o.selected = true;
         fD.appendChild(o);
       });
@@ -2515,8 +2522,8 @@
       return '<tr data-clickable data-id="' + esc(s.id) + '" data-nav="#/sessions/" tabindex="0">' +
         '<td title="' + esc(s.agent + " · " + s.externalId) + '"><div style="font-weight:500">' + esc(s.agent) + (s.isDemo ? demoPill() : "") + '</div><div class="id">' + esc(s.externalId) + "</div></td>" +
         '<td title="' + esc(s.user || "") + '"><div class="actor"><span class="pv">' + esc(initials(s.user)) + '</span>' + esc(s.user || "—") + '</div></td>' +
-        '<td class="num tabular">' + s.events + "</td>" +
-        '<td class="num tabular">' + s.toolsAllowed + "</td>" +
+        '<td class="num tabular">' + esc(s.events) + "</td>" +
+        '<td class="num tabular">' + esc(s.toolsAllowed) + "</td>" +
         "<td>" + blocks + "</td>" +
         '<td class="num tabular">' + usdMicros(s.costUsdMicros) + "</td>" +
         '<td style="color: var(--fg-2)">' + timeAgoCell(s.startedAt) + "</td>" +
@@ -4255,7 +4262,7 @@
         depCell("Status", p.enabled ? '<span class="pill ok status-dot">enabled</span>' : '<span class="pill neutral">disabled</span>', false, true) +
         depCell("Enforcement", policyEnforcementBadge(p, deps), false, true) +
         depCell("Hits (24h)", p.hits24h.toLocaleString()) +
-        depCell("Blocks (24h)", blocks24 > 0 ? '<span style="color: var(--danger-solid)">' + blocks24 + "</span>" : blocks24, false, true) +
+        depCell("Blocks (24h)", blocks24 > 0 ? '<span style="color: var(--danger-solid)">' + esc(blocks24) + "</span>" : esc(blocks24), false, true) +
         depCell("Updated", timeAgoCell(p.updatedAt), false, true) +
       "</div>" +
       '<div class="card"><h2>Description</h2><p style="margin:0;color:var(--fg-2);font-size:var(--t-body)">' + esc(p.description) + '</p></div>' +
@@ -6518,9 +6525,11 @@
     // numbers the investor just saw on the Overview.
     var stats = null;
     try { stats = await state.ds.getOverview("24h"); } catch (e) { /* tiers still render */ }
-    var calls = stats ? (stats.toolsAllowed + stats.toolsBlocked) : 0;
+    // Coerced to numbers: a string count would otherwise concatenate
+    // ("3" + "4" = "34") and reach innerHTML unescaped.
+    var calls = stats ? (Number(stats.toolsAllowed) || 0) + (Number(stats.toolsBlocked) || 0) : 0;
     var meteredUsd = (calls / 1000) * 0.10;
-    var kept = stats ? Number(stats.blockedSpendUsd) : 0;
+    var kept = stats ? Number(stats.blockedSpendUsd) || 0 : 0;
     var tier = function (name, price, priceSub, items, cta, highlight) {
       return '<div class="price-tier' + (highlight ? " highlight" : "") + '">' +
         '<h3>' + esc(name) + "</h3>" +
@@ -7226,8 +7235,12 @@
         + (err && err.requestId ? " (request id: " + esc(err.requestId) + ")" : "");
     var actions = isNotFound
       ? '<a class="btn accent" href="#/sessions">Back to sessions</a> <a class="btn" href="#/overview">Overview</a>'
-      : '<button class="btn accent" onclick="location.reload()">Reload</button> <a class="btn" href="#/overview">Overview</a>';
+      : '<button class="btn accent" type="button" data-reload>Reload</button> <a class="btn" href="#/overview">Overview</a>';
     main.innerHTML = pageHeader(title) + '<div class="card"><div class="empty"><h3>' + esc(title) + "</h3><p>" + detail + "</p>" + actions + "</div></div>";
+    // A listener, not an inline onclick: the page CSP sets
+    // script-src-attr 'none', which silently blocks inline handlers.
+    var reload = main.querySelector("[data-reload]");
+    if (reload) reload.addEventListener("click", function () { location.reload(); });
   }
 
   /* ---------- go ---------- */
