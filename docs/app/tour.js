@@ -182,8 +182,8 @@
         waitFor: ".stat.savings",
         target: null,
         title: "Nothing recorded yet",
-        body: "No sessions have reached this workspace. Register a deployment, start " +
-          "<code>pvctl console-sync --watch --pull-policies</code> on the host that runs your agent — " +
+        body: "No sessions have reached this workspace. Register a deployment and follow its " +
+          "<b>Connect your daemon</b> steps on the host that runs your agent — " +
           "or press <b>⚡ Simulate an attack</b> on this page to stage a blocked payment, " +
           "signed with the public demo key, and run this tour again.",
       });

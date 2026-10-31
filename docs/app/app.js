@@ -688,7 +688,7 @@
   function bundlePill(d) {
     if (d.isDemo) return '<span class="pill neutral" title="The demo deployment never runs a daemon.">n/a</span>';
     var b = d.policyBundle;
-    if (!b) return '<span class="pill neutral" title="This daemon has not pulled the policy bundle yet. Start the uploader with pvctl console-sync --watch --pull-policies.">not pulling</span>';
+    if (!b) return '<span class="pill neutral" title="This daemon has not pulled the policy bundle yet. Its deployment page shows the config line and command that turn pulling on.">not pulling</span>';
     if (b.stale) return '<span class="pill warn" title="Applied bundle ' + esc(String(b.etag).slice(0, 12)) + '… is older than the current one — the daemon picks the new bundle up on its next pull.">older bundle</span>';
     return '<span class="pill ok" title="Applied the current bundle (' + esc(String(b.etag).slice(0, 12)) + '…) ' + esc(timeAgo(b.appliedAt)) + '">current</span>';
   }
@@ -3408,7 +3408,10 @@
     var consoleSyncEnv =
       "PV_CONSOLE_URL=" + consoleApiOrigin() + "\n" +
       "PV_CONSOLE_DEPLOYMENT=" + d.id + "\n" +
-      "PV_CONSOLE_TOKEN=<token shown once at create or rotate>";
+      "PV_CONSOLE_TOKEN=<token shown once at create or rotate>\n" +
+      // Same path as policy_bundle_file in the daemon's config; pvctl
+      // reads it for --pull-policies.
+      "PV_POLICY_BUNDLE_FILE=/var/lib/proofvisor/policies.json";
 
     main.innerHTML =
       pageHeader(d.name, d.environment + (d.isDemo ? " · demo deployment staged by Simulate an attack" : ""), '<a href="' + esc(backToListUrl("deployments")) + '" class="btn">← All deployments</a>') +
@@ -3451,7 +3454,7 @@
           "</div>"
         : '<div class="card" style="margin-bottom:12px">' +
             "<h2>Connect your daemon</h2>" +
-            '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">On the host that runs <code>proofvisord</code>, export these and start the uploader with <code>pvctl console-sync --watch --pull-policies</code>. It posts the daemon\'s spooled sessions, events and signed receipts to this console and pulls the org\'s enabled policies as one bundle; this page flips to <b>connected</b> after the first upload.</p>' +
+            '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">On the host that runs <code>proofvisord</code>, add <code>policy_bundle_file = "/var/lib/proofvisor/policies.json"</code> to its config, export these and start the uploader with <code>pvctl console-sync --watch --pull-policies</code>. It posts the daemon\'s spooled sessions, events and signed receipts to this console and pulls the org\'s enabled policies as one bundle; this page flips to <b>connected</b> after the first upload.</p>' +
             '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' + esc(consoleSyncEnv) + "</pre>" +
             '<button type="button" class="btn" data-copy="' + esc(consoleSyncEnv) + '">⧉ Copy env block</button>' +
             '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">The token is shown once, at create or rotate. Lost it? Rotate below — the old one stops working immediately.</span>' +
@@ -3496,7 +3499,7 @@
   // policyBundle), with the exact command that enables pulling.
   function policyBundleCard(d) {
     var b = d.policyBundle;
-    var how = '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 0">Policies reach this daemon through the uploader: run <code>pvctl console-sync --watch --pull-policies</code> with the env block above. It fetches <code>GET /api/v1/ingest/policies</code> (the org\'s enabled policies as one bundle, identified by an etag), applies it, and reports back what it enforces.</p>';
+    var how = '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 0">Policies reach this daemon through the uploader: set <code>policy_bundle_file = "/var/lib/proofvisor/policies.json"</code> in the daemon\'s config (the same path as <code>PV_POLICY_BUNDLE_FILE</code> in the env block above) and run <code>pvctl console-sync --watch --pull-policies</code>. It fetches <code>GET /api/v1/ingest/policies</code> (the org\'s enabled policies as one bundle, identified by an etag) and writes it to that file; the daemon applies it, and pvctl reports back what the daemon enforces.</p>';
     var body;
     if (!b) {
       body = '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0">' +
@@ -3991,7 +3994,7 @@
     var info = POLICY_KIND_INFO[kind];
     if (!info) return "";
     return info.enforceable
-      ? "Daemons that pull policies (pvctl console-sync --watch --pull-policies) enforce this spec on top of their local config. A pushed policy can only tighten the host's own limits, never loosen them."
+      ? "Daemons that pull policies (set up on each deployment's page) enforce this spec on top of their local config. A pushed policy can only tighten the host's own limits, never loosen them."
       : "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
   }
 
@@ -4104,7 +4107,7 @@
       }).then(function (p) {
         close();
         var msg = kindEnforceable(p.kind)
-          ? "Policy created. Daemons pull it on their next sync (pvctl console-sync --watch --pull-policies)."
+          ? "Policy created. Daemons that pull policies pick it up on their next sync (see a deployment's page to set this up)."
           : "Policy saved. " + p.kind + " policies document intent — daemons do not enforce them.";
         toastLink(msg, "#/policies/" + p.id, "View policy →");
         navigate("#/policies/" + p.id);
@@ -4135,11 +4138,11 @@
     }
     var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
     if (!p.enabled) return '<span class="pill neutral enf" title="Disabled policies are left out of the bundle daemons pull.">Disabled — not in the bundle</span>';
-    if (!e.deployments) return '<span class="pill neutral enf" title="Register a deployment and start pvctl console-sync --watch --pull-policies.">No daemons yet</span>';
+    if (!e.deployments) return '<span class="pill neutral enf" title="Register a deployment; its page shows how to start pulling policies.">No daemons yet</span>';
     var staleNames = (deps || []).filter(function (d) { return !d.isDemo && d.policyBundle && d.policyBundle.stale; }).map(function (d) { return d.name; });
     var never = e.deployments - e.applied - e.stale;
     var cls = e.applied === e.deployments ? "ok" : (e.applied > 0 ? "warn" : "neutral");
-    var html = '<span class="pill ' + cls + ' enf" title="' + esc(never > 0 ? never + " daemon" + (never === 1 ? " has" : "s have") + " not pulled a bundle yet (pvctl console-sync --watch --pull-policies)" : "Every daemon runs the current bundle") + '">' +
+    var html = '<span class="pill ' + cls + ' enf" title="' + esc(never > 0 ? never + " daemon" + (never === 1 ? " has" : "s have") + " not pulled a bundle yet (each deployment's page shows how to turn pulling on)" : "Every daemon runs the current bundle") + '">' +
       esc("Enforced by " + e.applied + " of " + e.deployments + " daemon" + (e.deployments === 1 ? "" : "s")) + "</span>";
     if (e.stale > 0) {
       var staleLabel = staleNames.length === 1

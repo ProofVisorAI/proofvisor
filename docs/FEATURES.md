@@ -162,7 +162,9 @@ with demonstration data, which is what the public site shows by default.
 
 - **Policy push from the console to daemons.** Budget, allowlist,
   argument-schema and token-rate policies written in the console reach
-  daemons through `pvctl console-sync --watch --pull-policies`. Each
+  daemons through `pvctl console-sync --watch --pull-policies` together
+  with `policy_bundle_file` in the daemon config (the deployment page
+  shows both). Each
   daemon applies the bundle on top of its local config (a pushed
   policy can only tighten it), survives restarts with it, reports what
   it actually enforces, and the console shows "Enforced by N of M

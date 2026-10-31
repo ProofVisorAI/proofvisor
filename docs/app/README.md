@@ -110,7 +110,9 @@ See [`server/README.md`](../../server/README.md) for the full deploy runbook.
   the JSON spec for the daemon-enforceable kinds (`budget`,
   `allowlist`, `rate`, `schema`), validated before saving exactly as
   the server validates it. Daemons that run
-  `pvctl console-sync --watch --pull-policies` pull every enabled
+  `pvctl console-sync --watch --pull-policies` (with `policy_bundle_file`
+  in the daemon config and `PV_POLICY_BUNDLE_FILE` set to the same path,
+  as the deployment page shows) pull every enabled
   policy as one bundle; each policy shows an enforcement badge such as
   "Enforced by 2 of 3 daemons", names a daemon that still has an older
   bundle, or says "Not enforceable by daemons" for `guardrail` and

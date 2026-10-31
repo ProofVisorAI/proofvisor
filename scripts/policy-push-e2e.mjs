@@ -175,13 +175,17 @@ const chat = (session, text) => fetch(`${daemonUrl}/v1/chat/completions`, {
 }).then(async (r) => ({ status: r.status, text: await r.text() }));
 const blockedBy = (reply) => JSON.stringify(reply.body);
 
+// The first pull passes the path as a flag; later pulls use
+// PV_POLICY_BUNDLE_FILE, the variable the console's env block sets.
+let pulls = 0;
 function pull() {
+  const viaEnv = pulls++ > 0;
   return spawnSync(pvctlBin, [
     "console-sync", "--spool-dir", join(work, "spool/atif"),
     "--console-url", API, "--deployment", deploymentId, "--token-file", tokenFile,
     "--state-file", join(work, "sync-state.json"),
-    "--pull-policies", "--policy-bundle-file", bundleFile,
-  ], { encoding: "utf8", timeout: 60000 });
+    "--pull-policies", ...(viaEnv ? [] : ["--policy-bundle-file", bundleFile]),
+  ], { encoding: "utf8", timeout: 60000, env: viaEnv ? { ...process.env, PV_POLICY_BUNDLE_FILE: bundleFile } : process.env });
 }
 
 daemon = startDaemon();
