@@ -30,7 +30,7 @@ const PG_CONTAINER = process.env.PG_CONTAINER;
 function sweepDrillRows() {
   if (!PG_CONTAINER) return;
   execSync(
-    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U pv -d pvdb -c "` +
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "` +
       `DELETE FROM orgs WHERE id IN (SELECT m.\\"orgId\\" FROM memberships m ` +
       `JOIN users u ON u.id = m.\\"userId\\" WHERE u.email LIKE '%@saml-drill.example'); ` +
       `DELETE FROM users WHERE email LIKE '%@saml-drill.example';"`,

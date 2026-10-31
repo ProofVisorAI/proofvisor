@@ -158,7 +158,7 @@ let carolState = {};
   const colliderDelete =
     "DELETE FROM api_keys WHERE id = 'colliderkey000000000000000000';";
   execSync(
-    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U pv -d pvdb -c "${colliderDelete}"`,
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "${colliderDelete}"`,
     { stdio: "ignore" },
   );
   const sql = [
@@ -167,7 +167,7 @@ let carolState = {};
     "FROM api_keys LIMIT 1;",
   ].join(" ");
   execSync(
-    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U pv -d pvdb -c "${sql.replace(/"/g, '\\"')}"`,
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "${sql.replace(/"/g, '\\"')}"`,
     { stdio: "ignore" },
   );
   const r = await fetch(BASE + "/api/v1/sessions", {
@@ -176,7 +176,7 @@ let carolState = {};
   if (r.status !== 200) fail(`hint collision broke real bearer -> ${r.status}`);
   console.log("✅ hint collision: real key still authenticates past the impostor");
   execSync(
-    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U pv -d pvdb -c "${colliderDelete}"`,
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "${colliderDelete}"`,
     { stdio: "ignore" },
   );
 }

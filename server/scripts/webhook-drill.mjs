@@ -204,7 +204,7 @@ capture = [];
   receiverBehavior = { status: 200 };
   const { execSync } = await import("node:child_process");
   execSync(
-    `docker exec ${PG_CONTAINER} psql -U pv -d pvdb -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
+    `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
     { stdio: "ignore" },
   );
   capture = [];

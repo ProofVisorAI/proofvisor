@@ -66,7 +66,7 @@ function fail(m) { console.log("❌", m); process.exit(1); }
 function sql(q) {
   const path = "/tmp/pv-drill-" + Math.random().toString(36).slice(2, 8) + ".sql";
   writeFileSync(path, q);
-  const out = execSync(`docker cp ${path} ${PG}:/tmp/q.sql && docker exec ${PG} psql -U pv -d pvdb -t -A -f /tmp/q.sql`).toString().trim();
+  const out = execSync(`docker cp ${path} ${PG}:/tmp/q.sql && docker exec ${PG} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -f /tmp/q.sql`).toString().trim();
   unlinkSync(path);
   return out;
 }

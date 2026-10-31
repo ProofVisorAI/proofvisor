@@ -157,7 +157,7 @@ const carol = {};
 {
   // fetch endpoint's secret from DB directly (not exposed via API).
   const secret = execSync(
-    `docker exec ${PG_CONTAINER} psql -U pv -d pvdb -t -A -c "SELECT secret FROM webhook_endpoints WHERE id='${alicEp.id}'"`,
+    `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -c "SELECT secret FROM webhook_endpoints WHERE id='${alicEp.id}'"`,
   ).toString().trim();
   capture = [];
   await jsonReq(alice, "POST", "/api/v1/webhooks/" + alicEp.id + "/test");
@@ -184,7 +184,7 @@ const carol = {};
   let finalAttempt = 0;
   for (let i = 0; i < 15; i++) {
     execSync(
-      `docker exec ${PG_CONTAINER} psql -U pv -d pvdb -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
+      `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
       { stdio: "ignore" },
     );
     await wait(900); // sweeper=500ms + 400ms slop for retry
@@ -203,12 +203,12 @@ const carol = {};
 receiverBehavior = { status: 200 };
 {
   const before = execSync(
-    `docker exec ${PG_CONTAINER} psql -U pv -d pvdb -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
+    `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
   ).toString().trim();
   if (before === "0") fail("no deliveries recorded prior to delete");
   await jsonReq(alice, "DELETE", "/api/v1/webhooks/" + alicEp.id);
   const after = execSync(
-    `docker exec ${PG_CONTAINER} psql -U pv -d pvdb -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
+    `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
   ).toString().trim();
   if (after !== "0") fail(`delete cascade: expected 0 rows, got ${after}`);
   console.log(`✅ delete cascade: ${before} deliveries -> 0`);

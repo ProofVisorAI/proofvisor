@@ -33,7 +33,7 @@ async function jr(state, method, path, body) {
 }
 function fail(m) { console.log("❌", m); process.exit(1); }
 function sql(q) {
-  return execSync(`docker exec ${PG} psql -U pv -d pvdb -t -A -c "${q.replace(/"/g, "\\\"")}"`).toString().trim();
+  return execSync(`docker exec ${PG} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -c "${q.replace(/"/g, "\\\"")}"`).toString().trim();
 }
 
 // Setup alice + bob (two orgs). Each will get a deployment + old/new sessions.
