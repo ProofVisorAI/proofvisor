@@ -40,6 +40,7 @@ impl HarnessConfig {
             shutdown_ready_drain_s: 0,
             upstream_chat_path: default_chat_path(),
             provider: default_provider(),
+            provider_default_max_tokens: default_provider_max_tokens(),
             upstream_api_key_env: None,
             upstream_api_key_file: None,
             upstream_auth_header: default_auth_header(),

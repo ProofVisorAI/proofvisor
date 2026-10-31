@@ -4,7 +4,9 @@ use crate::config::HarnessConfig;
 use crate::reconciler::Finalizer;
 use crate::session::{Session, SessionLease, SessionRegistry, Workflow};
 use crate::worker::{AtifCapture, ResponsePermit, WorkerHandle, WorkerJob};
-use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use axum::body::Bytes;
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use futures::StreamExt as _;
 use pv_bridge::EventBus;
 use pv_core::metrics::Registry;
 use pv_core::time::elapsed_us;
@@ -149,10 +151,11 @@ pub struct AppState {
     /// journaled in this process but whose `.audited` marker write failed;
     /// a retry must re-attempt the marker without re-emitting the event.
     pub(crate) tool_audits_emitted: Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
-    /// The upstream provider's wire dialect,
-    /// selected by `config.provider` at boot. All SSE/body parsing on
-    /// the response path routes through this adapter.
-    pub(crate) provider_adapter: Arc<dyn crate::provider::ProviderAdapter>,
+    /// The upstream provider's wire dialect, selected by
+    /// `config.provider` at boot. `forward_chat` translates requests
+    /// and responses for the non-OpenAI dialects so the relay always
+    /// sees OpenAI-shaped bytes.
+    pub(crate) provider: crate::provider::ProviderKind,
     /// Asynchronous session close and promotion service.
     pub finalizer: Finalizer,
     /// Flips to `true` when shutdown starts. `/readyz` reads this and
@@ -683,18 +686,38 @@ impl HotMetrics {
     }
 }
 
+/// The header name and scheme the upstream credential is sent with.
+///
+/// `upstream_auth_header` / `upstream_auth_scheme` default to
+/// `authorization` / `Bearer`, which is right for OpenAI and every
+/// OpenAI-compatible server. The Anthropic and Gemini native APIs read
+/// the key from their own headers (`x-api-key`, `x-goog-api-key`)
+/// with no scheme prefix, so when the operator left both settings at
+/// their defaults the provider's native header is used instead. An
+/// explicit non-default setting is always honoured as written.
+pub fn effective_upstream_auth_header(config: &HarnessConfig) -> (String, String) {
+    let at_defaults = config.upstream_auth_header.eq_ignore_ascii_case("authorization")
+        && config.upstream_auth_scheme.eq_ignore_ascii_case("bearer");
+    let native = crate::provider::adapter_for(&config.provider).and_then(crate::provider::ProviderKind::native_auth_header);
+    match native {
+        Some(header) if at_defaults => (header.to_owned(), String::new()),
+        _ => (
+            config.upstream_auth_header.to_ascii_lowercase(),
+            config.upstream_auth_scheme.clone(),
+        ),
+    }
+}
+
 /// How the harness authenticates to the chat upstream, for startup logs
 /// and `pvctl doctor` — never contains key material.
 pub fn describe_upstream_auth(config: &HarnessConfig) -> String {
+    let (header, _) = effective_upstream_auth_header(config);
     if config.upstream_authorization_passthrough {
         "passthrough(client Authorization)".to_owned()
     } else if let Some(env) = config.upstream_api_key_env.as_deref() {
-        format!("api-key from ${env} in header {:?}", config.upstream_auth_header)
+        format!("api-key from ${env} in header {header:?}")
     } else if let Some(file) = config.upstream_api_key_file.as_deref() {
-        format!(
-            "api-key from file {file} in header {:?}",
-            config.upstream_auth_header
-        )
+        format!("api-key from file {file} in header {header:?}")
     } else {
         "none".to_owned()
     }
@@ -716,16 +739,16 @@ pub(crate) fn resolve_upstream_auth(
         Some(key) => key,
         None => return Ok(None),
     };
-    let name = HeaderName::try_from(config.upstream_auth_header.as_str()).map_err(|_| {
+    let (header, scheme) = effective_upstream_auth_header(config);
+    let name = HeaderName::try_from(header.as_str()).map_err(|_| {
         PipelineError::upstream(format!(
-            "upstream_auth_header {:?} is not a valid header name",
-            config.upstream_auth_header
+            "upstream_auth_header {header:?} is not a valid header name"
         ))
     })?;
-    let rendered = if config.upstream_auth_scheme.is_empty() {
+    let rendered = if scheme.is_empty() {
         key
     } else {
-        format!("{} {key}", config.upstream_auth_scheme)
+        format!("{scheme} {key}")
     };
     let mut value = HeaderValue::from_str(&rendered).map_err(|_| {
         PipelineError::upstream(
@@ -876,9 +899,19 @@ pub struct PreparedRequest {
 }
 
 /// Provider response paired with its active session lease.
+///
+/// For the OpenAI dialect this is the upstream response as received.
+/// For the Anthropic and Gemini dialects the status, headers and body
+/// have already been translated into the OpenAI shape (a
+/// `chat.completion` object, `chat.completion.chunk` SSE frames, or
+/// the OpenAI error envelope), so the relay never sees a native frame.
 pub struct ForwardedResponse {
-    /// Provider HTTP response.
-    pub response: reqwest::Response,
+    /// HTTP status to relay.
+    pub status: StatusCode,
+    /// Response headers to relay (after the forwardable-header filter).
+    pub headers: HeaderMap,
+    /// Response body bytes, OpenAI-shaped.
+    pub body: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
     /// Prompt tokens debited at admission (post-compression heuristic).
     /// The response relay reconciles this against the
     /// provider's reported `usage.prompt_tokens` — correcting the
@@ -890,6 +923,68 @@ pub struct ForwardedResponse {
     // slot travels inside the guard until routes.rs takes it.
     pub(crate) capture_guard: ResponseCaptureGuard,
     pub(crate) lease: SessionLease,
+}
+
+/// The upstream request(s) planned for one prepared chat request.
+struct UpstreamPlan {
+    /// Full upstream URL.
+    url: String,
+    /// Request bodies, sent concurrently: one per choice for the
+    /// Anthropic dialect (which has no `n`), otherwise exactly one.
+    bodies: Vec<Vec<u8>>,
+    /// Extra headers every body is sent with (`anthropic-version`, or
+    /// the allowlisted OpenAI passthrough headers).
+    headers: Vec<(HeaderName, HeaderValue)>,
+    /// The credential header, when any.
+    auth: Option<(HeaderName, HeaderValue)>,
+    /// How to translate the answer back; `None` relays it unchanged.
+    translation: Option<Translation>,
+}
+
+/// A natively translated dialect.
+#[derive(Clone, Copy)]
+enum NativeDialect {
+    Anthropic,
+    Gemini,
+}
+
+/// Everything the response translation needs to know about the
+/// request it answers.
+struct Translation {
+    dialect: NativeDialect,
+    /// The client asked for `stream: true`.
+    stream: bool,
+    /// The client asked for `stream_options.include_usage`.
+    include_usage: bool,
+    /// The OpenAI completion id shared by every chunk/choice.
+    id: String,
+    /// The requested model, used until the upstream names its own.
+    model: String,
+    /// Unix seconds for the `created` field.
+    created: u64,
+}
+
+/// Longest upstream error body read for the OpenAI error envelope.
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Longest buffered native response body (matches the relay's own
+/// capture cap).
+const MAX_NATIVE_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read a whole response body, refusing anything over `cap` bytes.
+async fn read_bounded(response: reqwest::Response, cap: usize) -> Result<Vec<u8>, std::io::Error> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(std::io::Error::other)?;
+        if body.len().saturating_add(chunk.len()) > cap {
+            return Err(std::io::Error::other(format!(
+                "upstream response exceeds {cap} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// RAII owner of the journalled response attempt and (once created) the
@@ -1915,10 +2010,10 @@ impl AppState {
         // S3: config validation already refused unsupported providers;
         // this defense-in-depth error covers direct constructors that
         // bypassed validate() (test builders).
-        let provider_adapter = crate::provider::adapter_for(&config.provider).ok_or_else(|| {
+        let provider = crate::provider::adapter_for(&config.provider).ok_or_else(|| {
             PipelineError::bad_request(format!("unsupported provider {:?}", config.provider))
         })?;
-        tracing::info!(provider = provider_adapter.name(), "provider adapter selected");
+        tracing::info!(provider = provider.name(), "provider adapter selected");
         let mcp_admission = Arc::new(tokio::sync::Semaphore::new(config.mcp_concurrency));
         // R72 review F1 + F2 (landed R74): eager registration
         // stores the returned `Arc<Counter>` handle so the
@@ -2009,7 +2104,7 @@ impl AppState {
             tool_auth,
             tool_audit_gates: Arc::default(),
             tool_audits_emitted: Arc::default(),
-            provider_adapter,
+            provider,
             finalizer,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             identity_rejection_window: Arc::new(parking_lot::Mutex::new((Instant::now(), 0))),
@@ -2073,26 +2168,16 @@ impl AppState {
         let total_started = Instant::now();
         let session_id = session_id(headers)?;
         let workflow = workflow(headers, &self.config.default_workflow)?;
-        // Multi-choice completions are not attestable: the capture path
-        // accumulates ONE response message per step, so `n > 1` deltas
-        // from different choices would interleave into a text no model
-        // produced — and the ATIF step, receipt, and loop-detector
-        // embedding would attest it (the tool-call accumulator is keyed
-        // by choice index for exactly this reason). Refuse up front,
-        // before any budget debit. Fail closed on ANY present `n` that
-        // is not exactly the integer 1: upstream OpenAI-compatible
-        // servers lax-coerce `2.0` / `"2"` to a real multi-choice
-        // request, so an as_u64-only check was bypassable by float or
-        // string encodings.
-        match payload.get("n") {
-            None | Some(serde_json::Value::Null) => {}
-            Some(n) if n.as_u64() == Some(1) => {}
-            Some(_) => {
-                return Err(PipelineError::bad_request(
-                    "multi-choice completions (n != 1) are not supported: the audit capture attests a single response message per request".to_owned(),
-                ));
-            }
-        }
+        // Multi-choice completions (`n > 1`) are accepted up to
+        // `MAX_CHOICES`: the capture path accumulates every choice
+        // separately (text, tool calls and finish reason keyed by
+        // `choices[].index`), so the ATIF step attests each choice as
+        // its own message. Refuse anything that is not a plain integer
+        // in range up front, before any budget debit: upstream
+        // OpenAI-compatible servers lax-coerce `2.0` / `"2"` into real
+        // multi-choice requests, so the check fails closed on those
+        // encodings instead of forwarding them.
+        crate::provider::choice_count(&payload).map_err(PipelineError::bad_request)?;
 
         // Validate and extract the relayed headers BEFORE any budget
         // debit or admission journaling: `single_header` refuses
@@ -2692,6 +2777,14 @@ impl AppState {
     }
 
     /// Forward a prepared OpenAI-compatible request to the configured provider.
+    ///
+    /// For the `openai` dialect the compressed payload is sent as is to
+    /// `upstream_url` + `upstream_chat_path` and the response is relayed
+    /// unchanged. For `anthropic` and `gemini` the payload is translated
+    /// into the native request first (`n` choices become `n` concurrent
+    /// Anthropic requests, or Gemini's `candidateCount`), and the native
+    /// response is translated back into the OpenAI shape before the
+    /// relay sees it, so capture and accounting run one parser.
     pub async fn forward_chat(
         &self,
         mut request: PreparedRequest,
@@ -2709,10 +2802,8 @@ impl AppState {
         // session-id-derived digest so a hypothetical failure at
         // least keeps distinct sessions distinct.
         // Serialize the payload exactly ONCE — the
-        // bytes feed both the request digest and the upstream body.
-        // Previously `serde_json::to_vec` here and reqwest's
-        // `.json(&payload)` one screen apart produced identical bytes
-        // twice per request.
+        // bytes feed both the request digest and (for the OpenAI
+        // dialect) the upstream body.
         let payload_bytes = match serde_json::to_vec(&request.payload) {
             Ok(bytes) => Some(bytes),
             Err(error) => {
@@ -2727,6 +2818,22 @@ impl AppState {
         let request_digest = match &payload_bytes {
             Some(bytes) => pv_core::digest::sha256_hex(bytes),
             None => pv_core::digest::sha256_hex(request.session.id.as_bytes()),
+        };
+        // Plan the upstream request(s) before the marker write: a
+        // request the native adapter cannot express is a client error
+        // that must be refused before any upstream I/O, with the
+        // admission debit refunded like every other pre-dispatch abort.
+        let plan = match self.plan_upstream(
+            &request.payload,
+            payload_bytes,
+            request.client_authorization.take(),
+            std::mem::take(&mut request.upstream_passthrough_headers),
+        ) {
+            Ok(plan) => plan,
+            Err(client_error) => {
+                self.abandon_prepared(&mut request, StopReason::Other, &client_error.to_string());
+                return Err(client_error);
+            }
         };
         // Cancellation fix: arm the guard with the marker id
         // BEFORE the awaited disk write. If the client disconnects
@@ -2769,168 +2876,473 @@ impl AppState {
         let PreparedRequest {
             session,
             identity,
-            payload,
             lease,
-            mut capture_guard,
-            client_authorization,
-            upstream_passthrough_headers,
+            capture_guard,
             mut admission_debit,
             ..
         } = request;
-        let url = format!(
-            "{}{}",
-            self.config.upstream_url.trim_end_matches('/'),
-            self.config.upstream_chat_path
-        );
-        // Reuse the digest's serialization for the upstream body; the
-        // theoretical to_vec failure above falls back to reqwest's
-        // own `.json()` serialization (same bytes, second attempt).
-        let mut upstream_request = match payload_bytes {
-            Some(bytes) => self
-                .client
-                .post(url)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(bytes),
-            None => self.client.post(url).json(&payload),
-        };
-        // Allowlisted provider-semantic headers (org/project/beta) relay
-        // verbatim so org-scoped keys and beta-gated features keep
-        // working through the proxy.
-        for (name, value) in upstream_passthrough_headers {
-            upstream_request = upstream_request.header(name, value);
-        }
-        if let Some((name, value)) = &self.upstream_auth {
-            upstream_request = upstream_request.header(name.clone(), value.clone());
-        } else if let Some(authorization) = client_authorization {
-            // Passthrough mode: the client's own credential travels to the
-            // upstream. `validate()` guarantees this is mutually exclusive
-            // with static keys and with NHI identity enforcement.
-            upstream_request = upstream_request.header(reqwest::header::AUTHORIZATION, authorization);
-        }
+        let UpstreamPlan {
+            url,
+            bodies,
+            headers,
+            auth,
+            translation,
+        } = plan;
         // Upstream latency (time-to-response-headers)
         // and error counters — the two failure-mode-table rows the
         // review marked "logs only, no metric".
         let upstream_started = Instant::now();
         // Last pre-dispatch point: from here the request may reach the
         // provider, so the admission debit stands (the `is_connect` arm
-        // below refunds the one provably-not-sent case). Disarming here
-        // also ends the cancellation-refund window — a disconnect
-        // during `send()` keeps the debit, deliberately.
+        // of `upstream_send_failed` refunds the one provably-not-sent
+        // case). Disarming here also ends the cancellation-refund
+        // window — a disconnect during `send()` keeps the debit,
+        // deliberately.
         let debited_tokens = admission_debit.take_for_dispatch();
-        match upstream_request.send().await {
-            Ok(response) => {
-                self.hot_metrics
-                    .upstream_latency_histogram
-                    .observe_us(elapsed_us(upstream_started));
-                if response.status().is_server_error() {
-                    #[allow(clippy::indexing_slicing)]
-                    {
-                        self.hot_metrics.upstream_errors_counters[UpstreamErrorKind::Http5xx.index()].inc();
-                    }
-                }
-                Ok(ForwardedResponse {
-                    response,
-                    billed_prompt_tokens: debited_tokens,
-                    lease,
-                    capture_guard,
-                })
+        let sends = bodies.into_iter().map(|body| {
+            let mut upstream_request = self
+                .client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body);
+            for (name, value) in &headers {
+                upstream_request = upstream_request.header(name.clone(), value.clone());
             }
-            Err(error) => {
-                let kind = UpstreamErrorKind::from_reqwest(&error);
-                #[allow(clippy::indexing_slicing)]
-                {
-                    self.hot_metrics.upstream_errors_counters[kind.index()].inc();
-                }
-                // `reqwest::Error::Display` embeds the
-                // request URL (see the redaction rule at
-                // routes.rs::read_limited_tool_response — the same
-                // rule applies here). `%error` on `reqwest::Error`
-                // would render `error sending request for url
-                // (https://api.openai.com/v1/chat/completions): dns
-                // error: ...` into every OTLP sink. In multi-tenant
-                // / air-gapped deployments the upstream URL is not
-                // something the operator wants leaked to the
-                // customer's SIEM (it may be an internal LiteLLM
-                // router, an on-prem Azure resource name, a
-                // per-tenant model deployment path). Log the
-                // stable classifier + reqwest's structured
-                // predicates only.
-                //
-                // Also propagate the classifier — NOT
-                // `error.to_string()` — into the persisted failure
-                // event so the URL doesn't land in the on-disk
-                // journal or in the Bridge-published failure
-                // record either.
-                let client_reason = classify_upstream_error(&error);
-                // `is_connect()` proves the request never left this
-                // process (TCP/TLS establishment failed) — the admission
-                // token debit bought no LLM work; refund it on BOTH
-                // ledgers, in the same order they were spent. Any other
-                // send error (timeout, body, reset mid-response) may have
-                // reached the provider, so the debit conservatively
-                // stands. Best-effort; a store blip must never turn a
-                // 502 into a 5xx cascade.
-                if error.is_connect() {
-                    ActionBudget::new(self.store.as_ref(), &session.id, &self.config.budget)
-                        .refund_tokens(debited_tokens);
-                    if let Some(spec) = self.config.principal_budget.as_ref() {
-                        let principal_id = principal_id_for_budget(&identity);
-                        ActionBudget::for_principal(self.store.as_ref(), &principal_id, spec)
-                            .refund_tokens(debited_tokens);
+            if let Some((name, value)) = &auth {
+                upstream_request = upstream_request.header(name.clone(), value.clone());
+            }
+            upstream_request.send()
+        });
+        // Every choice of a fan-out is in flight at once; the slowest
+        // one bounds the time to headers.
+        let results = futures::future::join_all(sends).await;
+        self.hot_metrics
+            .upstream_latency_histogram
+            .observe_us(elapsed_us(upstream_started));
+        let mut responses = Vec::with_capacity(results.len());
+        let mut first_error = None;
+        for result in results {
+            match result {
+                Ok(response) => responses.push(response),
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
                     }
                 }
-                tracing::warn!(
-                    session = %session.id,
-                    category = client_reason,
-                    error.status = ?error.status(),
-                    error.is_timeout = error.is_timeout(),
-                    error.is_connect = error.is_connect(),
-                    error.is_body = error.is_body(),
-                    "upstream forwarding failed"
-                );
-                // Route timeouts (upstream accepted the connection but
-                // never finished responding) to 504 Gateway Timeout
-                // instead of the generic 502 Bad Gateway. Operator
-                // dashboards keying off HTTP status can now distinguish
-                // "provider slow" (504) from "provider unreachable"
-                // (502) without joining against the metric label.
-                let client_error = if error.is_timeout() {
-                    PipelineError::upstream_timeout(client_reason.to_owned())
-                } else {
-                    PipelineError::upstream(client_reason.to_owned())
-                };
-                let persisted_reason = format!("upstream_{client_reason}");
-                if let Some(permit) = capture_guard.take_permit() {
-                    let (response_marker, response_attempt_id) = capture_guard.disarm();
-                    let capture_session = Arc::clone(&session);
-                    let mut job =
-                        self.failure_job(session, identity, StopReason::Other, persisted_reason.clone());
-                    job.response_marker = response_marker;
-                    job.response_attempt = Some(crate::worker::ResponseAttempt {
-                        id: response_attempt_id,
-                        terminal: true,
-                    });
-                    // This terminal failure capture is the only thing that
-                    // retires the durable in-flight marker and the
-                    // journalled response attempt. If the shard is full,
-                    // fail the session closed instead of dropping the
-                    // capture silently: otherwise the marker strands, no
-                    // terminal response event exists, and the session can
-                    // still close "cleanly" with a receipt over an
-                    // unresolved response attempt.
-                    if permit.submit(&self.worker, job).is_err() {
-                        capture_session.mark_capture_failed();
-                    }
-                } else {
-                    // Defensive (a permit always exists here): keep the
-                    // guard armed so its drop retires the marker and
-                    // closes the attempt through the plain worker queue.
-                    drop(capture_guard);
-                    self.enqueue_failure(session, identity, StopReason::Other, persisted_reason)?;
-                }
-                Err(client_error)
             }
         }
+        if let Some(error) = first_error {
+            // Sibling responses of a fan-out drop here, which cancels
+            // them: a request that only partly reached the provider is
+            // reported as one upstream failure.
+            drop(responses);
+            return Err(self.upstream_send_failed(error, session, identity, capture_guard, debited_tokens));
+        }
+        let Some(translation) = translation else {
+            let Some(response) = responses.pop() else {
+                // Unreachable by construction (the OpenAI plan carries
+                // exactly one body); keep the guard armed so its drop
+                // retires the marker and closes the attempt.
+                drop(capture_guard);
+                self.enqueue_failure(session, identity, StopReason::Other, "upstream_no_response".to_owned())?;
+                return Err(PipelineError::upstream("no upstream response".to_owned()));
+            };
+            if response.status().is_server_error() {
+                #[allow(clippy::indexing_slicing)]
+                {
+                    self.hot_metrics.upstream_errors_counters[UpstreamErrorKind::Http5xx.index()].inc();
+                }
+            }
+            return Ok(ForwardedResponse {
+                status: response.status(),
+                headers: response.headers().clone(),
+                body: response
+                    .bytes_stream()
+                    .map(|chunk| chunk.map_err(std::io::Error::other))
+                    .boxed(),
+                billed_prompt_tokens: debited_tokens,
+                lease,
+                capture_guard,
+            });
+        };
+        Ok(self
+            .translate_native_responses(translation, responses, debited_tokens, lease, capture_guard)
+            .await)
+    }
+
+    /// Build the upstream request(s) for one prepared payload: URL,
+    /// bodies (one per Anthropic choice, otherwise exactly one), extra
+    /// headers, the credential header, and — for the native dialects —
+    /// how to translate the answer back.
+    fn plan_upstream(
+        &self,
+        payload: &Value,
+        payload_bytes: Option<Vec<u8>>,
+        client_authorization: Option<HeaderValue>,
+        upstream_passthrough_headers: Vec<(HeaderName, HeaderValue)>,
+    ) -> Result<UpstreamPlan, PipelineError> {
+        use crate::provider::{self, ProviderKind};
+        let base = self.config.upstream_url.trim_end_matches('/');
+        let auth = self.auth_for_dispatch(client_authorization)?;
+        match self.provider {
+            ProviderKind::OpenAi => {
+                let body = match payload_bytes {
+                    Some(bytes) => bytes,
+                    // Reuse the digest's serialization for the upstream
+                    // body; the theoretical to_vec failure above gets a
+                    // second attempt here.
+                    None => serde_json::to_vec(payload).map_err(|error| {
+                        PipelineError::bad_request(format!("chat payload is not serializable: {error}"))
+                    })?,
+                };
+                Ok(UpstreamPlan {
+                    url: format!("{base}{}", self.config.upstream_chat_path),
+                    bodies: vec![body],
+                    // Allowlisted provider-semantic headers (org/project/
+                    // beta) relay verbatim so org-scoped keys and
+                    // beta-gated features keep working through the proxy.
+                    headers: upstream_passthrough_headers,
+                    auth,
+                    translation: None,
+                })
+            }
+            ProviderKind::Anthropic => {
+                let body = provider::anthropic::build_request(payload, self.config.provider_default_max_tokens)
+                    .map_err(|reason| {
+                        PipelineError::bad_request(format!(
+                            "request cannot be expressed in the Anthropic Messages API: {reason}"
+                        ))
+                    })?;
+                let bytes = serde_json::to_vec(&body).map_err(|error| {
+                    PipelineError::bad_request(format!("translated request is not serializable: {error}"))
+                })?;
+                let choices = provider::choice_count(payload).map_err(PipelineError::bad_request)?;
+                let count = usize::try_from(choices).unwrap_or(1);
+                Ok(UpstreamPlan {
+                    url: format!("{base}{}", provider::anthropic::MESSAGES_PATH),
+                    bodies: vec![bytes; count],
+                    headers: vec![(
+                        HeaderName::from_static("anthropic-version"),
+                        HeaderValue::from_static(provider::ANTHROPIC_VERSION),
+                    )],
+                    auth,
+                    translation: Some(Translation {
+                        dialect: NativeDialect::Anthropic,
+                        stream: provider::wants_stream(payload),
+                        include_usage: provider::wants_usage_chunk(payload),
+                        id: provider::fresh_completion_id(),
+                        model: payload
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        created: provider::created_now(),
+                    }),
+                })
+            }
+            ProviderKind::Gemini => {
+                let model = payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|model| !model.is_empty())
+                    .ok_or_else(|| PipelineError::bad_request("model is required".to_owned()))?;
+                let stream = provider::wants_stream(payload);
+                let path = provider::gemini::request_path(model, stream).map_err(PipelineError::bad_request)?;
+                let body = provider::gemini::build_request(payload).map_err(|reason| {
+                    PipelineError::bad_request(format!(
+                        "request cannot be expressed in the Gemini generateContent API: {reason}"
+                    ))
+                })?;
+                let bytes = serde_json::to_vec(&body).map_err(|error| {
+                    PipelineError::bad_request(format!("translated request is not serializable: {error}"))
+                })?;
+                Ok(UpstreamPlan {
+                    url: format!("{base}{path}"),
+                    bodies: vec![bytes],
+                    headers: Vec::new(),
+                    auth,
+                    translation: Some(Translation {
+                        dialect: NativeDialect::Gemini,
+                        stream,
+                        include_usage: provider::wants_usage_chunk(payload),
+                        id: provider::fresh_completion_id(),
+                        model: model.to_owned(),
+                        created: provider::created_now(),
+                    }),
+                })
+            }
+        }
+    }
+
+    /// The credential header for one dispatch: the static key resolved
+    /// at boot, else (passthrough mode) the client's own credential.
+    /// For a native dialect the client's bearer token travels under the
+    /// provider's key header without the `Bearer` scheme, which is what
+    /// those APIs read.
+    fn auth_for_dispatch(
+        &self,
+        client_authorization: Option<HeaderValue>,
+    ) -> Result<Option<(HeaderName, HeaderValue)>, PipelineError> {
+        if let Some(auth) = &self.upstream_auth {
+            return Ok(Some(auth.clone()));
+        }
+        let Some(client) = client_authorization else {
+            return Ok(None);
+        };
+        // Passthrough mode: the client's own credential travels to the
+        // upstream. `validate()` guarantees this is mutually exclusive
+        // with static keys and with NHI identity enforcement.
+        let Some(header) = self.provider.native_auth_header() else {
+            return Ok(Some((axum::http::header::AUTHORIZATION, client)));
+        };
+        let raw = client
+            .to_str()
+            .map_err(|_| PipelineError::bad_request("authorization header is not valid text".to_owned()))?;
+        let token = raw
+            .strip_prefix("Bearer ")
+            .or_else(|| raw.strip_prefix("bearer "))
+            .unwrap_or(raw)
+            .trim();
+        let mut value = HeaderValue::from_str(token)
+            .map_err(|_| PipelineError::bad_request("authorization token is not a valid header value".to_owned()))?;
+        value.set_sensitive(true);
+        Ok(Some((HeaderName::from_static(header), value)))
+    }
+
+    /// Turn the native responses of one request into an OpenAI-shaped
+    /// [`ForwardedResponse`]: a non-success status fails the whole
+    /// request with that status and the OpenAI error envelope; a
+    /// streaming request becomes one merged `chat.completion.chunk`
+    /// stream; a buffered request becomes one `chat.completion` object
+    /// (choices merged across the fan-out, usage summed).
+    async fn translate_native_responses(
+        &self,
+        translation: Translation,
+        mut responses: Vec<reqwest::Response>,
+        debited_tokens: u64,
+        lease: SessionLease,
+        capture_guard: ResponseCaptureGuard,
+    ) -> ForwardedResponse {
+        use crate::provider::{self, StreamTranslator};
+        let Translation {
+            dialect,
+            stream,
+            include_usage,
+            id,
+            model,
+            created,
+        } = translation;
+        let provider_kind = match dialect {
+            NativeDialect::Anthropic => provider::ProviderKind::Anthropic,
+            NativeDialect::Gemini => provider::ProviderKind::Gemini,
+        };
+        if let Some(position) = responses.iter().position(|response| !response.status().is_success()) {
+            let failed = responses.swap_remove(position);
+            // Dropping the siblings cancels them.
+            drop(responses);
+            let status = failed.status();
+            if status.is_server_error() {
+                #[allow(clippy::indexing_slicing)]
+                {
+                    self.hot_metrics.upstream_errors_counters[UpstreamErrorKind::Http5xx.index()].inc();
+                }
+            }
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            if let Some(retry_after) = failed.headers().get(axum::http::header::RETRY_AFTER) {
+                headers.insert(axum::http::header::RETRY_AFTER, retry_after.clone());
+            }
+            // A failed error-body read still answers with the status;
+            // the envelope then carries a generic message.
+            let body = read_bounded(failed, MAX_ERROR_BODY_BYTES).await.unwrap_or_default();
+            let envelope = provider::openai_error_envelope(provider_kind, status.as_u16(), &body);
+            return ForwardedResponse {
+                status,
+                headers,
+                body: futures::stream::once(async move { Ok(Bytes::from(envelope.to_string())) }).boxed(),
+                billed_prompt_tokens: debited_tokens,
+                lease,
+                capture_guard,
+            };
+        }
+        let mut headers = HeaderMap::new();
+        let body: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>> = if stream {
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            );
+            let streams = responses
+                .into_iter()
+                .enumerate()
+                .map(|(position, response)| {
+                    let index = u64::try_from(position).unwrap_or(u64::MAX);
+                    let translator: Box<dyn StreamTranslator> = match dialect {
+                        NativeDialect::Anthropic => Box::new(provider::anthropic::AnthropicStreamTranslator::new(
+                            index,
+                            id.clone(),
+                            model.clone(),
+                            created,
+                        )),
+                        NativeDialect::Gemini => Box::new(provider::gemini::GeminiStreamTranslator::new(
+                            id.clone(),
+                            model.clone(),
+                            created,
+                        )),
+                    };
+                    provider::TranslatingStream::new(
+                        response
+                            .bytes_stream()
+                            .map(|chunk| chunk.map_err(std::io::Error::other))
+                            .boxed(),
+                        translator,
+                    )
+                })
+                .collect();
+            provider::MergedOpenAiStream::new(streams, include_usage, id, model, created).boxed()
+        } else {
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            futures::stream::once(async move {
+                let mut completions = Vec::with_capacity(responses.len());
+                for (position, response) in responses.into_iter().enumerate() {
+                    let bytes = read_bounded(response, MAX_NATIVE_BODY_BYTES).await?;
+                    let value: Value = serde_json::from_slice(&bytes)
+                        .map_err(|error| std::io::Error::other(format!("upstream body is not JSON: {error}")))?;
+                    let index = u64::try_from(position).unwrap_or(u64::MAX);
+                    let completion = match dialect {
+                        NativeDialect::Anthropic => provider::anthropic::translate_message(&value, &id, created, index),
+                        NativeDialect::Gemini => provider::gemini::translate_response(&value, &id, created, &model),
+                    }
+                    .map_err(std::io::Error::other)?;
+                    completions.push(completion);
+                }
+                let merged = if completions.len() == 1 {
+                    completions.pop().ok_or_else(|| std::io::Error::other("no upstream completion"))?
+                } else {
+                    provider::merge_completions(completions).map_err(std::io::Error::other)?
+                };
+                Ok(Bytes::from(merged.to_string()))
+            })
+            .boxed()
+        };
+        ForwardedResponse {
+            status: StatusCode::OK,
+            headers,
+            body,
+            billed_prompt_tokens: debited_tokens,
+            lease,
+            capture_guard,
+        }
+    }
+
+    /// Account for and report one failed upstream `send()`: metrics,
+    /// the connect-failure refund, redacted logging, and the terminal
+    /// failure capture that retires the in-flight marker.
+    fn upstream_send_failed(
+        &self,
+        error: reqwest::Error,
+        session: Arc<Session>,
+        identity: AgentIdentity,
+        mut capture_guard: ResponseCaptureGuard,
+        debited_tokens: u64,
+    ) -> PipelineError {
+        let kind = UpstreamErrorKind::from_reqwest(&error);
+        #[allow(clippy::indexing_slicing)]
+        {
+            self.hot_metrics.upstream_errors_counters[kind.index()].inc();
+        }
+        // `reqwest::Error::Display` embeds the
+        // request URL (see the redaction rule at
+        // routes.rs::read_limited_tool_response — the same
+        // rule applies here). `%error` on `reqwest::Error`
+        // would render `error sending request for url
+        // (https://api.openai.com/v1/chat/completions): dns
+        // error: ...` into every OTLP sink. In multi-tenant
+        // / air-gapped deployments the upstream URL is not
+        // something the operator wants leaked to the
+        // customer's SIEM (it may be an internal LiteLLM
+        // router, an on-prem Azure resource name, a
+        // per-tenant model deployment path). Log the
+        // stable classifier + reqwest's structured
+        // predicates only.
+        //
+        // Also propagate the classifier — NOT
+        // `error.to_string()` — into the persisted failure
+        // event so the URL doesn't land in the on-disk
+        // journal or in the Bridge-published failure
+        // record either.
+        let client_reason = classify_upstream_error(&error);
+        // `is_connect()` proves the request never left this
+        // process (TCP/TLS establishment failed) — the admission
+        // token debit bought no LLM work; refund it on BOTH
+        // ledgers, in the same order they were spent. Any other
+        // send error (timeout, body, reset mid-response) may have
+        // reached the provider, so the debit conservatively
+        // stands. Best-effort; a store blip must never turn a
+        // 502 into a 5xx cascade.
+        if error.is_connect() {
+            ActionBudget::new(self.store.as_ref(), &session.id, &self.config.budget).refund_tokens(debited_tokens);
+            if let Some(spec) = self.config.principal_budget.as_ref() {
+                let principal_id = principal_id_for_budget(&identity);
+                ActionBudget::for_principal(self.store.as_ref(), &principal_id, spec).refund_tokens(debited_tokens);
+            }
+        }
+        tracing::warn!(
+            session = %session.id,
+            category = client_reason,
+            error.status = ?error.status(),
+            error.is_timeout = error.is_timeout(),
+            error.is_connect = error.is_connect(),
+            error.is_body = error.is_body(),
+            "upstream forwarding failed"
+        );
+        // Route timeouts (upstream accepted the connection but
+        // never finished responding) to 504 Gateway Timeout
+        // instead of the generic 502 Bad Gateway. Operator
+        // dashboards keying off HTTP status can now distinguish
+        // "provider slow" (504) from "provider unreachable"
+        // (502) without joining against the metric label.
+        let client_error = if error.is_timeout() {
+            PipelineError::upstream_timeout(client_reason.to_owned())
+        } else {
+            PipelineError::upstream(client_reason.to_owned())
+        };
+        let persisted_reason = format!("upstream_{client_reason}");
+        if let Some(permit) = capture_guard.take_permit() {
+            let (response_marker, response_attempt_id) = capture_guard.disarm();
+            let capture_session = Arc::clone(&session);
+            let mut job = self.failure_job(session, identity, StopReason::Other, persisted_reason);
+            job.response_marker = response_marker;
+            job.response_attempt = Some(crate::worker::ResponseAttempt {
+                id: response_attempt_id,
+                terminal: true,
+            });
+            // This terminal failure capture is the only thing that
+            // retires the durable in-flight marker and the
+            // journalled response attempt. If the shard is full,
+            // fail the session closed instead of dropping the
+            // capture silently: otherwise the marker strands, no
+            // terminal response event exists, and the session can
+            // still close "cleanly" with a receipt over an
+            // unresolved response attempt.
+            if permit.submit(&self.worker, job).is_err() {
+                capture_session.mark_capture_failed();
+            }
+        } else {
+            // Defensive (a permit always exists here): keep the
+            // guard armed so its drop retires the marker and
+            // closes the attempt through the plain worker queue.
+            drop(capture_guard);
+            if let Err(error) = self.enqueue_failure(session, identity, StopReason::Other, persisted_reason) {
+                return error;
+            }
+        }
+        client_error
     }
 
     /// Intercept one MCP JSON-RPC tool call, emit its OCSF verdict

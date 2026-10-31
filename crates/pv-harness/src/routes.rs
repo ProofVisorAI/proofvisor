@@ -659,7 +659,9 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         Err(error) => return pipeline_error_for_session(error, &session_id),
     };
     let crate::pipeline::ForwardedResponse {
-        response: upstream,
+        status,
+        headers: upstream_headers,
+        body: upstream_body,
         billed_prompt_tokens,
         lease,
         mut capture_guard,
@@ -696,8 +698,6 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         return response;
     };
 
-    let status = upstream.status();
-    let upstream_headers = upstream.headers().clone();
     // reqwest is built without the `gzip` feature (see Cargo.toml), so
     // the client does not decode `Content-Encoding: gzip`. If the
     // provider or a CDN in front of it compresses the SSE response,
@@ -775,9 +775,6 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
     // and either loses streaming semantics (client sees no deltas
     // until upstream EOF) or is refused with 502 despite being valid.
     let is_sse = is_sse_content_type(&upstream_headers);
-    let stream = upstream
-        .bytes_stream()
-        .map(|chunk| chunk.map_err(std::io::Error::other));
     // `AbortFinalizingStream` owns marker retirement and attempt
     // termination from here (including on mid-stream client disconnect,
     // via its own Drop); hand both over and disarm the guard.
@@ -792,7 +789,7 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         .as_ref()
         .map(|spec| (crate::pipeline::principal_id_for_budget(&identity), spec.clone()));
     let stream = AbortFinalizingStream {
-        inner: stream.boxed(),
+        inner: upstream_body,
         session,
         identity,
         response_permit: Some(response_permit),
@@ -803,10 +800,8 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         _lease: lease,
         response_marker,
         response_attempt_id,
-        response_message: String::new(),
-        response_reasoning: String::new(),
+        response_choices: std::collections::BTreeMap::new(),
         response_model: None,
-        response_finish_reason: None,
         upstream_status: status,
         response_cost_usd_micros: 0,
         response_tool_calls: std::collections::BTreeMap::new(),
@@ -826,7 +821,6 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         principal_budget,
         captured_bytes: 0,
         billed_prompt_tokens,
-        provider_adapter: Arc::clone(&state.provider_adapter),
         completed: false,
         // Validated single-value by `prepare_chat`; absence means the
         // id was generated server-side this request.
@@ -3610,10 +3604,12 @@ struct AbortFinalizingStream {
     _lease: crate::session::SessionLease,
     response_marker: Option<String>,
     response_attempt_id: String,
-    response_message: String,
-    response_reasoning: String,
+    /// Captured text, reasoning and finish reason per `choices[].index`.
+    /// A single-choice response lives at index 0; `n > 1` responses
+    /// keep every choice apart so the attested step never carries a
+    /// text no model produced.
+    response_choices: std::collections::BTreeMap<u64, ChoiceCapture>,
     response_model: Option<String>,
-    response_finish_reason: Option<String>,
     upstream_status: StatusCode,
     response_cost_usd_micros: u64,
     response_tool_calls: std::collections::BTreeMap<(u64, u64), PartialToolCall>,
@@ -3659,8 +3655,6 @@ struct AbortFinalizingStream {
     /// admission-time prompt-token heuristic, reconciled
     /// against the provider's `usage.prompt_tokens` at terminal capture.
     billed_prompt_tokens: u64,
-    /// S3: the provider wire dialect this stream parses with.
-    provider_adapter: Arc<dyn crate::provider::ProviderAdapter>,
     completed: bool,
     /// True when the client sent no `X-PV-Session` header and the id
     /// was server-generated. The client cannot address this session
@@ -3793,21 +3787,28 @@ impl AbortFinalizingStream {
     }
 
     fn absorb_frame(&mut self, raw: &str) -> Result<u64, String> {
-        let Some(parsed) = self.provider_adapter.parse_sse_chunk(raw)? else {
+        // Every dialect reaches this relay OpenAI-shaped (the native
+        // adapters translate in `forward_chat`), so one parser serves
+        // all providers.
+        let Some(parsed) = parse_provider_chunk(raw)? else {
             return Ok(0);
         };
         if self.upstream_status.is_success() && !parsed.has_choices {
             return Err("successful provider response has no choices array".to_owned());
         }
-        push_bounded(&mut self.response_message, &parsed.message, "response message")?;
-        if let Some(reasoning) = parsed.reasoning {
-            push_bounded(&mut self.response_reasoning, &reasoning, "response reasoning")?;
+        for choice in parsed.choices {
+            if choice.index >= MAX_CHOICE_INDEX {
+                return Err(format!("provider choice index {} is out of range", choice.index));
+            }
+            let capture = self.response_choices.entry(choice.index).or_default();
+            push_bounded(&mut capture.content, &choice.content, "response message")?;
+            push_bounded(&mut capture.reasoning, &choice.reasoning, "response reasoning")?;
+            if choice.finish_reason.is_some() {
+                capture.finish_reason = choice.finish_reason;
+            }
         }
         if self.response_model.is_none() {
             self.response_model = parsed.model_name;
-        }
-        if parsed.finish_reason.is_some() {
-            self.response_finish_reason = parsed.finish_reason;
         }
         // Cumulative-cost contract: providers
         // that report `cost_usd` are expected to report it CUMULATIVELY
@@ -4038,8 +4039,37 @@ impl AbortFinalizingStream {
             return Ok(());
         }
         self.capture_attempted = true;
-        let reasoning =
-            (!self.response_reasoning.is_empty()).then(|| std::mem::take(&mut self.response_reasoning));
+        let choices = std::mem::take(&mut self.response_choices);
+        let multi_choice = choices.len() > 1;
+        let reasoning = {
+            let joined = choices
+                .values()
+                .filter(|capture| !capture.reasoning.is_empty())
+                .map(|capture| capture.reasoning.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            (!joined.is_empty()).then_some(joined)
+        };
+        // The attested message: the plain string for one choice, one
+        // text part per choice (tagged with its index) for `n > 1`.
+        let message_text = choices
+            .values()
+            .map(|capture| capture.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let message = if multi_choice {
+            Value::Array(
+                choices
+                    .iter()
+                    .map(|(index, capture)| {
+                        json!({"type": "text", "text": capture.content, "choice_index": index})
+                    })
+                    .collect(),
+            )
+        } else {
+            Value::String(message_text.clone())
+        };
+        let native_finish_reason = aggregate_finish_reason(&choices);
         // Materialize the tool-call list up front so we can fall back to
         // its content when the response body has neither an assistant
         // message nor reasoning. Without this, tool-only
@@ -4050,21 +4080,24 @@ impl AbortFinalizingStream {
         // that just happened to be tool-driven would get flagged as
         // looping after the min-tokens threshold.
         let tool_calls: Vec<pv_atif::ToolCall> = std::mem::take(&mut self.response_tool_calls)
-            .into_values()
-            .map(|partial| {
+            .into_iter()
+            .map(|((choice_index, _), partial)| {
                 let arguments = normalize_tool_call_arguments(&partial.arguments);
                 pv_atif::ToolCall {
                     tool_call_id: partial.id.unwrap_or_else(pv_core::new_event_uid),
                     function_name: partial.name.unwrap_or_else(|| "unknown".to_owned()),
                     arguments,
-                    extra: None,
+                    // Only a multi-choice response needs to say which
+                    // choice issued the call; single-choice steps keep
+                    // the historical shape.
+                    extra: multi_choice.then(|| json!({"choice_index": choice_index})),
                 }
             })
             .collect();
         let analysis_text = if let Some(text) = reasoning.clone() {
             text
-        } else if !self.response_message.is_empty() {
-            self.response_message.clone()
+        } else if !message_text.is_empty() {
+            message_text.clone()
         } else if !tool_calls.is_empty() {
             tool_calls
                 .iter()
@@ -4078,7 +4111,6 @@ impl AbortFinalizingStream {
         // reasoning, no message, no tool calls) — a zero-vector embed
         // would otherwise poison the breaker's duplicate detection.
         let analyze_loop = !analysis_text.is_empty();
-        let native_finish_reason = self.response_finish_reason.clone();
         // The failure arm records the CALLER's stop-reason verdict:
         // BudgetExceeded only for the genuine mid-stream cap refusal,
         // Other for everything else (network cuts, garbled frames,
@@ -4156,10 +4188,7 @@ impl AbortFinalizingStream {
                     "reason": "stream ended without a finish_reason chunk",
                 }),
             )
-        } else if self.response_message.is_empty()
-            && self.response_reasoning.is_empty()
-            && tool_calls.is_empty()
-        {
+        } else if message_text.is_empty() && reasoning.is_none() && tool_calls.is_empty() {
             // Non-SSE 200 whose body carried NO finish_reason and NO
             // content — e.g. a bare `{"choices":[]}` (or `{}`-shaped)
             // body from a broken shim. Every compliant non-streaming
@@ -4255,7 +4284,7 @@ impl AbortFinalizingStream {
                 }),
                 atif: Some(crate::worker::AtifCapture {
                     source: pv_atif::Source::Agent,
-                    message: Value::String(std::mem::take(&mut self.response_message)),
+                    message,
                     reasoning_content: reasoning,
                     model_name: self.response_model.take(),
                     tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
@@ -4299,6 +4328,51 @@ struct PartialToolCall {
     id: Option<String>,
     name: Option<String>,
     arguments: String,
+}
+
+/// Highest `choices[].index` the relay accumulates (exclusive). Matches
+/// the request-side `n` cap with headroom for providers that number
+/// choices sparsely.
+const MAX_CHOICE_INDEX: u64 = 128;
+
+/// What the relay has captured for one choice of a response.
+#[derive(Default, Debug)]
+struct ChoiceCapture {
+    content: String,
+    reasoning: String,
+    finish_reason: Option<String>,
+}
+
+/// The finish reason attested for a whole response. One choice: its
+/// own reason. Several choices: the most consequential reason wins
+/// (content filter over length over tool use over anything else over
+/// a plain stop), and a choice that never finished makes the response
+/// truncated (`None`), exactly like a single truncated stream.
+fn aggregate_finish_reason(choices: &std::collections::BTreeMap<u64, ChoiceCapture>) -> Option<String> {
+    if choices.is_empty() || choices.values().any(|capture| capture.finish_reason.is_none()) {
+        return None;
+    }
+    let rank = |reason: &str| match map_finish_reason(reason) {
+        pv_events::StopReason::ContentFilter => 4,
+        pv_events::StopReason::MaxTokens => 3,
+        pv_events::StopReason::ToolUse => 2,
+        pv_events::StopReason::Stop => 0,
+        _ => 1,
+    };
+    choices
+        .values()
+        .filter_map(|capture| capture.finish_reason.as_deref())
+        .max_by_key(|reason| rank(reason))
+        .map(str::to_owned)
+}
+
+/// One choice's share of a parsed frame.
+#[derive(Debug, Default)]
+pub(crate) struct ParsedChoiceDelta {
+    pub(crate) index: u64,
+    pub(crate) content: String,
+    pub(crate) reasoning: String,
+    pub(crate) finish_reason: Option<String>,
 }
 
 #[derive(Debug)]
@@ -4345,6 +4419,12 @@ pub(crate) struct ParsedProviderChunk {
     pub(crate) cost_reported: bool,
     pub(crate) has_choices: bool,
     pub(crate) tool_call_deltas: Vec<ProviderToolCallDelta>,
+    /// Per-choice text, reasoning and finish reason. `message`,
+    /// `reasoning` and `finish_reason` above are the whole-frame
+    /// aggregates (every choice's text concatenated, the last finish
+    /// reason seen) kept for the token estimate and for callers that
+    /// do not care about choices.
+    pub(crate) choices: Vec<ParsedChoiceDelta>,
 }
 
 fn reject_metric_regression(
@@ -4393,7 +4473,7 @@ pub fn __fuzz_sse_frame_end(raw: &[u8]) {
     let _ = sse_frame_end(raw);
 }
 
-fn sse_frame_end(buffer: &[u8]) -> Option<usize> {
+pub(crate) fn sse_frame_end(buffer: &[u8]) -> Option<usize> {
     let mut line_start = 0usize;
     let mut index = 0usize;
     while index < buffer.len() {
@@ -4742,6 +4822,7 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
     let mut cost_usd_micros = 0u64;
     let mut cost_reported = false;
     let mut tool_call_deltas = Vec::new();
+    let mut choice_deltas: Vec<ParsedChoiceDelta> = Vec::new();
     let mut is_sse = false;
     let mut data = Vec::new();
     // Track the last `event:` type seen in this frame. SSE §9.2.8 says
@@ -4914,6 +4995,10 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
                 .and_then(Value::as_u64)
                 .or_else(|| u64::try_from(choice_position).ok())
                 .unwrap_or(u64::MAX);
+            let mut choice_delta = ParsedChoiceDelta {
+                index: choice_index,
+                ..ParsedChoiceDelta::default()
+            };
             if let Some(reason) = choice
                 .get("finish_reason")
                 .and_then(Value::as_str)
@@ -4926,6 +5011,7 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
                 // fail-closing the session AFTER the bytes were
                 // already relayed. Treat empty as absent.
                 finish_reason = Some(reason.to_owned());
+                choice_delta.finish_reason = Some(reason.to_owned());
             }
             let content = choice
                 .pointer("/delta/content")
@@ -4933,6 +5019,7 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
                 .and_then(Value::as_str);
             if let Some(content) = content {
                 message.push_str(content);
+                choice_delta.content.push_str(content);
             }
             let reasoning_content = choice
                 .pointer("/delta/reasoning_content")
@@ -4940,7 +5027,9 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
                 .and_then(Value::as_str);
             if let Some(content) = reasoning_content {
                 reasoning.push_str(content);
+                choice_delta.reasoning.push_str(content);
             }
+            choice_deltas.push(choice_delta);
             let streaming_calls = choice.pointer("/delta/tool_calls");
             let calls = streaming_calls
                 .or_else(|| choice.pointer("/message/tool_calls"))
@@ -5008,6 +5097,7 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
         cost_reported,
         has_choices,
         tool_call_deltas,
+        choices: choice_deltas,
     }))
 }
 
@@ -7096,6 +7186,21 @@ mod tests {
         provider.abort();
     }
 
+    /// A single captured choice at index 0, for relay tests that start
+    /// from an already-accumulated response.
+    fn captured_choice(text: &str, finish_reason: Option<&str>) -> std::collections::BTreeMap<u64, ChoiceCapture> {
+        let mut choices = std::collections::BTreeMap::new();
+        choices.insert(
+            0,
+            ChoiceCapture {
+                content: text.to_owned(),
+                reasoning: String::new(),
+                finish_reason: finish_reason.map(str::to_owned),
+            },
+        );
+        choices
+    }
+
     fn chat_request_with_payload(session: &str, payload: Value) -> Request<Body> {
         Request::builder()
             .method("POST")
@@ -7501,15 +7606,12 @@ mod tests {
             budget: state.config.budget.clone(),
             billed_prompt_tokens: 0,
             principal_budget: None,
-            provider_adapter: Arc::clone(&state.provider_adapter),
             finalizer: state.finalizer.clone(),
             _lease: lease,
             response_marker: None,
             response_attempt_id: "pending-budget-attempt".into(),
-            response_message: "captured content".into(),
-            response_reasoning: String::new(),
+            response_choices: captured_choice("captured content", Some("stop")),
             response_model: None,
-            response_finish_reason: Some("stop".into()),
             upstream_status: StatusCode::OK,
             response_cost_usd_micros: 0,
             response_tool_calls: std::collections::BTreeMap::new(),
@@ -7601,15 +7703,12 @@ mod tests {
             budget: state.config.budget.clone(),
             billed_prompt_tokens: 0,
             principal_budget: None,
-            provider_adapter: Arc::clone(&state.provider_adapter),
             finalizer: state.finalizer.clone(),
             _lease: lease,
             response_marker: None,
             response_attempt_id: "absorb-rollback-attempt".into(),
-            response_message: String::new(),
-            response_reasoning: String::new(),
+            response_choices: std::collections::BTreeMap::new(),
             response_model: None,
-            response_finish_reason: None,
             upstream_status: StatusCode::OK,
             response_cost_usd_micros: 0,
             response_tool_calls: std::collections::BTreeMap::new(),
@@ -7691,15 +7790,12 @@ mod tests {
             budget: state.config.budget.clone(),
             billed_prompt_tokens: 0,
             principal_budget: None,
-            provider_adapter: Arc::clone(&state.provider_adapter),
             finalizer: state.finalizer.clone(),
             _lease: lease,
             response_marker: None,
             response_attempt_id: "refused-rollback-attempt".into(),
-            response_message: String::new(),
-            response_reasoning: String::new(),
+            response_choices: std::collections::BTreeMap::new(),
             response_model: None,
-            response_finish_reason: None,
             upstream_status: StatusCode::OK,
             response_cost_usd_micros: 0,
             response_tool_calls: std::collections::BTreeMap::new(),
@@ -7765,15 +7861,12 @@ mod tests {
             budget: state.config.budget.clone(),
             billed_prompt_tokens: 0,
             principal_budget: None,
-            provider_adapter: Arc::clone(&state.provider_adapter),
             finalizer: state.finalizer.clone(),
             _lease: crate::session::SessionLease::new(Arc::clone(session)),
             response_marker: None,
             response_attempt_id: "empty-abort-attempt".into(),
-            response_message: String::new(),
-            response_reasoning: String::new(),
+            response_choices: std::collections::BTreeMap::new(),
             response_model: None,
-            response_finish_reason: None,
             upstream_status: StatusCode::OK,
             response_cost_usd_micros: 0,
             response_tool_calls: std::collections::BTreeMap::new(),

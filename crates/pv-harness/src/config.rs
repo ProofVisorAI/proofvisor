@@ -135,6 +135,12 @@ pub struct HarnessConfig {
     /// llama.cpp, xAI, Mistral and Azure OpenAI.
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// Anthropic's Messages API requires `max_tokens` on every request.
+    /// When an OpenAI request carries neither `max_completion_tokens`
+    /// nor `max_tokens`, the `anthropic` provider sends this value
+    /// (default 4096). Other providers ignore it.
+    #[serde(default = "default_provider_max_tokens")]
+    pub provider_default_max_tokens: u64,
     /// Name of an environment variable holding the upstream API key. The
     /// key value itself never appears in this file or on the command line.
     #[serde(default)]
@@ -931,6 +937,9 @@ fn default_bridge_backend() -> String {
 }
 fn default_provider() -> String {
     "openai".to_owned()
+}
+fn default_provider_max_tokens() -> u64 {
+    4096
 }
 fn default_bridge_manifest() -> String {
     "manifests/bridge.example.yaml".to_owned()
@@ -1953,6 +1962,9 @@ impl HarnessConfig {
                 crate::provider::SUPPORTED_PROVIDERS,
                 self.provider
             ));
+        }
+        if self.provider_default_max_tokens == 0 {
+            errors.push("provider_default_max_tokens must be at least 1 (Anthropic requires max_tokens)".into());
         }
         if self.bridge_manifest_path.is_empty() {
             errors.push("bridge_manifest_path is required".into());
