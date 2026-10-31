@@ -181,7 +181,8 @@ with demonstration data, which is what the public site shows by default.
   attack"**, with demo rows labelled and removable.
 - **Interoperability verified** against a third-party MCP server and the
   official MCP SDK client, Keycloak 26.8.1 (OIDC and SAML login in a
-  real browser), and two public AuthZEN interop decision servers.
+  real browser), and the daemon's AuthZEN request format against two
+  public interop decision servers.
 - **Windows**: the daemon and CLI compile for Windows x64, and CI and
   the release workflow build them there.
 
@@ -200,6 +201,14 @@ with demonstration data, which is what the public site shows by default.
 - **Release state.** The latest release is the pre-release
   `v0.1.0-rc.5`; nothing is on crates.io yet. Publishing needs explicit
   approval.
+- **Native Anthropic and Gemini have not reached the real APIs yet.**
+  They were tested against local servers that speak each vendor's wire
+  format as documented. A run against api.anthropic.com and the Gemini
+  API needs real keys and makes a few paid requests
+  (`scripts/provider-smoke.py --allow-live-request --provider anthropic`
+  or `gemini`).
+- **The daemon's own AuthZEN client** has not been run against a public
+  decision server; only its request format has.
 - **Still tested with stand-ins only:** a real Cloud Foundry
   foundation, cloud object storage, and identity providers other than
   Keycloak (for example Okta and Entra ID).
@@ -215,7 +224,7 @@ All on the merged `integration/all` branch.
 | Rust workspace, all features | 1,827 tests passed, 0 failed |
 | `cargo fmt`, `cargo clippy -D warnings`, `cargo deny` advisories, schema check | clean |
 | Windows x64 compile check (daemon and CLI, all targets) | no errors |
-| Provider contracts with the real daemon (OpenAI, Anthropic, Gemini, `n = 2`) | 14 of 14 |
+| Provider contracts with the real daemon against local stand-ins of the OpenAI, Anthropic and Gemini wire formats (`n = 2` included) | 14 of 14 |
 | Policy push end to end with the real API, daemon and pvctl | 32 checks passed |
 | Live pillars (identity, exchange, revocation, receipts, end to end) | 84 checks passed |
 | API unit and recovery tests, including SCIM and billing (`npm test`) | 82 passed |
@@ -230,4 +239,4 @@ All on the merged `integration/all` branch.
 | Mobile, accessibility, full investor flow | all passed |
 | Third-party MCP server / official MCP SDK client | 14 / 12 checks passed |
 | Keycloak 26.8.1 OIDC and SAML login | 22 checks passed |
-| AuthZEN public interop PDPs (Cerbos, Aserto Topaz) | allow and deny as expected |
+| The daemon's AuthZEN request format, sent by a test script to public interop PDPs (Cerbos, Aserto Topaz) | allow and deny as expected |
