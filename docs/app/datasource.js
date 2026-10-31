@@ -39,6 +39,11 @@
   };
   var MIN = 60000;
   function iso(delta) { return new Date(NOW - delta).toISOString(); }
+  // Bundle hashes the mock daemons report (see MOCK_POLICIES). Real etags
+  // are sha256 hex of the canonical policies array; these are stable
+  // stand-ins so the staging daemon can be shown one bundle behind.
+  var MOCK_BUNDLE_ETAG = "7f3a9c1e5b2d8046a1c3e5f7092b4d6e8f1a3c5b7d9e0f2a4c6e8b0d2f4a6c8e";
+  var MOCK_BUNDLE_ETAG_OLD = "1337c0de4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
   function isoMinsAgo(m) { return iso(m * MIN); }
 
   function bytesToHex(bytes) {
@@ -271,6 +276,8 @@
       keyFingerprint: "kf_573c8f24",
       sessions24h: 18,
       spend24h: "$0.62",
+      isDemo: false,
+      policyBundle: { etag: MOCK_BUNDLE_ETAG, appliedAt: iso(14 * MIN), daemonVersion: "0.4.2", stale: false, applied: 6, unsupported: [] },
     },
     {
       id: "dep_stage",
@@ -287,6 +294,9 @@
       keyFingerprint: "kf_8c9b0a1e",
       sessions24h: 9,
       spend24h: "$0.14",
+      isDemo: false,
+      // One bundle behind: it last pulled before Raj edited the vendor list.
+      policyBundle: { etag: MOCK_BUNDLE_ETAG_OLD, appliedAt: iso(2 * 24 * HOUR), daemonVersion: "0.4.2", stale: true, applied: 5, unsupported: [] },
     },
     {
       id: "dep_dev",
@@ -303,6 +313,8 @@
       keyFingerprint: "kf_1e2f3d4c",
       sessions24h: 3,
       spend24h: "$0.02",
+      isDemo: false,
+      policyBundle: { etag: MOCK_BUNDLE_ETAG, appliedAt: iso(31 * MIN), daemonVersion: "0.4.1", stale: false, applied: 6, unsupported: [] },
     },
   ];
 
@@ -310,11 +322,101 @@
    * POLICIES
    * ============================================================ */
 
+  /* Daemon-enforceable policy kinds and their JSON spec shapes. This is
+   * the same contract server/src/lib/policy-bundle.ts enforces on
+   * write and ships to daemons in GET /api/v1/ingest/policies:
+   *   budget    {"max_total_tool_calls"?, "max_payout_usd_micros"?, "max_tokens"?, "per_tool_max_calls"?: {tool: n}}
+   *   allowlist {"allow_only"?: [tools], "deny_tools"?: [tools]}   (at least one)
+   *   rate      {"max_tokens_per_window": n, "window_s": n}
+   *   schema    {"tool": "<name>", "json_schema": {…}}
+   * guardrail and transform keep free text: daemons cannot enforce
+   * them, they document intent and attribute events. The console
+   * validates before saving (same messages as the server) so a typo
+   * never reaches a daemon. */
+  var PV_ENFORCEABLE_KINDS = ["budget", "allowlist", "rate", "schema"];
+  function pvIsEnforceableKind(kind) { return PV_ENFORCEABLE_KINDS.indexOf(kind) >= 0; }
+  var PV_TOOL_NAME_RE = /^[A-Za-z0-9_.:\/-]{1,80}$/;
+  function pvToolPattern(scope) {
+    var m = /^tool(?:\.(.*))?$/.exec(String(scope || "").trim());
+    if (!m) return null;
+    var pat = m[1] === undefined || m[1] === "" ? "*" : m[1];
+    var re = pat.split("*").map(function (part) { return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }).join(".*");
+    return new RegExp("^" + re + "$");
+  }
+  function pvIsInt(v, min) { return typeof v === "number" && isFinite(v) && Math.floor(v) === v && v >= min; }
+  function pvCheckTools(list, label) {
+    if (!Array.isArray(list)) return label + " must be a list of tool names";
+    if (!list.length) return label + " must name at least one tool";
+    for (var i = 0; i < list.length; i++) {
+      if (typeof list[i] !== "string" || !PV_TOOL_NAME_RE.test(list[i])) return label + ": \"" + String(list[i]).slice(0, 40) + "\" is not a valid tool name (letters, digits, _ . : / -)";
+    }
+    return null;
+  }
+  function pvValidatePolicySpec(kind, scope, body) {
+    if (!pvIsEnforceableKind(kind)) return { ok: true, spec: null };
+    var text = String(body == null ? "" : body);
+    if (!text.trim()) return { ok: false, detail: "a " + kind + " policy needs a JSON spec in its body" };
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return { ok: false, detail: "body is not valid JSON (" + e.message + ")" }; }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, detail: "a " + kind + " spec must be a JSON object" };
+    var allowed = { budget: ["max_total_tool_calls", "max_payout_usd_micros", "max_tokens", "per_tool_max_calls"], allowlist: ["allow_only", "deny_tools"], rate: ["max_tokens_per_window", "window_s"], schema: ["tool", "json_schema"] }[kind];
+    var keys = Object.keys(parsed);
+    for (var k = 0; k < keys.length; k++) if (allowed.indexOf(keys[k]) < 0) return { ok: false, detail: kind + " spec: unknown field \"" + keys[k] + "\" (allowed: " + allowed.join(", ") + ")" };
+    var named = [];
+    var err = null;
+    if (kind === "budget") {
+      var any = false;
+      ["max_total_tool_calls", "max_payout_usd_micros", "max_tokens"].forEach(function (f) {
+        if (parsed[f] === undefined) return;
+        any = true;
+        if (!pvIsInt(parsed[f], 0)) err = err || ("budget spec: " + f + " must be a non-negative integer");
+      });
+      if (parsed.per_tool_max_calls !== undefined) {
+        if (!parsed.per_tool_max_calls || typeof parsed.per_tool_max_calls !== "object" || Array.isArray(parsed.per_tool_max_calls)) err = err || "budget spec: per_tool_max_calls must be an object of tool → count";
+        else {
+          var tools = Object.keys(parsed.per_tool_max_calls);
+          if (tools.length) any = true;
+          tools.forEach(function (t) {
+            if (!PV_TOOL_NAME_RE.test(t)) err = err || ("budget spec: \"" + t + "\" is not a valid tool name");
+            else if (!pvIsInt(parsed.per_tool_max_calls[t], 0)) err = err || ("budget spec: per_tool_max_calls." + t + " must be a non-negative integer");
+          });
+          named = named.concat(tools);
+        }
+      }
+      if (!err && !any) err = "a budget needs at least one limit (max_total_tool_calls, max_payout_usd_micros, max_tokens or per_tool_max_calls)";
+    } else if (kind === "allowlist") {
+      if (parsed.allow_only !== undefined) { err = err || pvCheckTools(parsed.allow_only, "allow_only"); named = named.concat(parsed.allow_only || []); }
+      if (parsed.deny_tools !== undefined) { err = err || pvCheckTools(parsed.deny_tools, "deny_tools"); named = named.concat(parsed.deny_tools || []); }
+      if (!err && parsed.allow_only === undefined && parsed.deny_tools === undefined) err = "an allowlist needs allow_only and/or deny_tools with at least one tool name";
+      if (err) err = "allowlist spec: " + err;
+    } else if (kind === "rate") {
+      if (!pvIsInt(parsed.max_tokens_per_window, 1)) err = "rate spec: max_tokens_per_window must be a positive integer";
+      else if (!pvIsInt(parsed.window_s, 1) || parsed.window_s > 30 * 24 * 3600) err = "rate spec: window_s must be a positive integer (seconds, at most 30 days)";
+    } else if (kind === "schema") {
+      if (typeof parsed.tool !== "string" || !PV_TOOL_NAME_RE.test(parsed.tool)) err = "schema spec: tool must be a valid tool name";
+      else if (!parsed.json_schema || typeof parsed.json_schema !== "object" || Array.isArray(parsed.json_schema)) err = "schema spec: json_schema must be a JSON Schema object";
+      else named.push(parsed.tool);
+    }
+    if (err) return { ok: false, detail: err };
+    if (named.length) {
+      var pat = pvToolPattern(scope);
+      if (!pat) return { ok: false, detail: kind + " spec names tools but the policy scope \"" + scope + "\" is not a tool scope (use tool.* or tool.<name>)" };
+      for (var n = 0; n < named.length; n++) if (!pat.test(named[n])) return { ok: false, detail: kind + " spec names tool \"" + named[n] + "\" which is outside the policy scope \"" + scope + "\"" };
+    }
+    return { ok: true, spec: parsed };
+  }
+  window.pvValidatePolicySpec = pvValidatePolicySpec;
+  window.pvIsEnforceableKind = pvIsEnforceableKind;
+
+  // Bundle hashes the mock daemons report. Real etags are sha256 hex of
+  // the canonical policies array; these are stable stand-ins so the
+  // staging daemon can be shown one bundle behind.
+
   var MOCK_POLICIES = [
     {
       id: "pol_procurement_allowed_vendors",
       name: "procurement.allowed_vendors",
-      kind: "allowlist",
+      kind: "schema",
       scope: "tool.create_purchase_order",
       enabled: true,
       hits24h: 41,
@@ -322,14 +424,14 @@
       updatedAt: iso(5 * 24 * HOUR),
       updatedBy: "raj.patel@northwind.com",
       description: "Only pre-approved vendors may receive purchase orders.",
-      body: [
-        "policy \"procurement.allowed_vendors\" {",
-        "  applies_to = tool(\"create_purchase_order\")",
-        "  when { arg.vendor not in [\"Contoso\", \"AdventureWorks\", \"Fabrikam\"] }",
-        "  effect = block",
-        "  reason = \"Vendor {{arg.vendor}} not in procurement allowlist.\"",
-        "}",
-      ].join("\n"),
+      body: JSON.stringify({
+        tool: "create_purchase_order",
+        json_schema: {
+          type: "object",
+          required: ["vendor"],
+          properties: { vendor: { type: "string", enum: ["Contoso", "AdventureWorks", "Fabrikam"] } },
+        },
+      }, null, 2),
     },
     {
       id: "pol_runtime_write_scope",
@@ -362,14 +464,7 @@
       updatedAt: iso(3 * 24 * HOUR),
       updatedBy: "olivia.tan@northwind.com",
       description: "Cap total LLM + tool payout per session at $10 USD.",
-      body: [
-        "policy \"rate.per_session_usd:10\" {",
-        "  applies_to = session",
-        "  when { session.cost_usd > 10.00 }",
-        "  effect = seal",
-        "  reason = \"Session exceeded $10 budget.\"",
-        "}",
-      ].join("\n"),
+      body: JSON.stringify({ max_payout_usd_micros: 10000000 }, null, 2),
     },
     {
       id: "pol_pii_redaction",
@@ -391,24 +486,32 @@
       ].join("\n"),
     },
     {
-      id: "pol_egress_allowlist",
-      name: "network.egress_allowlist",
+      id: "pol_tool_allowlist",
+      name: "runtime.tool_allowlist",
       kind: "allowlist",
-      scope: "tool.http_request",
+      scope: "tool.*",
       enabled: true,
       hits24h: 62,
       blocks24h: 1,
       updatedAt: iso(9 * 24 * HOUR),
       updatedBy: "priya.iyer@northwind.com",
-      description: "Restrict outbound HTTP to approved hostnames.",
-      body: [
-        "policy \"network.egress_allowlist\" {",
-        "  applies_to = tool(\"http_request\")",
-        "  when { arg.url.host not in vault(\"approved_hosts\") }",
-        "  effect = block",
-        "  reason = \"Egress to {{arg.url.host}} not in allowlist.\"",
-        "}",
-      ].join("\n"),
+      description: "Agents may only call the tools on this list; anything else is blocked.",
+      body: JSON.stringify({
+        allow_only: ["search_inventory", "lookup_vendor", "create_purchase_order", "create_payment", "open_review_ticket", "http_request"],
+      }, null, 2),
+    },
+    {
+      id: "pol_token_velocity",
+      name: "llm.token_velocity",
+      kind: "rate",
+      scope: "llm.request",
+      enabled: true,
+      hits24h: 12,
+      blocks24h: 0,
+      updatedAt: iso(6 * 24 * HOUR),
+      updatedBy: "olivia.tan@northwind.com",
+      description: "No principal may push more than 200k tokens through the model per hour.",
+      body: JSON.stringify({ max_tokens_per_window: 200000, window_s: 3600 }, null, 2),
     },
     {
       id: "pol_prompt_injection",
@@ -430,6 +533,30 @@
       ].join("\n"),
     },
   ];
+
+  // Same read shape the API returns: `enforceable`, parsed `spec`, and
+  // `enforcement` counted against the fleet (northwind-staging runs
+  // one bundle behind; the fresh workspace's single daemon is current).
+  function decorateMockPolicy(p) {
+    var out = Object.assign({}, p);
+    var v = pvValidatePolicySpec(p.kind, p.scope, p.body);
+    out.enforceable = pvIsEnforceableKind(p.kind);
+    out.spec = v.ok ? v.spec : null;
+    var fresh = freshDeployments();
+    var deps = fresh !== null ? fresh : MOCK_DEPLOYMENTS;
+    var real = deps.filter(function (d) { return !d.isDemo; });
+    var applied = real.filter(function (d) { return d.policyBundle && !d.policyBundle.stale; }).length;
+    var stale = real.filter(function (d) { return d.policyBundle && d.policyBundle.stale; }).length;
+    out.enforcement = { deployments: real.length, applied: applied, stale: stale, unsupported: 0 };
+    return out;
+  }
+  function mockSpecError(detail) {
+    var e = new Error(detail);
+    e.status = 400;
+    e.errorCode = "invalid_input";
+    e.data = { errorCode: "invalid_input", specError: detail, issues: [{ path: ["body"], message: detail }] };
+    return e;
+  }
 
   /* ============================================================
    * SESSIONS (denser corpus for filters)
@@ -1377,6 +1504,8 @@
         publicKeyHex: null,
         keyFingerprint: null,
         sessions24h: 0, spend24h: "$0.00",
+        isDemo: false,
+        policyBundle: null,
       };
       // A fresh workspace's deployments live in ITS runtime store —
       // pushing into MOCK_DEPLOYMENTS made them invisible (list reads
@@ -1566,6 +1695,7 @@
         blockedPayoutUsdMicros: "0",
         receiptHash: "sha256:pending…",
         policiesFired: [],
+        isDemo: true,
         _live: true,
       };
       if (freshMode) freshRuntime().liveSessions.unshift(s);
@@ -1631,6 +1761,23 @@
       }, SEAL_AT);
 
       return { id: s.id, valueUsd: value, vendor: vendor, blockAtMs: BLOCK_AT, sealAtMs: SEAL_AT };
+    },
+    /* Demo footprint + removal — same contract as GET/DELETE /api/v1/demo
+     * in live mode. In the mock the demo rows are the staged attack
+     * sessions (isDemo); the Northwind fixtures themselves are the
+     * showcase, not "demo data" the user asked for. */
+    async getDemoStatus() {
+      var pool = freshElapsed() != null ? freshRuntime().liveSessions : MOCK_SESSIONS;
+      var n = pool.filter(function (x) { return x.isDemo; }).length;
+      return { present: n > 0, deployments: 0, sessions: n };
+    },
+    async removeDemoData() {
+      await delay(150);
+      var pool = freshElapsed() != null ? freshRuntime().liveSessions : MOCK_SESSIONS;
+      var removed = 0;
+      for (var i = pool.length - 1; i >= 0; i--) if (pool[i].isDemo) { pool.splice(i, 1); removed++; }
+      recordAudit("demo.removed", "demo-attack", removed + " staged session" + (removed === 1 ? "" : "s"));
+      return { ok: true, deploymentsRemoved: 0, sessionsRemoved: removed };
     },
     async getReceipt(sessionId) {
       await delay(120);
@@ -1702,20 +1849,20 @@
 
     async listPolicies() {
       await delay(100);
-      if (freshElapsed() != null) return MOCK_POLICIES.slice(0, 4).map(freshPolicy);
-      return MOCK_POLICIES.slice();
+      if (freshElapsed() != null) return MOCK_POLICIES.slice(0, 4).map(freshPolicy).map(decorateMockPolicy);
+      return MOCK_POLICIES.map(decorateMockPolicy);
     },
     async getPolicy(id) {
       await delay(100);
       var p = MOCK_POLICIES.find(function (x) { return x.id === id; });
       if (!p) throw new Error("not_found");
-      return freshPolicy(p);
+      return decorateMockPolicy(freshPolicy(p));
     },
     async togglePolicy(id) {
       await delay(120);
       var p = MOCK_POLICIES.find(function (x) { return x.id === id; });
       if (p) { p.enabled = !p.enabled; recordAudit(p.enabled ? "policy.enabled" : "policy.disabled", p.name); }
-      return p;
+      return p ? decorateMockPolicy(p) : p;
     },
     async updatePolicy(id, fields) {
       await delay(150);
@@ -1727,11 +1874,17 @@
         if (MOCK_POLICIES.some(function (x) { return x.id !== id && x.name === nm; })) { var epu3 = new Error("policy_name_in_use"); epu3.status = 409; epu3.errorCode = "policy_name_in_use"; throw epu3; }
         p.name = nm;
       }
+      if (fields && (fields.body !== undefined || fields.kind !== undefined || fields.scope !== undefined)) {
+        var vUp = pvValidatePolicySpec(fields.kind !== undefined ? fields.kind : p.kind, fields.scope !== undefined ? fields.scope : p.scope, fields.body !== undefined ? fields.body : p.body);
+        if (!vUp.ok) throw mockSpecError(vUp.detail);
+      }
       if (fields && fields.description !== undefined) p.description = String(fields.description).slice(0, 500);
+      if (fields && fields.kind !== undefined) p.kind = String(fields.kind);
+      if (fields && fields.scope !== undefined) p.scope = String(fields.scope).slice(0, 120);
       if (fields && fields.body !== undefined) p.body = String(fields.body).slice(0, 16384);
       p.updatedAt = new Date().toISOString();
       recordAudit("policy.update", p.name);
-      return p;
+      return decorateMockPolicy(p);
     },
     async deletePolicy(id) {
       await delay(150);
@@ -1747,12 +1900,14 @@
       var id = base;
       if (MOCK_POLICIES.some(function (x) { return x.id === id; })) id = base + "_" + Date.now().toString(36);
       var by = (mockState.session && mockState.session.user && mockState.session.user.email) || "olivia.tan@northwind.com";
+      var vNew = pvValidatePolicySpec(input.kind || "guardrail", input.scope || "tool.*", input.body || "");
+      if (!vNew.ok) throw mockSpecError(vNew.detail);
       var p = {
         id: id,
         name: input.name,
         kind: input.kind || "guardrail",
         scope: input.scope || "tool.*",
-        enabled: true,
+        enabled: input.enabled !== undefined ? !!input.enabled : true,
         hits24h: 0,
         blocks24h: 0,
         updatedAt: new Date().toISOString(),
@@ -1762,7 +1917,7 @@
       };
       MOCK_POLICIES.unshift(p);
       recordAudit("policy.created", p.name, p.kind + " · " + p.scope);
-      return p;
+      return decorateMockPolicy(p);
     },
 
     async listMembers() {
@@ -2491,6 +2646,12 @@
           // member role, which the server redacts.
           sessions24h: typeof d.sessions24h === "number" ? d.sessions24h : null,
           spend24h: d.spend24hUsdMicros != null ? "$" + (parseInt(d.spend24hUsdMicros, 10) / 1e6).toFixed(2) : null,
+          // Staged by "Simulate an attack" (POST /api/v1/demo/attack).
+          isDemo: !!d.isDemo,
+          // What this daemon last applied from GET /ingest/policies:
+          // { etag, appliedAt, daemonVersion, stale, applied, unsupported }
+          // or null when it has never pulled a bundle.
+          policyBundle: d.policyBundle || null,
         };
       });
     },
@@ -2510,6 +2671,7 @@
         lastSeenAt: null, createdAt: dep.createdAt || new Date().toISOString(),
         ingestTokenHint: dep.ingestTokenHint ? dep.ingestTokenHint + "…" : (r.ingestToken || "").slice(0, 16) + "…",
         publicKeyHex: null, keyFingerprint: null, sessions24h: 0, spend24h: "$0.00",
+        isDemo: false, policyBundle: null,
       }, ingestToken: r.ingestToken };
     },
     async rotateDeploymentToken(id) {
@@ -2553,8 +2715,32 @@
         blockedSpendUsd: blockedDollars.toFixed(0),
         deployments: stats.deployments || 0,
         deploymentsHealthy: stats.deploymentsHealthy || 0,
+        demoDeployments: stats.demoDeployments || 0,
+        demoSessions: stats.demoSessions || 0,
         series: series.length ? series : null,
       };
+    },
+    /* Live-mode "Simulate an attack": the server stages the same
+     * blocked-payment story the mock plays (deployment "demo-attack",
+     * one session, receipt signed with the public demo key) and paces
+     * the block at blockAtMs and the seal at sealAtMs. Owner/admin only
+     * (403 for members — the button is hidden for them). */
+    async simulateAttack() {
+      var r = await apiFetch("/api/v1/demo/attack", { method: "POST", body: { pace: "staged" } });
+      return {
+        id: r.session.id,
+        deploymentId: r.deployment.id,
+        valueUsd: r.valueUsd,
+        vendor: r.vendor,
+        blockAtMs: r.blockAtMs,
+        sealAtMs: r.sealAtMs,
+      };
+    },
+    async getDemoStatus() {
+      return apiFetch("/api/v1/demo");
+    },
+    async removeDemoData() {
+      return apiFetch("/api/v1/demo", { method: "DELETE" });
     },
     async listSessions(params) {
       // Uses the new cursor-paginated /sessions endpoint (see
@@ -2676,6 +2862,7 @@
           scope: input.scope || "tool.*",
           description: input.description || "",
           body: input.body || "",
+          enabled: input.enabled !== undefined ? !!input.enabled : true,
         },
       });
       return r.policy;
@@ -2994,6 +3181,8 @@
       // Policy names the daemon attributed to this session's events
       // (server: Event.policyName grouped per session).
       policiesFired: Array.isArray(s.policiesFired) ? s.policiesFired : [],
+      // Staged demo row (POST /api/v1/demo/attack) — labeled in every table.
+      isDemo: !!s.isDemo || !!(s.deployment && s.deployment.isDemo),
     };
   }
   // Distinct model names the daemon recorded on a session's LLM events.

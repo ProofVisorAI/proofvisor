@@ -677,6 +677,20 @@
   }
   // Click-to-copy affordance for credential-ish values (fingerprints,
   // pubkeys, tokens). One delegated handler serves every instance.
+  // Rows staged by "Simulate an attack" carry isDemo (server column /
+  // mock flag). The label keeps staged data visually distinct from real
+  // agent evidence everywhere a row renders.
+  function demoPill() {
+    return ' <span class="pill accent demo-pill" title="Staged by Simulate an attack — signed with the public demo key, not real agent evidence. Remove demo data from the Overview.">demo</span>';
+  }
+  // What a daemon last applied from GET /api/v1/ingest/policies.
+  function bundlePill(d) {
+    if (d.isDemo) return '<span class="pill neutral" title="The demo deployment never runs a daemon.">n/a</span>';
+    var b = d.policyBundle;
+    if (!b) return '<span class="pill neutral" title="This daemon has not pulled the policy bundle yet. Start the uploader with pvctl console-sync --watch --pull-policies.">not pulling</span>';
+    if (b.stale) return '<span class="pill warn" title="Applied bundle ' + esc(String(b.etag).slice(0, 12)) + '… is older than the current one — the daemon picks the new bundle up on its next pull.">older bundle</span>';
+    return '<span class="pill ok" title="Applied the current bundle (' + esc(String(b.etag).slice(0, 12)) + '…) ' + esc(timeAgo(b.appliedAt)) + '">current</span>';
+  }
   function copyable(value) {
     if (!value) return "—";
     return '<span class="copyable">' + esc(value) +
@@ -1766,12 +1780,18 @@
     var mySeq = ++_overviewFetchSeq;
     var rangeLabel = { "1h": "the last hour", "24h": "the last 24 hours", "7d": "the last 7 days", "30d": "the last 30 days" }[state.range] || "the last 24 hours";
     if (!quiet) main.innerHTML = pageHeader("Overview", "Fleet activity for " + rangeLabel + ".", rangeGroup()) + loadingBlock("stats");
-    var stats, sessions;
+    var stats, sessions, demoInfo = null, ob = null;
     try {
       stats = await state.ds.getOverview(state.range);
       var res = await state.ds.listSessions();
       if (mySeq !== _overviewFetchSeq) return; // superseded by a newer range/render
       sessions = res.sessions.slice(0, 8);
+      // Demo footprint + the live-mode onboarding checklist read real
+      // state (policies, members, invites); both are cheap and skipped
+      // once the checklist is complete or dismissed.
+      if (typeof state.ds.getDemoStatus === "function") demoInfo = await state.ds.getDemoStatus().catch(function () { return null; });
+      ob = await liveOnboardingState(stats, res.sessions);
+      if (mySeq !== _overviewFetchSeq) return;
     } catch (e) {
       if (mySeq !== _overviewFetchSeq) return;
       // A quiet (stream-driven) refresh must never replace a live
@@ -1795,7 +1815,8 @@
 
     main.innerHTML =
       pageHeader("Overview", "Fleet activity for " + rangeLabel + ".", attackBtn() + rangeGroup()) +
-      onboardingCard(stats, sessions) +
+      onboardingCard(stats, sessions, ob) +
+      demoNotice(demoInfo) +
       '<div class="stats">' +
         stat("Sessions", stats.sessions, stats.deployments + " deployment" + (stats.deployments === 1 ? "" : "s"), sparkline(series.map(function (b) { return b.allowed + b.blocked; }))) +
         stat("Tool calls allowed", stats.toolsAllowed.toLocaleString(), "policy pass", sparkline(allowedByHour)) +
@@ -1846,6 +1867,7 @@
     installChartHover(main, series);
     var sim = main.querySelector("#simAttack");
     if (sim) sim.addEventListener("click", runAttackDemo);
+    on("#removeDemo", "click", function () { openRemoveDemoModal(function () { render(); }); });
     // Fresh-workspace onboarding: the checklist ticks itself live as
     // the daemon connects and the first sessions stream in, so keep
     // re-rendering (quietly — no skeleton swap) while it's on screen.
@@ -1867,7 +1889,61 @@
   function freshT0() {
     try { var v = localStorage.getItem("pv_mock_fresh_t0"); return v ? +v : null; } catch (e) { return null; }
   }
-  function onboardingCard(stats, sessions) {
+  // Live mode: the checklist derives from real workspace state — a
+  // deployment, a received session, a policy, a second member or a
+  // pending invite. It disappears once everything is done and can be
+  // dismissed at any time (per workspace). Returns null when nothing
+  // should render, so onboardingCard() falls back to the mock's
+  // fresh-workspace card.
+  function obStorageKey() {
+    var org = state.session && state.session.org && state.session.org.id;
+    return "pv_ob_dismissed_" + (org || "live");
+  }
+  async function liveOnboardingState(stats, sessions) {
+    if (!state.ds || state.ds.mode !== "api") return null;
+    try { if (localStorage.getItem(obStorageKey()) === "1") return null; } catch (e) {}
+    var realDeps = Math.max(0, (stats.deployments || 0) - (stats.demoDeployments || 0));
+    var realSessions = (sessions || []).some(function (x) { return !x.isDemo; }) || ((stats.sessions || 0) - (stats.demoSessions || 0)) > 0;
+    var out = { hasDep: realDeps > 0, hasSession: realSessions, hasPolicy: false, hasTeam: false };
+    var role = (state.session && state.session.org && state.session.org.role) || "member";
+    var calls = [
+      state.ds.listPolicies().then(function (p) { out.hasPolicy = (p || []).length > 0; }, function () {}),
+      state.ds.listMembers().then(function (m) { if ((m || []).length > 1) out.hasTeam = true; }, function () {}),
+    ];
+    // Invites are owner/admin-only on the API; members see the step
+    // from the member count alone.
+    if (role !== "member" && typeof state.ds.listInvites === "function") {
+      calls.push(state.ds.listInvites().then(function (r) { var inv = (r && r.invites) || r || []; if (inv.length) out.hasTeam = true; }, function () {}));
+    }
+    await Promise.all(calls);
+    if (out.hasDep && out.hasSession && out.hasPolicy && out.hasTeam) return null; // all done — the card goes away
+    return out;
+  }
+  function onboardingCard(stats, sessions, live) {
+    if (live) {
+      var lsteps = [
+        { done: true, label: "Create your workspace", sub: "Done — you're in" },
+        { done: live.hasDep, label: "Register a deployment", sub: live.hasDep ? "A daemon is registered" : "Create one to get an ingest token for pvctl console-sync", href: "#/deployments" },
+        { done: live.hasSession, label: "Receive your first session", sub: live.hasSession ? "Sessions are streaming in" : "Run pvctl console-sync --watch on the host that runs your agent — or press ⚡ Simulate an attack to stage one", href: "#/sessions" },
+        { done: live.hasPolicy, label: "Write a policy", sub: live.hasPolicy ? "Daemons pull your policies as one bundle" : "Start from a template; daemons pull it with --pull-policies", href: "#/policies" },
+        { done: live.hasTeam, label: "Invite a teammate", sub: live.hasTeam ? "Your team is here" : "Add a second member or send an invite", href: "#/settings/members" },
+      ];
+      var ldone = lsteps.filter(function (x) { return x.done; }).length;
+      var lrows = lsteps.map(function (x, i) {
+        var inner = '<span class="ob-tick' + (x.done ? " done" : "") + '">' + (x.done ? "✓" : i + 1) + "</span>" +
+          '<span class="ob-body"><span class="ob-label">' + esc(x.label) + "</span>" +
+          '<span class="ob-sub">' + esc(x.sub) + "</span></span>";
+        return x.href && !x.done
+          ? '<a class="ob-step" href="' + esc(x.href) + '">' + inner + "</a>"
+          : '<div class="ob-step' + (x.done ? " done" : "") + '">' + inner + "</div>";
+      }).join("");
+      return '<div class="onboard-card card" role="region" aria-label="Getting started" data-live="1">' +
+        '<div class="ob-head"><h2>Getting started</h2><span class="ob-count">' + ldone + " of " + lsteps.length + "</span>" +
+        '<button type="button" class="btn" id="obDismiss" title="Hide this checklist" aria-label="Dismiss the getting-started checklist" style="margin-left:auto;padding:2px 10px">Dismiss</button>' +
+        '<div class="ob-bar"><span style="width:' + (ldone / lsteps.length) * 100 + '%"></span></div></div>' +
+        '<div class="ob-steps">' + lrows + "</div>" +
+      "</div>";
+    }
     if (freshT0() == null) return "";
     var hasDep = stats.deployments > 0;
     var hasSess = stats.sessions > 0;
@@ -1915,8 +1991,25 @@
    * default 2.6 s was shorter than the read time of these lines, so
    * each step vanished before a viewer finished it. */
   var attackRunning = false;
+  // Demo footprint banner (live mode: isDemo rows exist; mock: staged
+  // attack sessions) with the one-click cleanup.
+  function demoNotice(info) {
+    if (!info || !info.present) return "";
+    var role = (state.session && state.session.org && state.session.org.role) || "member";
+    var n = info.sessions || 0;
+    return '<div class="notice demo-notice" role="status" style="margin-bottom:12px"><span class="pill accent">demo</span>' +
+      '<span style="flex:1">' + esc(n + " staged session" + (n === 1 ? "" : "s") + (info.deployments ? " under the demo-attack deployment" : "") + " — signed with the public demo key, labeled demo in every table, and counted in the figures above.") + "</span>" +
+      (role !== "member" ? '<button type="button" class="btn" id="removeDemo">Remove demo data</button>' : "") +
+      "</div>";
+  }
   function attackReady() {
-    if (state.ds.mode !== "mock" || typeof state.ds.simulateAttack !== "function") return false;
+    if (typeof state.ds.simulateAttack !== "function") return false;
+    if (state.ds.mode === "api") {
+      // The server stages the story (POST /api/v1/demo/attack) and
+      // refuses members; hide the button for them instead of 403-ing.
+      var role = (state.session && state.session.org && state.session.org.role) || "member";
+      return role !== "member";
+    }
     // Fresh workspace: only once the daemon is connected and signing —
     // a staged session can't exist while the deployments page still
     // says "run the install command" (and not after the daemon was
@@ -1926,7 +2019,7 @@
   function attackBtn() {
     if (!attackReady()) return "";
     return '<button class="btn" id="simAttack"' + (attackRunning ? " disabled" : "") +
-      ' title="Stage a live blocked payment in this demo org">⚡ Simulate an attack</button> ';
+      ' title="' + (state.ds.mode === "api" ? "Stage a blocked payment under a demo-attack deployment (labeled demo; removable)" : "Stage a live blocked payment in this demo org") + '">⚡ Simulate an attack</button> ';
   }
   async function runAttackDemo() {
     if (attackRunning || !attackReady()) return;
@@ -2392,8 +2485,8 @@
   // quiet overview refreshes, so per-render wiring would drop off).
   document.addEventListener("click", function (e) {
     if (!e.target || e.target.id !== "obDismiss") return;
-    try { localStorage.setItem("pv_ob_dismissed", "1"); } catch (e2) {}
     var card = e.target.closest(".onboard-card");
+    try { localStorage.setItem(card && card.getAttribute("data-live") ? obStorageKey() : "pv_ob_dismissed", "1"); } catch (e2) {}
     if (card) card.remove();
   });
 
@@ -2420,7 +2513,7 @@
         ? '<span class="pill err">' + s.toolsBlocked + " blocked</span>"
         : (s.status === "quarantined_crash_evidence" ? '<span class="pill warn">unknown · partial</span>' : '<span class="pill ok">clean</span>');
       return '<tr data-clickable data-id="' + esc(s.id) + '" data-nav="#/sessions/" tabindex="0">' +
-        '<td title="' + esc(s.agent + " · " + s.externalId) + '"><div style="font-weight:500">' + esc(s.agent) + '</div><div class="id">' + esc(s.externalId) + "</div></td>" +
+        '<td title="' + esc(s.agent + " · " + s.externalId) + '"><div style="font-weight:500">' + esc(s.agent) + (s.isDemo ? demoPill() : "") + '</div><div class="id">' + esc(s.externalId) + "</div></td>" +
         '<td title="' + esc(s.user || "") + '"><div class="actor"><span class="pv">' + esc(initials(s.user)) + '</span>' + esc(s.user || "—") + '</div></td>' +
         '<td class="num tabular">' + s.events + "</td>" +
         '<td class="num tabular">' + s.toolsAllowed + "</td>" +
@@ -2642,7 +2735,7 @@
     var unsealed = !!(receipt && receipt.note);
     var rcptDis = unsealed ? ' disabled title="' + (quarantined ? "No receipt is available for incomplete crash evidence" : "Available when the session seals — the daemon signs the receipt at seal") + '"' : "";
     main.innerHTML =
-      pageHeader("Session " + s.externalId, s.agent + " · " + (s.user || "—") + " · " + (s.model || ""), '<a href="' + esc(backToListUrl("sessions")) + '" class="btn">← All sessions</a> ' + nav + '<button class="btn" id="printPack" title="Print this page as a clean evidence pack — receipt and event trail included">🖨 Print evidence pack</button> <button class="btn" id="copyRcpt"' + rcptDis + '>Copy receipt</button> <button class="btn" id="shareRcpt"' + rcptDis + '>🔗 Share verify link</button> <button class="btn accent" id="dlRcpt"' + rcptDis + '>↓ Download receipt</button>') +
+      pageHeader("Session " + s.externalId, s.agent + " · " + (s.user || "—") + " · " + (s.model || "") + (s.isDemo ? " · demo data staged by Simulate an attack" : ""), '<a href="' + esc(backToListUrl("sessions")) + '" class="btn">← All sessions</a> ' + nav + '<button class="btn" id="printPack" title="Print this page as a clean evidence pack — receipt and event trail included">🖨 Print evidence pack</button> <button class="btn" id="copyRcpt"' + rcptDis + '>Copy receipt</button> <button class="btn" id="shareRcpt"' + rcptDis + '>🔗 Share verify link</button> <button class="btn accent" id="dlRcpt"' + rcptDis + '>↓ Download receipt</button>') +
       (quarantined ? '<div class="notice" role="status"><div><strong>Quarantined crash evidence.</strong> This session contains incomplete evidence recovered after a daemon crash. All counts and totals are partial. No signed receipt is available.</div></div>' : "") +
       '<div class="session-summary">' +
         cell("Events", s.events, "streamed") +
@@ -2918,6 +3011,14 @@
       var b64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
       var origin = window.VERIFY_BASE || "https://proofvisor.com";
       var url = origin + "/verify/#data=" + b64;
+      // Trust anchor: name the deployment (and, in live mode, the API
+      // that pinned its key) so the verifier can say "signed by the key
+      // the console pinned for deployment X" instead of only "internally
+      // consistent". The verifier only consults api origins it trusts.
+      if (s.deploymentId) {
+        url += "&deployment=" + encodeURIComponent(s.deploymentId);
+        if (state.ds.mode === "api") url += "&api=" + encodeURIComponent(consoleApiOrigin());
+      }
       // Warn if it's really big. Many chat clients cap URLs around 8k.
       if (url.length > 32000) {
         toast("Receipt too large to share as a URL (" + url.length + " bytes). Use Download instead.", true);
@@ -3191,9 +3292,10 @@
           ? '<span class="pill ok status-dot">connected</span>'
           : '<span class="pill neutral status-dot">' + esc(d.status) + "</span>";
         return '<tr data-clickable data-id="' + esc(d.id) + '" data-nav="#/deployments/" tabindex="0">' +
-          '<td><div style="font-weight:500">' + esc(d.name) + '</div><div class="id">' + esc(d.id) + "</div></td>" +
+          '<td><div style="font-weight:500">' + esc(d.name) + (d.isDemo ? demoPill() : "") + '</div><div class="id">' + esc(d.id) + "</div></td>" +
           '<td><span class="pill neutral">' + esc(d.environment) + "</span></td>" +
           "<td>" + statusPill + "</td>" +
+          "<td>" + bundlePill(d) + "</td>" +
           '<td class="mono">' + esc(d.version || "—") + "</td>" +
           '<td style="color: var(--fg-2)">' + timeAgoCell(d.lastSeenAt) + "</td>" +
           '<td>' +
@@ -3210,7 +3312,7 @@
           '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://proofvisor.com/install.sh | sh</span>\n<span class="prompt">$</span> <span class="cmd">pvctl setup</span></div>' +
         "</div>" +
         '<div class="card" style="padding:0"><div class="table-wrap"><table>' +
-          "<thead><tr><th>Deployment</th><th>Environment</th><th>Status</th><th>Version</th><th>Last seen</th><th class=\"act-3\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
+          "<thead><tr><th>Deployment</th><th>Environment</th><th>Status</th><th>Policies</th><th>Version</th><th>Last seen</th><th class=\"act-3\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
           "<tbody>" + rows + "</tbody></table></div></div>";
     }
     main.innerHTML = pageHeader("Deployments", "Each daemon streams events and signed receipts to this console.", actions) + body;
@@ -3302,11 +3404,12 @@
       "PV_CONSOLE_TOKEN=<token shown once at create or rotate>";
 
     main.innerHTML =
-      pageHeader(d.name, d.environment, '<a href="' + esc(backToListUrl("deployments")) + '" class="btn">← All deployments</a>') +
+      pageHeader(d.name, d.environment + (d.isDemo ? " · demo deployment staged by Simulate an attack" : ""), '<a href="' + esc(backToListUrl("deployments")) + '" class="btn">← All deployments</a>') +
       '<div class="dep-summary">' +
-        depCell("Status", statusPill, false, true) +
+        depCell("Status", statusPill + (d.isDemo ? demoPill() : ""), false, true) +
         depCell("Version", d.version || "—", true) +
         depCell("Last seen", timeAgoCell(d.lastSeenAt), false, true) +
+        depCell("Policy bundle", bundlePill(d), false, true) +
         depCell("Sessions (24h)", d.sessions24h != null ? d.sessions24h : "—") +
         depCell("Spend (24h)", d.spend24h || "—") +
       "</div>" +
@@ -3333,13 +3436,20 @@
       // sessions, events and receipts here. The displayed text and the
       // clipboard payload are the same string so what you read is what
       // you paste; the token placeholder is never a redacted hint.
-      '<div class="card" style="margin-bottom:12px">' +
-        "<h2>Connect your daemon</h2>" +
-        '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">On the host that runs <code>proofvisord</code>, export these and start the uploader with <code>pvctl console-sync --watch</code>. It posts the daemon\'s spooled sessions, events and signed receipts to this console; this page flips to <b>connected</b> after the first upload.</p>' +
-        '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' + esc(consoleSyncEnv) + "</pre>" +
-        '<button type="button" class="btn" data-copy="' + esc(consoleSyncEnv) + '">⧉ Copy env block</button>' +
-        '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">The token is shown once, at create or rotate. Lost it? Rotate below — the old one stops working immediately.</span>' +
-      "</div>" +
+      (d.isDemo
+        ? '<div class="card" style="margin-bottom:12px">' +
+            "<h2>Demo deployment</h2>" +
+            '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">This deployment and its sessions were staged by <b>⚡ Simulate an attack</b>. No daemon runs behind it: the receipts are signed with the <b>public demo key</b>, so the verifier shows them as demo receipts, never as production attestations. Remove it when you are done showing the flow.</p>' +
+            '<button type="button" class="btn danger" id="depRemoveDemo">Remove demo data</button>' +
+          "</div>"
+        : '<div class="card" style="margin-bottom:12px">' +
+            "<h2>Connect your daemon</h2>" +
+            '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">On the host that runs <code>proofvisord</code>, export these and start the uploader with <code>pvctl console-sync --watch --pull-policies</code>. It posts the daemon\'s spooled sessions, events and signed receipts to this console and pulls the org\'s enabled policies as one bundle; this page flips to <b>connected</b> after the first upload.</p>' +
+            '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' + esc(consoleSyncEnv) + "</pre>" +
+            '<button type="button" class="btn" data-copy="' + esc(consoleSyncEnv) + '">⧉ Copy env block</button>' +
+            '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">The token is shown once, at create or rotate. Lost it? Rotate below — the old one stops working immediately.</span>' +
+          "</div>" +
+          policyBundleCard(d)) +
       '<div class="card" style="padding:0">' +
         '<div style="padding:12px 16px; border-bottom: 1px solid var(--border); display:flex; align-items:baseline; gap:8px;">' +
           '<h2 style="margin:0; font-size:var(--t-section); font-weight:600">Recent sessions</h2>' +
@@ -3371,6 +3481,52 @@
       // R126 F1 / R127 F1: shared helper handles the cascade
       // copy + 409 deployment_has_sealed_receipts force flow.
       openDeleteDeploymentModal(d.id, function () { navigate("#/deployments"); });
+    });
+    on("#depRemoveDemo", "click", function () { openRemoveDemoModal(function () { navigate("#/deployments"); }); });
+  }
+
+  // The policy bundle a daemon last applied (GET /api/v1/deployments →
+  // policyBundle), with the exact command that enables pulling.
+  function policyBundleCard(d) {
+    var b = d.policyBundle;
+    var how = '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 0">Policies reach this daemon through the uploader: run <code>pvctl console-sync --watch --pull-policies</code> with the env block above. It fetches <code>GET /api/v1/ingest/policies</code> (the org\'s enabled policies as one bundle, identified by an etag), applies it, and reports back what it enforces.</p>';
+    var body;
+    if (!b) {
+      body = '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0">' +
+        '<span class="pill neutral">not pulling</span> This daemon has not pulled a policy bundle yet, so it enforces only its local policy files.</p>' + how;
+    } else {
+      var unsupported = (b.unsupported || []);
+      body = '<dl class="kv kv-grid">' +
+        '<dt style="color:var(--fg-3)">Applied bundle</dt><dd class="mono" style="word-break:break-all">' + esc(b.etag) + (b.stale ? ' <span class="pill warn">older bundle</span>' : ' <span class="pill ok">current</span>') + "</dd>" +
+        '<dt style="color:var(--fg-3)">Applied</dt><dd>' + timeAgoCell(b.appliedAt) + "</dd>" +
+        '<dt style="color:var(--fg-3)">Policies enforced</dt><dd>' + esc(b.applied != null ? b.applied : "—") + "</dd>" +
+        (b.daemonVersion ? '<dt style="color:var(--fg-3)">Daemon</dt><dd class="mono">' + esc(b.daemonVersion) + "</dd>" : "") +
+        "</dl>" +
+        (b.stale ? '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 0">The org\'s policies changed since this daemon last pulled. It picks the new bundle up on its next <code>console-sync</code> pass.</p>' : "") +
+        (unsupported.length
+          ? '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 4px"><b>Not enforced by this daemon:</b></p><ul style="margin:0; padding-left:18px; font-size:var(--t-sec); color:var(--fg-2)">' +
+            unsupported.map(function (u) { return "<li><code>" + esc(u.id) + "</code> — " + esc(u.reason || "unsupported") + "</li>"; }).join("") + "</ul>"
+          : "") +
+        how;
+    }
+    return '<div class="card" style="margin-bottom:12px"><h2>Policy bundle</h2>' + body + "</div>";
+  }
+
+  // "Remove demo data": deletes the demo-attack deployment with its
+  // sessions and receipts (DELETE /api/v1/demo; the mock drops its
+  // staged sessions). Owner/admin only — the server refuses members.
+  function openRemoveDemoModal(onDone) {
+    if (typeof state.ds.removeDemoData !== "function") return;
+    confirmModal({
+      title: "Remove demo data?",
+      body: "This deletes the demo-attack deployment and every staged session, event and demo-signed receipt under it. Real deployments and sessions are untouched.",
+      confirmLabel: "Remove demo data", danger: true,
+      onConfirm: function () {
+        state.ds.removeDemoData().then(function (r) {
+          toast("Demo data removed" + (r && r.sessionsRemoved != null ? " (" + r.sessionsRemoved + " session" + (r.sessionsRemoved === 1 ? "" : "s") + ")" : ""));
+          if (onDone) onDone(); else render();
+        }).catch(function (err) { toast((err && err.message) || "Could not remove demo data", true); });
+      },
     });
   }
   // R127 F1: shared confirm-and-delete flow for a deployment.
@@ -3606,66 +3762,210 @@
   /* ── Policy creation. Template-driven: pick what to protect, tune
    *    one parameter, watch the DSL write itself. ───────────────── */
 
+  /* Policy kinds. The four enforceable ones carry a JSON spec that
+   * daemons apply verbatim (see pvValidatePolicySpec in datasource.js
+   * for the shapes — the same validation the server runs). guardrail
+   * and transform are free text: documentation and event attribution,
+   * not something a daemon can enforce. */
+  var POLICY_KIND_INFO = {
+    budget: { label: "Budget", enforceable: true, blurb: "Caps on tool calls, payout and tokens for a session." },
+    allowlist: { label: "Tool allowlist", enforceable: true, blurb: "Which tools an agent may (or may never) call." },
+    rate: { label: "Rate limit", enforceable: true, blurb: "Token velocity per principal inside a time window." },
+    schema: { label: "Tool schema", enforceable: true, blurb: "A JSON Schema every call of one tool must satisfy." },
+    guardrail: { label: "Guardrail", enforceable: false, blurb: "Documentation only — daemons do not enforce it." },
+    transform: { label: "Transform", enforceable: false, blurb: "Documentation only — daemons do not enforce it." },
+  };
+  function kindEnforceable(kind) {
+    return window.pvIsEnforceableKind ? window.pvIsEnforceableKind(kind) : !!(POLICY_KIND_INFO[kind] && POLICY_KIND_INFO[kind].enforceable);
+  }
+  function validateSpec(kind, scope, body) {
+    if (window.pvValidatePolicySpec) return window.pvValidatePolicySpec(kind, scope, body);
+    return { ok: true, spec: null };
+  }
+  function parseSpec(p) {
+    if (p && p.spec && typeof p.spec === "object") return p.spec;
+    if (!kindEnforceable(p && p.kind)) return null;
+    try { var v = JSON.parse(p.body || ""); return v && typeof v === "object" ? v : null; } catch (e) { return null; }
+  }
+  function toolList(v) {
+    return String(v || "").split(/[,\n]/).map(function (t) { return t.trim(); }).filter(Boolean);
+  }
+  function toolListText(arr) { return Array.isArray(arr) ? arr.join(", ") : ""; }
+
+  // Structured fields per enforceable kind. `specFields` renders the
+  // inputs prefilled from `spec`; `readSpecFields` turns them back into
+  // the JSON object (or an error) the body stores.
+  function specFields(kind, spec) {
+    spec = spec || {};
+    function num(id, label, value, hint, min) {
+      return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" type="number" inputmode="numeric" min="' + (min == null ? 0 : min) + '" step="1" value="' + (value == null ? "" : esc(String(value))) + '" />' + (hint ? '<div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">' + esc(hint) + "</div>" : "") + "</div>";
+    }
+    function text(id, label, value, hint, placeholder) {
+      return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" type="text" value="' + esc(value || "") + '" placeholder="' + esc(placeholder || "") + '" />' + (hint ? '<div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">' + esc(hint) + "</div>" : "") + "</div>";
+    }
+    if (kind === "budget") {
+      var perTool = spec.per_tool_max_calls ? Object.keys(spec.per_tool_max_calls).map(function (t) { return t + "=" + spec.per_tool_max_calls[t]; }).join("\n") : "";
+      return '<div class="spec-grid">' +
+        num("sf_payout", "Max payout per session (USD)", spec.max_payout_usd_micros != null ? spec.max_payout_usd_micros / 1e6 : "", "Stored as max_payout_usd_micros. Leave empty for no payout cap.") +
+        num("sf_calls", "Max tool calls per session", spec.max_total_tool_calls, "Leave empty for no call cap.") +
+        num("sf_tokens", "Max tokens per session", spec.max_tokens, "Prompt + completion tokens. Leave empty for no token cap.") +
+        '<div class="field"><label for="sf_pertool">Per-tool call caps</label><textarea id="sf_pertool" rows="3" spellcheck="false" placeholder="create_payment=1&#10;http_request=20">' + esc(perTool) + '</textarea><div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">One tool=count per line; optional.</div></div>' +
+        "</div>";
+    }
+    if (kind === "allowlist") {
+      return text("sf_allow", "Allow only these tools", toolListText(spec.allow_only), "Comma-separated tool names. Every other tool is blocked.", "search_inventory, lookup_vendor") +
+        text("sf_deny", "Always deny these tools", toolListText(spec.deny_tools), "Comma-separated; optional. Denied even if allowed above.", "delete_records");
+    }
+    if (kind === "rate") {
+      return '<div class="spec-grid">' +
+        num("sf_rate_tokens", "Max tokens per window", spec.max_tokens_per_window, "Per principal (agent identity).", 1) +
+        num("sf_rate_window", "Window (seconds)", spec.window_s != null ? spec.window_s : 3600, "3600 = one hour.", 1) +
+        "</div>";
+    }
+    if (kind === "schema") {
+      var js = spec.json_schema ? JSON.stringify(spec.json_schema, null, 2) : "";
+      return text("sf_tool", "Tool", spec.tool, "Every call of this tool must match the schema below.", "create_purchase_order") +
+        '<div class="field"><label for="sf_schema">JSON Schema for the call arguments</label><textarea id="sf_schema" rows="8" spellcheck="false" style="font-family:var(--mono, ui-monospace, monospace);font-size:12.5px">' + esc(js) + "</textarea></div>";
+    }
+    return "";
+  }
+  function readSpecFields(kind, root) {
+    function val(id) { var el = root.querySelector("#" + id); return el ? el.value : ""; }
+    function intOrNull(id, label, min) {
+      var raw = val(id).trim();
+      if (raw === "") return { v: null };
+      var n = Number(raw);
+      if (!isFinite(n) || Math.floor(n) !== n || n < (min == null ? 0 : min)) return { err: label + " must be a whole number" + (min ? " of at least " + min : "") + "." };
+      return { v: n };
+    }
+    if (kind === "budget") {
+      var spec = {};
+      var payoutRaw = val("sf_payout").trim();
+      if (payoutRaw !== "") {
+        var usd = Number(payoutRaw);
+        if (!isFinite(usd) || usd < 0) return { error: "Max payout must be a non-negative amount in USD." };
+        spec.max_payout_usd_micros = Math.round(usd * 1e6);
+      }
+      var c = intOrNull("sf_calls", "Max tool calls"); if (c.err) return { error: c.err }; if (c.v != null) spec.max_total_tool_calls = c.v;
+      var t = intOrNull("sf_tokens", "Max tokens"); if (t.err) return { error: t.err }; if (t.v != null) spec.max_tokens = t.v;
+      var lines = val("sf_pertool").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+      if (lines.length) {
+        spec.per_tool_max_calls = {};
+        for (var i = 0; i < lines.length; i++) {
+          var m = /^([^=\s]+)\s*=\s*(\d+)$/.exec(lines[i]);
+          if (!m) return { error: 'Per-tool caps: "' + lines[i] + '" is not tool=count.' };
+          spec.per_tool_max_calls[m[1]] = parseInt(m[2], 10);
+        }
+      }
+      return { spec: spec };
+    }
+    if (kind === "allowlist") {
+      var out = {};
+      var allow = toolList(val("sf_allow")); if (allow.length) out.allow_only = allow;
+      var deny = toolList(val("sf_deny")); if (deny.length) out.deny_tools = deny;
+      return { spec: out };
+    }
+    if (kind === "rate") {
+      var r1 = intOrNull("sf_rate_tokens", "Max tokens per window", 1); if (r1.err) return { error: r1.err };
+      var r2 = intOrNull("sf_rate_window", "Window", 1); if (r2.err) return { error: r2.err };
+      return { spec: { max_tokens_per_window: r1.v == null ? undefined : r1.v, window_s: r2.v == null ? undefined : r2.v } };
+    }
+    if (kind === "schema") {
+      var tool = val("sf_tool").trim();
+      var schemaText = val("sf_schema").trim();
+      var schema;
+      if (schemaText) {
+        try { schema = JSON.parse(schemaText); } catch (e) { return { error: "JSON Schema is not valid JSON: " + e.message }; }
+      }
+      return { spec: { tool: tool || undefined, json_schema: schema } };
+    }
+    return { spec: null };
+  }
+  function specBodyText(spec) { return JSON.stringify(spec, null, 2); }
+
+  /* Templates: pick what to protect, tune one parameter, and the JSON
+   * spec (or guardrail text) writes itself. */
   var POLICY_TEMPLATES = [
     {
       id: "spend_cap",
       label: "💸 Spend cap",
-      hint: "Block any payment above a dollar limit",
+      hint: "Cap the payout a single session may authorize",
       kind: "budget",
-      scope: "tool.create_payment",
-      param: { label: "Maximum per payment (USD)", type: "number", value: "500", min: 1 },
+      scope: "tool.*",
+      param: { label: "Maximum payout per session (USD)", type: "number", value: "500", min: 1 },
       build: function (v) {
         var n = Math.max(1, parseInt(v, 10) || 500);
         return {
-          name: "finance.payment_cap_usd:" + n,
-          description: "Block any single payment above $" + n.toLocaleString() + " USD.",
-          body: [
-            'policy "finance.payment_cap_usd:' + n + '" {',
-            '  applies_to = tool("create_payment")',
-            "  when { arg.amount_usd > " + n + " }",
-            "  effect = block",
-            '  reason = "Payment of {{arg.amount_usd}} USD exceeds the $' + n + ' cap."',
-            "}",
-          ].join("\n"),
+          name: "finance.payout_cap_usd:" + n,
+          description: "Block any tool call that would push a session's payout above $" + n.toLocaleString() + " USD.",
+          spec: { max_payout_usd_micros: n * 1000000 },
         };
       },
     },
     {
       id: "vendor_allowlist",
       label: "🏷 Vendor allowlist",
-      hint: "Only named vendors can receive orders",
-      kind: "allowlist",
+      hint: "Only named vendors can receive purchase orders",
+      kind: "schema",
       scope: "tool.create_purchase_order",
       param: { label: "Allowed vendors (comma-separated)", type: "text", value: "Contoso, Fabrikam" },
       build: function (v) {
-        var vendors = String(v || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        var vendors = toolList(v).map(function (x) { return x.replace(/["\\]/g, ""); });
         if (!vendors.length) vendors = ["Contoso"];
-        var list = vendors.map(function (s) { return '"' + s.replace(/["\\]/g, "") + '"'; }).join(", ");
         return {
           name: "procurement.vendors:" + vendors.length,
           description: "Purchase orders may only go to: " + vendors.join(", ") + ".",
-          body: [
-            'policy "procurement.vendors:' + vendors.length + '" {',
-            '  applies_to = tool("create_purchase_order")',
-            "  when { arg.vendor not in [" + list + "] }",
-            "  effect = block",
-            '  reason = "Vendor {{arg.vendor}} is not on the allowlist."',
-            "}",
-          ].join("\n"),
+          spec: {
+            tool: "create_purchase_order",
+            json_schema: { type: "object", required: ["vendor"], properties: { vendor: { type: "string", enum: vendors } } },
+          },
+        };
+      },
+    },
+    {
+      id: "tool_allowlist",
+      label: "🧰 Tool allowlist",
+      hint: "Agents may only call the tools you name",
+      kind: "allowlist",
+      scope: "tool.*",
+      param: { label: "Allowed tools (comma-separated)", type: "text", value: "search_inventory, lookup_vendor, create_purchase_order" },
+      build: function (v) {
+        var tools = toolList(v).filter(function (t) { return /^[A-Za-z0-9_.:\/-]{1,80}$/.test(t); });
+        if (!tools.length) tools = ["search_inventory"];
+        return {
+          name: "runtime.tool_allowlist:" + tools.length,
+          description: "Agents may only call: " + tools.join(", ") + ". Every other tool is blocked.",
+          spec: { allow_only: tools },
+        };
+      },
+    },
+    {
+      id: "token_rate",
+      label: "⏱ Token rate limit",
+      hint: "Slow a runaway agent down",
+      kind: "rate",
+      scope: "llm.request",
+      param: { label: "Maximum tokens per hour, per principal", type: "number", value: "200000", min: 1 },
+      build: function (v) {
+        var n = Math.max(1, parseInt(v, 10) || 200000);
+        return {
+          name: "llm.token_velocity:" + n,
+          description: "No principal may push more than " + n.toLocaleString() + " tokens through the model per hour.",
+          spec: { max_tokens_per_window: n, window_s: 3600 },
         };
       },
     },
     {
       id: "pii_guard",
       label: "🔒 PII egress guard",
-      hint: "Stop SSNs and card numbers leaving via the LLM",
+      hint: "Document the PII rule your daemon's local guard enforces",
       kind: "guardrail",
       scope: "llm.egress",
       param: null,
       build: function () {
         return {
           name: "privacy.pii_egress",
-          description: "Block LLM responses that contain SSNs or payment card numbers.",
+          description: "Block LLM responses that contain SSNs or payment card numbers (documentation of the local guard; daemons attribute hits to this name).",
           body: [
             'policy "privacy.pii_egress" {',
             "  applies_to = llm.egress",
@@ -3679,6 +3979,15 @@
     },
   ];
 
+  // Human summary of how daemons treat a policy of this kind.
+  function kindNote(kind) {
+    var info = POLICY_KIND_INFO[kind];
+    if (!info) return "";
+    return info.enforceable
+      ? "Daemons that pull policies (pvctl console-sync --watch --pull-policies) enforce this spec exactly as shown."
+      : "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
+  }
+
   function openCreatePolicyModal() {
     if (document.body.classList.contains("locked")) return;
     var chips = POLICY_TEMPLATES.map(function (t, i) {
@@ -3689,12 +3998,17 @@
       '<div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="polTitle">' +
         '<div class="modal modal-wide">' +
           '<h2 id="polTitle">New policy</h2>' +
-          '<p class="sub">Start from a template — the rule writes itself and enforces on the next tool call. You can refine it any time.</p>' +
+          '<p class="sub">Start from a template — the spec writes itself and every daemon that pulls policies enforces it on its next sync. You can refine it any time.</p>' +
           '<form id="polForm">' +
             '<div class="tpl-row" role="radiogroup" aria-label="Policy template">' + chips + "</div>" +
             '<div class="field" id="polParamField"></div>' +
-            '<div class="field"><label for="polPreview">Definition (generated)</label>' +
+            '<div class="spec-grid">' +
+              '<div class="field"><label for="polName">Name</label><input id="polName" type="text" required maxlength="80" /></div>' +
+              '<div class="field"><label for="polScope">Scope</label><input id="polScope" type="text" required maxlength="120" /><div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">tool.* / tool.&lt;name&gt; for tool rules, llm.request for model traffic</div></div>' +
+            "</div>" +
+            '<div class="field"><label for="polPreview">Definition (generated) <span id="polKindNote" style="font-weight:400; color:var(--fg-3)"></span></label>' +
               '<pre class="policy-body policy-preview" id="polPreview" tabindex="0" aria-live="polite"></pre></div>' +
+            '<p id="pol_err" style="display:none;color:var(--danger, #e5484d);font-size:12.5px;margin:0 0 8px"></p>' +
             '<div class="actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn accent" type="submit">Create &amp; enable</button></div>' +
           "</form>" +
         "</div>" +
@@ -3714,6 +4028,7 @@
       if (e.target === backdrop || e.target.hasAttribute("data-close")) close();
     });
 
+    var nameTouched = false;
     function currentTemplate() {
       var v = backdrop.querySelector('input[name="polTpl"]:checked').value;
       return POLICY_TEMPLATES.find(function (t) { return t.id === v; });
@@ -3732,40 +4047,57 @@
         ' value="' + esc(t.param.value) + '" required />';
       f.querySelector("#polParam").addEventListener("input", refresh);
     }
-    function refresh() {
+    function built() {
       var t = currentTemplate();
-      var built = t.build(paramValue());
-      backdrop.querySelector("#polPreview").innerHTML = syntaxPolicy(built.body);
+      var b = t.build(paramValue());
+      return { template: t, name: b.name, description: b.description, body: b.spec ? specBodyText(b.spec) : (b.body || "") };
+    }
+    function refresh() {
+      var b = built();
+      backdrop.querySelector("#polPreview").innerHTML = syntaxPolicy(b.body);
+      backdrop.querySelector("#polKindNote").textContent = "· " + (POLICY_KIND_INFO[b.template.kind] ? POLICY_KIND_INFO[b.template.kind].label : b.template.kind) + (kindEnforceable(b.template.kind) ? "" : " — not enforceable by daemons");
+      if (!nameTouched) backdrop.querySelector("#polName").value = b.name;
+    }
+    function resetScope() {
+      backdrop.querySelector("#polScope").value = currentTemplate().scope;
     }
     $$('input[name="polTpl"]', backdrop).forEach(function (r) {
-      r.addEventListener("change", function () { renderParam(currentTemplate()); refresh(); });
+      r.addEventListener("change", function () { nameTouched = false; renderParam(currentTemplate()); resetScope(); refresh(); });
     });
+    backdrop.querySelector("#polName").addEventListener("input", function () { nameTouched = true; });
     renderParam(currentTemplate());
+    resetScope();
     refresh();
 
     backdrop.querySelector("#polForm").addEventListener("submit", function (e) {
       e.preventDefault();
+      var errEl = backdrop.querySelector("#pol_err");
+      errEl.style.display = "none";
+      var b = built();
+      var name = backdrop.querySelector("#polName").value.trim();
+      var scope = backdrop.querySelector("#polScope").value.trim();
+      if (!name) { errEl.textContent = "Name can't be empty."; errEl.style.display = "block"; return; }
+      if (!scope) { errEl.textContent = "Scope can't be empty."; errEl.style.display = "block"; return; }
+      // Same validation the server runs, before the request leaves.
+      var v = validateSpec(b.template.kind, scope, b.body);
+      if (!v.ok) { errEl.textContent = v.detail; errEl.style.display = "block"; return; }
       var btn = e.target.querySelector('button[type="submit"]');
       btn.disabled = true;
-      var t = currentTemplate();
-      var built = t.build(paramValue());
       state.ds.createPolicy({
-        name: built.name, kind: t.kind, scope: t.scope,
-        description: built.description, body: built.body,
+        name: name, kind: b.template.kind, scope: scope,
+        description: b.description, body: b.body,
       }).then(function (p) {
         close();
-        // Server-side policy CRUD persists to the org (POST
-        // /api/v1/policies — R232 F3 resolved); what is NOT wired yet
-        // is daemon-side enforcement sync — the daemon still enforces
-        // its local policy files. Keep that distinction honest.
-        var enforcedMsg = state.ds.mode === "mock"
-          ? "Policy created and enforcing — the daemon picks it up on its next sync."
-          : "Policy saved to your org. Note: daemons enforce their local policy files — auto-sync from the console is not wired yet.";
-        toastLink(enforcedMsg, "#/policies/" + p.id, "View policy →");
+        var msg = kindEnforceable(p.kind)
+          ? "Policy created. Daemons pull it on their next sync (pvctl console-sync --watch --pull-policies)."
+          : "Policy saved. " + p.kind + " policies document intent — daemons do not enforce them.";
+        toastLink(msg, "#/policies/" + p.id, "View policy →");
         navigate("#/policies/" + p.id);
       }).catch(function (err) {
         btn.disabled = false;
-        toast(err.message || "Create failed", true);
+        var msg = (err && err.data && err.data.specError) || (err && err.message) || "Create failed";
+        if (err && err.errorCode === "policy_name_in_use") msg = "Another policy already has that name.";
+        errEl.textContent = msg; errEl.style.display = "block";
       });
     });
   }
@@ -3779,6 +4111,31 @@
     if (e.target.closest("#addDep, #addDep2")) openCreateDeploymentModal();
   });
 
+  // Enforcement badge: how many of the org's daemons run the bundle
+  // that contains this policy. `deps` (listDeployments) names the
+  // stale ones; the counts come from the policy's `enforcement`.
+  function policyEnforcementBadge(p, deps) {
+    if (!kindEnforceable(p.kind) || p.enforceable === false) {
+      return '<span class="pill neutral enf" title="Daemons cannot enforce ' + esc(p.kind) + ' policies; this entry documents the rule and attributes hits.">Not enforceable by daemons (' + esc(p.kind) + ")</span>";
+    }
+    var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
+    if (!p.enabled) return '<span class="pill neutral enf" title="Disabled policies are left out of the bundle daemons pull.">Disabled — not in the bundle</span>';
+    if (!e.deployments) return '<span class="pill neutral enf" title="Register a deployment and start pvctl console-sync --watch --pull-policies.">No daemons yet</span>';
+    var staleNames = (deps || []).filter(function (d) { return !d.isDemo && d.policyBundle && d.policyBundle.stale; }).map(function (d) { return d.name; });
+    var never = e.deployments - e.applied - e.stale;
+    var cls = e.applied === e.deployments ? "ok" : (e.applied > 0 ? "warn" : "neutral");
+    var html = '<span class="pill ' + cls + ' enf" title="' + esc(never > 0 ? never + " daemon" + (never === 1 ? " has" : "s have") + " not pulled a bundle yet (pvctl console-sync --watch --pull-policies)" : "Every daemon runs the current bundle") + '">' +
+      esc("Enforced by " + e.applied + " of " + e.deployments + " daemon" + (e.deployments === 1 ? "" : "s")) + "</span>";
+    if (e.stale > 0) {
+      var staleLabel = staleNames.length === 1
+        ? "Daemon '" + staleNames[0] + "' has an older bundle"
+        : (staleNames.length || e.stale) + " daemons have an older bundle";
+      html += ' <span class="pill warn enf" title="They pick the current bundle up on their next console-sync pass.">' + esc(staleLabel) + "</span>";
+    }
+    if (e.unsupported > 0) html += ' <span class="pill err enf">' + e.unsupported + " daemon" + (e.unsupported === 1 ? " reports" : "s report") + " it unsupported</span>";
+    return html;
+  }
+
   async function renderPolicies(main) {
     rememberListUrl("policies");
     // Same client-side role gate as SETTINGS_TABS (R90 F3): the API
@@ -3787,14 +4144,17 @@
     var polRole = (state.session && state.session.org && state.session.org.role) || "member";
     var polCanWrite = polRole !== "member";
     var addPolBtn = polCanWrite ? '<button class="btn accent" id="addPol">+ New policy</button>' : "";
-    main.innerHTML = pageHeader("Policies", "Rules the daemon enforces before any tool call or LLM egress.", addPolBtn) + loadingBlock("table");
-    var pols;
-    try { pols = await state.ds.listPolicies(); } catch (e) { return renderError(main, e); }
+    main.innerHTML = pageHeader("Policies", "Rules your daemons pull and enforce before any tool call or LLM egress.", addPolBtn) + loadingBlock("table");
+    var pols, deps = [];
+    try {
+      pols = await state.ds.listPolicies();
+      try { deps = await state.ds.listDeployments(); } catch (e) { deps = []; }
+    } catch (e) { return renderError(main, e); }
     if (!pols.length) {
       main.innerHTML = pageHeader("Policies", "0 policies · none enabled", addPolBtn) +
         (polCanWrite
-          ? emptyState("No policies yet", "Write your first policy to start blocking risky prompts, tool calls, or PII egress. The daemon evaluates policies before any request reaches your model.", "+ Write a policy", null, "addPolCta")
-          : emptyState("No policies yet", "An owner or admin can write policies that block risky prompts, tool calls, or PII egress before any request reaches your model.", null, null, null));
+          ? emptyState("No policies yet", "Write your first policy to start blocking risky tool calls, runaway spend, or off-list vendors. Daemons pull the enabled policies as one bundle and enforce them before any request reaches your model.", "+ Write a policy", null, "addPolCta")
+          : emptyState("No policies yet", "An owner or admin can write policies that block risky tool calls, runaway spend, or off-list vendors before any request reaches your model.", null, null, null));
       // #addPol / #addPolCta are handled by the delegated listener above.
       return;
     }
@@ -3805,16 +4165,21 @@
         : '<span class="pill ' + (p.enabled ? "ok" : "neutral") + '">' + (p.enabled ? "on" : "off") + "</span>";
       return '<tr data-clickable data-id="' + esc(p.id) + '" data-nav="#/policies/" tabindex="0">' +
         '<td class="policy-row"><div class="name">' + esc(p.name) + '</div><div class="kind">' + esc(p.kind) + " · " + esc(p.scope) + "</div></td>" +
-        '<td title="' + esc(p.description) + '">' + esc(p.description) + "</td>" +
+        '<td title="' + esc(p.description) + '">' + esc(p.description) + '<div class="enf-row">' + policyEnforcementBadge(p, deps) + "</div></td>" +
         '<td class="num tabular">' + esc(p.hits24h) + "</td>" +
         '<td class="num tabular">' + (p.blocks24h > 0 ? '<span style="color: var(--danger-solid); font-weight:500">' + esc(p.blocks24h) + "</span>" : esc(p.blocks24h)) + "</td>" +
         '<td style="color:var(--fg-2)">' + timeAgoCell(p.updatedAt) + "</td>" +
         "<td>" + switchCell + "</td>" +
         "</tr>";
     }).join("");
-    main.innerHTML = pageHeader("Policies", pols.length + " policies · " + pols.filter(function (p) { return p.enabled; }).length + " enabled", addPolBtn) +
+    var realDeps = deps.filter(function (d) { return !d.isDemo; });
+    var pulling = realDeps.filter(function (d) { return d.policyBundle; }).length;
+    var fleetNote = realDeps.length
+      ? " · " + pulling + " of " + realDeps.length + " daemon" + (realDeps.length === 1 ? "" : "s") + " pulling the bundle"
+      : "";
+    main.innerHTML = pageHeader("Policies", pols.length + " policies · " + pols.filter(function (p) { return p.enabled; }).length + " enabled" + fleetNote, addPolBtn) +
       '<div class="card" style="padding:0"><div class="table-wrap"><table>' +
-        "<thead><tr><th>Policy</th><th>Description</th><th class=\"num\">Hits 24h</th><th class=\"num\">Blocks</th><th>Updated</th><th class=\"act-1\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
+        "<thead><tr><th>Policy</th><th>Description &amp; enforcement</th><th class=\"num\">Hits 24h</th><th class=\"num\">Blocks</th><th>Updated</th><th class=\"act-1\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
         "<tbody>" + rows + "</tbody></table></div></div>";
     var tbody = main.querySelector("tbody");
     tbody.addEventListener("click", function (e) {
@@ -3842,8 +4207,9 @@
 
   async function renderPolicyDetail(main, id) {
     main.innerHTML = pageHeader("Policy", "", '<a href="' + esc(backToListUrl("policies")) + '" class="btn">← All policies</a>') + loadingBlock("stats");
-    var p, fired = [];
+    var p, fired = [], deps = [];
     try { p = await state.ds.getPolicy(id); } catch (e) { return renderError(main, e); }
+    try { deps = await state.ds.listDeployments(); } catch (e) { deps = []; }
     // Close the loop policy → session → receipt: list the sessions
     // this policy actually fired on, so "plain rules" lead straight
     // to the evidence.
@@ -3868,20 +4234,32 @@
     // 403 (same gate as the list page + SETTINGS_TABS R90 F3).
     var polDetailRole = (state.session && state.session.org && state.session.org.role) || "member";
     var headerSwitch = polDetailRole !== "member"
-      ? ' <button class="btn" id="polEditBtn" title="Edit the name, description, or rule body">Edit</button>' +
+      ? ' <button class="btn" id="polEditBtn" title="Edit the name, description, scope or spec">Edit</button>' +
         ' <button class="btn danger" id="polDeleteBtn" title="Delete this policy — its hit history goes with it">Delete</button>' +
         ' <button class="switch ' + switchCls + '" id="polSwitch" title="Toggle enabled" aria-label="Toggle policy enabled" role="switch" aria-checked="' + (p.enabled ? "true" : "false") + '"></button>'
       : "";
+    var enforceable = kindEnforceable(p.kind) && p.enforceable !== false;
+    var spec = parseSpec(p);
+    var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
     main.innerHTML =
       pageHeader(p.name, p.kind + " · " + p.scope, '<a href="' + esc(backToListUrl("policies")) + '" class="btn">← All policies</a>' + headerSwitch) +
       '<div class="dep-summary">' +
         depCell("Status", p.enabled ? '<span class="pill ok status-dot">enabled</span>' : '<span class="pill neutral">disabled</span>', false, true) +
+        depCell("Enforcement", policyEnforcementBadge(p, deps), false, true) +
         depCell("Hits (24h)", p.hits24h.toLocaleString()) +
         depCell("Blocks (24h)", blocks24 > 0 ? '<span style="color: var(--danger-solid)">' + blocks24 + "</span>" : blocks24, false, true) +
         depCell("Updated", timeAgoCell(p.updatedAt), false, true) +
       "</div>" +
       '<div class="card"><h2>Description</h2><p style="margin:0;color:var(--fg-2);font-size:var(--t-body)">' + esc(p.description) + '</p></div>' +
-      '<div class="card" style="margin-top:12px"><h2>Definition</h2><pre class="policy-body">' + syntaxPolicy(p.body) + "</pre></div>" +
+      '<div class="card" style="margin-top:12px"><h2>' + (enforceable ? "Spec daemons enforce" : "Definition") + '</h2>' +
+        '<p style="margin:0 0 10px;color:var(--fg-2);font-size:var(--t-sec)">' + esc(kindNote(p.kind)) +
+        (enforceable && !spec ? " This body is not a valid " + esc(p.kind) + " spec — edit it so daemons can apply it." : "") + "</p>" +
+        '<pre class="policy-body">' + syntaxPolicy(spec ? specBodyText(spec) : p.body) + "</pre>" +
+        (enforceable && e.deployments
+          ? '<p style="margin:10px 0 0;color:var(--fg-3);font-size:11.5px">Bundle status per daemon: ' +
+            deps.filter(function (d) { return !d.isDemo; }).map(function (d) { return '<a href="#/deployments/' + esc(d.id) + '">' + esc(d.name) + "</a> " + bundlePill(d); }).join(" · ") + "</p>"
+          : "") +
+      "</div>" +
       (fired.length
         ? '<div class="card" style="margin-top:12px; padding:0">' +
             '<div style="padding:12px 16px; border-bottom: 1px solid var(--border); display:flex; align-items:baseline; gap:8px;">' +
@@ -3907,7 +4285,7 @@
     on("#polDeleteBtn", "click", function () {
       confirmModal({
         title: "Delete this policy?",
-        body: 'The rule "' + p.name + '" stops being distributed to daemons on their next sync, and its hit history disappears with it. Prefer the toggle if you just want it off for a while.',
+        body: 'The rule "' + p.name + '" leaves the bundle daemons pull on their next sync, and its hit history disappears with it. Prefer the toggle if you just want it off for a while.',
         confirmLabel: "Delete policy",
         danger: true,
         onConfirm: function () {
@@ -3929,14 +4307,22 @@
   // sessions-fired history that hang off the policy id).
   function openEditPolicyModal(p, onSaved) {
     if (document.body.classList.contains("locked")) return;
+    var enforceable = kindEnforceable(p.kind);
+    var spec = parseSpec(p) || {};
     var backdrop = h(
       '<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal modal-wide">' +
         "<h2>Edit policy</h2>" +
-        '<p class="sub">Changes apply on the daemon\'s next policy sync. The policy ID and its hit history stay put.</p>' +
+        '<p class="sub">' + (enforceable ? "Changes reach every daemon on its next policy pull. The policy ID and its hit history stay put." : "This " + esc(p.kind) + " policy is documentation: daemons do not enforce it, but hits they attribute to its name keep counting here.") + "</p>" +
         '<form id="peForm">' +
-          '<div class="field"><label for="pe_name">Name</label><input id="pe_name" type="text" required maxlength="80" value="' + esc(p.name) + '"></div>' +
+          '<div class="spec-grid">' +
+            '<div class="field"><label for="pe_name">Name</label><input id="pe_name" type="text" required maxlength="80" value="' + esc(p.name) + '"></div>' +
+            '<div class="field"><label for="pe_scope">Scope</label><input id="pe_scope" type="text" required maxlength="120" value="' + esc(p.scope || "") + '"></div>' +
+          "</div>" +
           '<div class="field"><label for="pe_desc">Description</label><input id="pe_desc" type="text" maxlength="500" value="' + esc(p.description || "") + '"></div>' +
-          '<div class="field"><label for="pe_body">Definition</label><textarea id="pe_body" rows="8" spellcheck="false" style="font-family:var(--mono, ui-monospace, monospace);font-size:12.5px" maxlength="16384">' + esc(p.body || "") + '</textarea></div>' +
+          (enforceable
+            ? '<div id="pe_spec">' + specFields(p.kind, spec) + "</div>" +
+              '<div class="field"><label>Spec daemons will receive</label><pre class="policy-body policy-preview" id="pe_preview" aria-live="polite"></pre></div>'
+            : '<div class="field"><label for="pe_body">Definition</label><textarea id="pe_body" rows="8" spellcheck="false" style="font-family:var(--mono, ui-monospace, monospace);font-size:12.5px" maxlength="16384">' + esc(p.body || "") + "</textarea></div>") +
           '<p id="pe_err" style="display:none;color:var(--danger, #e5484d);font-size:12.5px;margin:0 0 8px"></p>' +
           '<div class="actions"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn accent">Save changes</button></div>' +
         "</form>" +
@@ -3953,6 +4339,22 @@
       if (handled) return;
       if (e.target === backdrop || e.target.hasAttribute("data-close")) close();
     });
+    function currentBody() {
+      if (!enforceable) return { body: backdrop.querySelector("#pe_body").value };
+      var r = readSpecFields(p.kind, backdrop);
+      if (r.error) return { error: r.error };
+      return { body: specBodyText(r.spec) };
+    }
+    function refreshPreview() {
+      if (!enforceable) return;
+      var cur = currentBody();
+      var pre = backdrop.querySelector("#pe_preview");
+      pre.innerHTML = cur.error ? '<span style="color:var(--danger, #e5484d)">' + esc(cur.error) + "</span>" : syntaxPolicy(cur.body);
+    }
+    if (enforceable) {
+      $$("#pe_spec input, #pe_spec textarea", backdrop).forEach(function (el) { el.addEventListener("input", refreshPreview); });
+      refreshPreview();
+    }
     backdrop.querySelector("#peForm").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (handled) return;
@@ -3960,11 +4362,19 @@
       errEl.style.display = "none";
       var fields = {};
       var name = backdrop.querySelector("#pe_name").value.trim();
+      var scope = backdrop.querySelector("#pe_scope").value.trim();
       var desc = backdrop.querySelector("#pe_desc").value;
-      var bodyText = backdrop.querySelector("#pe_body").value;
       if (!name) { errEl.textContent = "Name can't be empty."; errEl.style.display = "block"; return; }
+      if (!scope) { errEl.textContent = "Scope can't be empty."; errEl.style.display = "block"; return; }
+      var cur = currentBody();
+      if (cur.error) { errEl.textContent = cur.error; errEl.style.display = "block"; return; }
+      var bodyText = cur.body;
       if (!bodyText.trim()) { errEl.textContent = "The definition can't be empty — disable the policy instead if you want it off."; errEl.style.display = "block"; return; }
+      // Same validation the server runs, before the request leaves.
+      var v = validateSpec(p.kind, scope, bodyText);
+      if (!v.ok) { errEl.textContent = v.detail; errEl.style.display = "block"; return; }
       if (name !== p.name) fields.name = name;
+      if (scope !== (p.scope || "")) fields.scope = scope;
       if (desc !== (p.description || "")) fields.description = desc;
       if (bodyText !== (p.body || "")) fields.body = bodyText;
       if (!Object.keys(fields).length) { close(); toast("No changes"); return; }
@@ -3973,14 +4383,14 @@
       try {
         await state.ds.updatePolicy(p.id, fields);
         close();
-        toast("Policy updated — daemons pick it up on their next sync");
+        toast(enforceable ? "Policy updated — daemons pick it up on their next pull" : "Policy updated");
         if (onSaved) onSaved();
       } catch (e2) {
         btn.disabled = false;
-        var msg = e2.message || "Save failed";
+        var msg = (e2.data && e2.data.specError) || e2.message || "Save failed";
         if (e2.errorCode === "policy_name_in_use" || msg === "policy_name_in_use") msg = "Another policy already has that name.";
         else if (e2.status === 403) msg = "Members can't edit policies — ask an owner or admin.";
-        else if (e2.errorCode === "invalid_input" || msg === "invalid_input") msg = "Name must be 1-80 characters; definition up to 16 KB.";
+        else if (!(e2.data && e2.data.specError) && (e2.errorCode === "invalid_input" || msg === "invalid_input")) msg = "Name must be 1-80 characters; definition up to 16 KB.";
         errEl.textContent = msg;
         errEl.style.display = "block";
       }
@@ -6438,7 +6848,7 @@
       if (window.PVTour && !freshNow) actions.unshift({ g: "Actions", label: "See the full flow", desc: "Guided tour of the money story", run: function () { window.PVTour.start(); } });
       if (typeof state.ds.simulateAttack === "function" && attackReady()) actions.push({ g: "Actions", label: "Simulate an agent attack", desc: "Stage a live blocked payment", run: function () { navigate("#/overview"); setTimeout(runAttackDemo, 250); } });
     }
-    actions.push({ g: "Actions", label: "New policy", desc: "Create a spend cap, vendor allowlist, or PII guard", run: function () { navigate("#/policies"); setTimeout(openCreatePolicyModal, 250); } });
+    actions.push({ g: "Actions", label: "New policy", desc: "Create a spend cap, tool allowlist, vendor schema, rate limit or PII guard", run: function () { navigate("#/policies"); setTimeout(openCreatePolicyModal, 250); } });
     actions.push({ g: "Actions", label: "Keyboard shortcuts", desc: "Everything the keyboard can do", kbd: "?", run: function () { setTimeout(openShortcutSheet, 250); } });
     if (state.ds.mode === "mock" && freshT0() == null) {
       // Hidden in fresh mode with the tour: fresh listSessions ignores

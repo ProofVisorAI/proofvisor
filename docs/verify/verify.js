@@ -255,6 +255,102 @@
       "573c8f249012fbb08b3d79973411bb93141f32719c86ada25306fde5e59e8d57",
     ]);
 
+    // The published trust-anchor list: /.well-known/receipt-keys.json
+    //   {"version":1,"updated":"<date>","keys":[{"key_id","public_key_hex",
+    //    "public_key_b64","label","trust":"sample"|"demo"}]}
+    // Same origin as this page (allowed by connect-src 'self'), so a
+    // key rotation is one JSON edit instead of a script release. The
+    // two values above stay as the fallback when the fetch fails
+    // (offline use, a stale CDN, a self-hosted copy without the file).
+    // The Set objects are kept — the CI drill mutates the exposed one.
+    const keysReady = (async () => {
+      try {
+        const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 4000) : null;
+        const res = await fetch("../.well-known/receipt-keys.json", { cache: "no-cache", signal: ctrl ? ctrl.signal : undefined });
+        if (timer) clearTimeout(timer);
+        if (!res.ok) return "fallback";
+        const doc = await res.json();
+        if (!doc || doc.version !== 1 || !Array.isArray(doc.keys)) return "fallback";
+        const valid = doc.keys.filter((k) => k && typeof k.public_key_hex === "string" && /^[0-9a-fA-F]{64}$/.test(k.public_key_hex) && (k.trust === "sample" || k.trust === "demo"));
+        if (!valid.length) return "fallback";
+        TRUSTED_RECEIPT_KEYS.clear();
+        DEMO_RECEIPT_KEYS.clear();
+        for (const k of valid) {
+          const hex = k.public_key_hex.toLowerCase();
+          TRUSTED_RECEIPT_KEYS.add(hex);
+          if (k.trust === "demo") DEMO_RECEIPT_KEYS.add(hex);
+        }
+        return "published";
+      } catch (e) {
+        return "fallback";
+      }
+    })();
+
+    // ── Deployment key pinning ─────────────────────────────────────
+    // A verify link the console shares carries `&deployment=<id>` and,
+    // in live mode, `&api=<origin>`. The console pins each deployment's
+    // signing key the first time its daemon checks in and publishes it
+    // at GET /api/v1/public/receipt-keys/:deploymentId. Comparing the
+    // receipt's embedded key with that pinned key turns "internally
+    // consistent" into "signed by the key the console pinned for
+    // deployment X". Only API origins this page trusts are consulted:
+    // the hosted API, the origin named by <meta name="pv-api-origin">,
+    // and this page's own origin (the self-hosted docs+API layout).
+    const HOSTED_API_ORIGIN = "https://api.proofvisor.com";
+    function allowedApiOrigins() {
+      const out = new Set([HOSTED_API_ORIGIN, location.origin]);
+      const meta = document.querySelector('meta[name="pv-api-origin"]');
+      if (meta && meta.content) {
+        try { out.add(new URL(meta.content).origin); } catch (e) { /* ignore a bad meta */ }
+      }
+      return out;
+    }
+    const pinnedCache = new Map();
+    async function lookupPinnedKey(api, deployment) {
+      if (!api || !deployment || !/^[A-Za-z0-9_-]{1,64}$/.test(deployment)) return null;
+      let origin;
+      try { origin = new URL(api).origin; } catch (e) { return null; }
+      if (!allowedApiOrigins().has(origin)) return null;
+      const cacheKey = origin + "|" + deployment;
+      if (pinnedCache.has(cacheKey)) return pinnedCache.get(cacheKey);
+      const promise = (async () => {
+        try {
+          const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+          const timer = ctrl ? setTimeout(() => ctrl.abort(), 5000) : null;
+          const res = await fetch(origin + "/api/v1/public/receipt-keys/" + encodeURIComponent(deployment), {
+            mode: "cors", credentials: "omit", signal: ctrl ? ctrl.signal : undefined,
+          });
+          if (timer) clearTimeout(timer);
+          if (!res.ok) return null;
+          const k = await res.json();
+          if (!k || typeof k.publicKeyHex !== "string" || !/^[0-9a-fA-F]{64}$/.test(k.publicKeyHex)) return null;
+          return {
+            publicKeyHex: k.publicKeyHex.toLowerCase(),
+            deploymentId: String(k.deploymentId || deployment),
+            deploymentName: typeof k.deploymentName === "string" ? k.deploymentName : deployment,
+            orgName: typeof k.orgName === "string" ? k.orgName : "",
+            pinnedAt: typeof k.pinnedAt === "string" ? k.pinnedAt : null,
+          };
+        } catch (e) {
+          return null;
+        }
+      })();
+      pinnedCache.set(cacheKey, promise);
+      return promise;
+    }
+    function fragmentParams() {
+      const raw = location.hash.slice(1);
+      if (!raw) return null;
+      try { return new URLSearchParams(raw); } catch (e) { return null; }
+    }
+    function fmtPinnedDate(iso) {
+      if (!iso) return "an unknown date";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return "an unknown date";
+      try { return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }); } catch (e) { return d.toISOString().slice(0, 10); }
+    }
+
     // Raw daemon receipts: the file proofvisord writes under
     // spool/atif/receipts/ is {receipt fields…, public_key_b64,
     // signature_b64} — NOT the console-export bundle envelope. The page
@@ -407,6 +503,7 @@
       /(?:\?|&)ci-drill=1(?:&|$)/.test(window.location.search || "")
     ) {
       window.TRUSTED_RECEIPT_KEYS = TRUSTED_RECEIPT_KEYS;
+      window.PV_RECEIPT_KEYS_READY = keysReady;
     }
 
     function render(state) {
@@ -466,20 +563,38 @@
       // pubkey is in the trust anchor list" (actually attesting
       // ProofVisor authorship).
       const demo = state.ok && state.trustedKey && state.demoKey;
-      const trusted = state.ok && state.trustedKey && !state.demoKey;
-      const internallyConsistent = state.ok && !state.trustedKey;
-      const cls = trusted ? "ok" : (demo || internallyConsistent ? "pending" : "bad");
-      const titleText = trusted
+      // Deployment pin (shared verify link + published key): a match
+      // is the strongest verdict this page can give for a production
+      // receipt; a mismatch is a hard red, even though the signature
+      // verifies, because the key is not the one the console pinned.
+      const pinned = state.ok ? state.pinned : null;
+      const pinMatch = !!(pinned && pinned.match);
+      const pinMismatch = !!(pinned && !pinned.match);
+      const trusted = state.ok && !pinMismatch && ((state.trustedKey && !state.demoKey) || (pinMatch && !demo));
+      const internallyConsistent = state.ok && !state.trustedKey && !pinMatch && !pinMismatch;
+      const cls = trusted ? "ok" : (demo && !pinMismatch) || internallyConsistent ? "pending" : "bad";
+      const pinnedLine = pinned && pinned.match
+        ? "Trusted: key pinned by the ProofVisor console for deployment " + pinned.deploymentName + " on " + fmtPinnedDate(pinned.pinnedAt) + (pinned.orgName ? " (" + pinned.orgName + ")" : "") + "."
+        : "";
+      const titleText = pinMismatch
+        ? "❌  Key does NOT match the pinned deployment key"
+        : trusted && pinMatch && !state.trustedKey
+        ? "✅  Trusted: key pinned by the ProofVisor console for deployment " + esc(pinned.deploymentName) + " on " + esc(fmtPinnedDate(pinned.pinnedAt))
+        : trusted
         ? "✅  Signature verifies against a trusted key"
         : demo
         ? "🧪  Demo receipt — signed by the public demo key"
         : internallyConsistent
         ? "⚠️  Signature is internally consistent. Trust anchor NOT verified"
         : "❌  Signature does not verify";
-      const subText = trusted
+      const subText = pinMismatch
+        ? "The signature verifies against the key embedded in the receipt, but that key is NOT the one the ProofVisor console pinned for deployment " + esc(pinned.deploymentName) + ". Someone signed this receipt with a different key than the deployment's daemon uses. Do not trust it."
+        : trusted && pinMatch
+        ? "This receipt was signed by the exact Ed25519 key the ProofVisor console pinned for this deployment the first time its daemon checked in, and every byte of the payload matches the signature." + (state.trustedKey ? " The key is also on this page's published trust-anchor list." : "")
+        : trusted
         ? "This receipt is authentic. It was signed by a key on the ProofVisor trust anchor list, and every byte of the payload matches the signature."
         : demo
-        ? "The signature verifies against the demo console's signing key. That key's PRIVATE half ships publicly with the demo, so anyone can sign anything with it — this proves the demo flow end-to-end, but it is NOT a production attestation."
+        ? "The signature verifies against the demo console's signing key. That key's PRIVATE half ships publicly with the demo, so anyone can sign anything with it — this proves the demo flow end-to-end, but it is NOT a production attestation." + (pinMatch ? " " + esc(pinnedLine) : "")
         : internallyConsistent
         ? "The bundle's signature matches its embedded public key, but that public key is NOT in the trust anchor list this verifier ships with. An attacker can generate a keypair, sign anything, and embed the pubkey, so this alone does NOT attest ProofVisor authorship. Compare the public key against a canonical ProofVisor deployment record before trusting the payload."
         : "The signature does not match the payload. Either the receipt was modified after signing, or the public key doesn't correspond to the signing key.";
@@ -487,6 +602,7 @@
         <div class="result-card ${cls}">
           <p class="result-title">${titleText}</p>
           <p class="result-sub">${subText}</p>
+          ${state.pinLookupFailed ? `<p class="result-sub pin-note">The shared link names deployment <code>${esc(state.pinLookupFailed)}</code>, but its pinned key could not be fetched from the console, so the verdict above rests on the receipt's embedded key alone.</p>` : ""}
           ${state.tamper ? `<p class="result-sub tamper-note"><strong>What just happened:</strong> one byte of the signed body changed (${esc(state.tamper.what)}: <code>${esc(state.tamper.before)}</code> → <code>${esc(state.tamper.after)}</code>) and the signature broke. That is the guarantee — nothing in a receipt can be edited after the fact without detection.</p>` : ""}
           ${drift.length ? `<p class="result-sub"><strong>Note:</strong> the bundle's unsigned metadata (${esc(drift.join(", "))}) does not match the signed body. The values below come from the signed body, which is what the signature attests. The unsigned copies were edited after signing.</p>` : ""}
           <dl class="kv">
@@ -612,9 +728,31 @@
         }
       }
       try {
+        // The published key list decides trusted vs. demo; wait for it
+        // (bounded — the fetch aborts itself after 4 s and falls back).
+        await keysReady;
         const { ok, trustedKey, demoKey, bundle: b } = await verifyBundle(bundle);
         if (ok && !tamper) lastGood = text;
-        render({ kind: "result", ok, trustedKey, demoKey, bundle: b, tamper: tamper || null });
+        // Deployment pin from the share link (#data=…&deployment=…&api=…).
+        let pinned = null;
+        let pinLookupFailed = null;
+        const params = fragmentParams();
+        const deployment = params ? params.get("deployment") : null;
+        const api = params ? params.get("api") : null;
+        if (ok && deployment && api) {
+          const key = await lookupPinnedKey(api, deployment);
+          if (key) {
+            pinned = {
+              match: key.publicKeyHex === String((b.publicKey || {}).hex || "").toLowerCase(),
+              deploymentName: key.deploymentName,
+              orgName: key.orgName,
+              pinnedAt: key.pinnedAt,
+            };
+          } else {
+            pinLookupFailed = deployment;
+          }
+        }
+        render({ kind: "result", ok, trustedKey, demoKey, bundle: b, tamper: tamper || null, pinned, pinLookupFailed });
       } catch (e) {
         render({ kind: "err", message: e.message });
       }

@@ -2250,3 +2250,21 @@ a.ob-step:hover { border-color: var(--accent); }
 /* Programmatic focus target for route changes — no ring on the whole
  * content column (focus is managed deliberately; SR still announces). */
 .main:focus { outline: none; box-shadow: none; }
+
+/* ============================================================
+ * POLICY PUSH + DEMO LABELS
+ * ============================================================ */
+/* Structured spec fields in the policy dialogs: two columns on wide
+   screens, one on phones. */
+.spec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-4); }
+@media (max-width: 640px) { .spec-grid { grid-template-columns: 1fr; } .tpl-row { grid-template-columns: 1fr; } }
+/* Enforcement badges under a policy's description. */
+.enf-row { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.pill.enf { white-space: nowrap; }
+/* "demo" label on rows staged by Simulate an attack. */
+.pill.demo-pill { font-size: 10.5px; padding: 0 6px; vertical-align: 1px; margin-left: 2px; }
+/* Demo-footprint banner on the overview: accent, not warning. */
+.notice.demo-notice {
+  display: flex; align-items: center; gap: var(--s-3);
+  background: var(--accent-bg); border-color: var(--accent-border); color: var(--fg-2);
+}
