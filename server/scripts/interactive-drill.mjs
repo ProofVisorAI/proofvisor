@@ -249,7 +249,7 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
   console.log("✅ reset demo data: pristine Northwind restored");
 }
 
-// ── 7. Policy creation: template → live DSL → enforcing ──────────
+// ── 7. Policy creation: template → live JSON spec → enforcing ────
 {
   // Check 6's reload kept ?tour=1 in the query string, so the tour
   // auto-restarted and its overlay would swallow our clicks.
@@ -260,8 +260,12 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
   await page.waitForSelector(".modal-wide #polPreview", { timeout: 5000 });
   await page.fill("#polParam", "1250");
   await page.waitForTimeout(200);
-  const dsl = await page.evaluate(() => document.querySelector("#polPreview").textContent);
-  if (!dsl.includes("arg.amount_usd > 1250")) fail("policy preview not live: " + dsl.slice(0, 80));
+  // The spend-cap template is a daemon-enforceable budget: the preview
+  // is the JSON spec the daemon will pull, and it follows the field.
+  const preview = await page.evaluate(() => document.querySelector("#polPreview").textContent);
+  let spec = null;
+  try { spec = JSON.parse(preview); } catch { spec = null; }
+  if (!spec || spec.max_payout_usd_micros !== 1250 * 1e6) fail("policy preview not live: " + preview.slice(0, 80));
   await page.click('button:has-text("Create & enable")');
   await page.waitForSelector("#polSwitch", { timeout: 10000 });
   const pol = await page.evaluate(() => ({
@@ -269,9 +273,9 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
     name: document.querySelector("h1").textContent,
     enabled: document.querySelector("#polSwitch").getAttribute("aria-checked"),
   }));
-  if (!pol.hash.startsWith("#/policies/pol_") || pol.name !== "finance.payment_cap_usd:1250" || pol.enabled !== "true")
+  if (!pol.hash.startsWith("#/policies/pol_") || pol.name !== "finance.payout_cap_usd:1250" || pol.enabled !== "true")
     fail("policy creation broken: " + JSON.stringify(pol));
-  console.log("✅ policy creation: spend-cap template → live DSL → enabled detail page");
+  console.log("✅ policy creation: spend-cap template → live JSON spec → enabled detail page");
 }
 
 // ── 8. Table action buttons are actually hittable ─────────────────

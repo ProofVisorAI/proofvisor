@@ -4056,10 +4056,18 @@
       var b = built();
       backdrop.querySelector("#polPreview").innerHTML = syntaxPolicy(b.body);
       backdrop.querySelector("#polKindNote").textContent = "· " + (POLICY_KIND_INFO[b.template.kind] ? POLICY_KIND_INFO[b.template.kind].label : b.template.kind) + (kindEnforceable(b.template.kind) ? "" : " — not enforceable by daemons");
-      if (!nameTouched) backdrop.querySelector("#polName").value = b.name;
+      // A generated value is not an edit: set it as the field's default
+      // too, so the unsaved-changes guard only fires for what the user
+      // typed or picked (otherwise the first Escape on a fresh dialog
+      // only shows the "unsaved changes" toast and keeps it open).
+      if (!nameTouched) setGenerated(backdrop.querySelector("#polName"), b.name);
+    }
+    function setGenerated(input, value) {
+      input.value = value;
+      input.defaultValue = value;
     }
     function resetScope() {
-      backdrop.querySelector("#polScope").value = currentTemplate().scope;
+      setGenerated(backdrop.querySelector("#polScope"), currentTemplate().scope);
     }
     $$('input[name="polTpl"]', backdrop).forEach(function (r) {
       r.addEventListener("change", function () { nameTouched = false; renderParam(currentTemplate()); resetScope(); refresh(); });
