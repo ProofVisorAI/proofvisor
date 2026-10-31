@@ -116,7 +116,7 @@ function cardHtml(opts) {
       ${sub ? `<div class="subline">${sub}</div>` : ""}
       ${opts.cta ? `<div class="cta"><span class="arrow">→</span> ${opts.cta}</div>` : ""}
     </div>
-    <div class="brand"><div class="brand-mark">A</div>ProofVisor · proofvisor.com</div>
+    <div class="brand"><div class="brand-mark">P</div>ProofVisor · proofvisor.com</div>
   </body></html>`;
 }
 

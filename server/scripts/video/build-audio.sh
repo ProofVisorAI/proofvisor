@@ -23,9 +23,9 @@ ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo:d=32" \
 
 # From compose.sh `Offsets:` output.
 T1=3467
-T2=10367
-T3=18234
-T4=24701
+T2=10167
+T3=17867
+T4=23934
 
 ffmpeg -y \
   -i "$OUT/silence.wav" \

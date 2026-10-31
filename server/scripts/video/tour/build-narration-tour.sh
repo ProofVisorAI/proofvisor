@@ -20,8 +20,19 @@ gen() {
   local text="$*"
   local d rate
   for rate in "+20%" "+25%" "+30%" "+35%" "+40%"; do
-    "$EDGE_TTS" --voice "$VOICE_ID" --rate="$rate" --text "$text" \
-      --write-media "$out.mp3" 2>/dev/null
+    # The Edge TTS service occasionally answers with no audio at all;
+    # retry a few times before giving up on the clip.
+    local try
+    for try in 1 2 3; do
+      rm -f "$out.mp3"
+      if "$EDGE_TTS" --voice "$VOICE_ID" --rate="$rate" --text "$text" \
+          --write-media "$out.mp3" 2>/dev/null && [ -s "$out.mp3" ]; then
+        break
+      fi
+      echo "  retry $try for $(basename "$out") (no audio received)"
+      sleep 2
+    done
+    [ -s "$out.mp3" ] || { echo "ERROR: $(basename "$out") produced no audio"; exit 1; }
     ffmpeg -y -i "$out.mp3" \
       -af "silenceremove=stop_periods=-1:stop_threshold=-45dB:stop_duration=0.25" \
       -c:a pcm_s16le -ar 44100 "$out.raw.wav" 2>/dev/null
@@ -61,23 +72,23 @@ done
 
 # Scene-start offsets + ~200ms lead, from compose.sh `Offsets:`.
 D1=300
-D2=6100
-D3=12800
-D4=20933
-D5=26833
-D6=33366
-D7=39066
-D8=47699
-D9=57866
-D10=64466
-D11=74066
-D12=79233
-D13=82066
-D14=88166
-D15=95733
-D16=102266
-D17=108399
-D18=124132
+D2=6033
+D3=12666
+D4=20799
+D5=26166
+D6=32466
+D7=38099
+D8=46599
+D9=56532
+D10=63032
+D11=72565
+D12=77598
+D13=80331
+D14=86231
+D15=93731
+D16=100164
+D17=106131
+D18=121731
 
 ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo:d=140" \
   -c:a pcm_s16le "$OUT/silence-44s.wav" 2>&1 | tail -1
