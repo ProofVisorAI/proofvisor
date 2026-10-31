@@ -71,6 +71,21 @@ test("without Stripe configured nothing is gated and checkout says so plainly", 
   const checkout = await o.client.json("POST", "/api/v1/billing/checkout", { plan: "team" });
   assert.equal(checkout.status, 503);
   assert.match(JSON.stringify(checkout.data), /billing_not_configured/);
+  // SCIM works on the free plan when limits are off: settings, a token,
+  // and a real provisioning call from the identity provider.
+  const scim = await o.client.json("PATCH", "/api/v1/scim/settings", { enabled: true });
+  assert.equal(scim.status, 200, JSON.stringify(scim.data));
+  assert.equal(scim.data.settings.planAllows, true);
+  const token = await o.client.json("POST", "/api/v1/scim/tokens", { name: "IdP" });
+  assert.equal(token.status, 201, JSON.stringify(token.data));
+  for (let i = 0; i < 4; i++) {
+    const created = await fetch(plain.base + "/scim/v2/Users", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token.data.plaintextToken, "Content-Type": "application/scim+json" },
+      body: JSON.stringify({ schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"], userName: `free-scim-${i}-${Date.now()}@example.test`, active: true }),
+    });
+    assert.equal(created.status, 201, "SCIM create on the free plan without limits: " + (await created.text()));
+  }
   // Limits are off: a free workspace may create more than the free caps.
   for (let i = 0; i < 3; i++) {
     const dep = await o.client.json("POST", "/api/v1/deployments", { name: `plain-${i}`, environment: "production" });

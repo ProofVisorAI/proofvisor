@@ -529,7 +529,7 @@ async function authenticateScim(req: FastifyRequest, reply: FastifyReply): Promi
     await sendScimError(reply, 403, "SCIM provisioning is disabled for this organisation. An owner can enable it under Settings → SSO.");
     return false;
   }
-  if (!limitsFor(match.org.plan).scim) {
+  if (limitsEnforced() && !limitsFor(match.org.plan).scim) {
     await sendScimError(reply, 402, `SCIM provisioning is not included in the ${match.org.plan} plan.`);
     return false;
   }
@@ -933,7 +933,7 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
     // Seat limit (members + pending invites) — same count the console
     // shows and POST /members/invites enforces.
     const usage = await planUsage(orgId);
-    const cap = limitsFor(plan).members;
+    const cap = limitsEnforced() ? limitsFor(plan).members : null;
     if (cap !== null && usage.members + 1 > cap) {
       const lifts = planThatLifts("members", usage.members + 1);
       throw new ScimError(
