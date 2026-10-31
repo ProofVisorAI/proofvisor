@@ -1,9 +1,11 @@
 # ProofVisor — what exists today
 
 Dated 2026-10-31. Every item below was exercised on this date on a
-laptop against the current `rename/proofvisor` branch: the Rust test
-suites, the API and console test suites, the browser drills and the
-daemon's loopback provider contracts all passed. The numbers are in the
+laptop against the local `integration/all` branch (the rename branch
+plus the native-provider, policy-push, SCIM and billing, and interop
+work): the Rust test suites, the API and console test suites, the
+browser drills, the real-binary drills and the interop tests all
+passed. The numbers are in the
 last section. Items that are planned, partial or demo-only are listed
 separately so that nothing here overstates what a customer gets.
 
@@ -13,12 +15,16 @@ ProofVisor sits between an AI agent and its model provider. The agent
 changes one line, the API base URL, and keeps using the OpenAI
 chat-completions format.
 
-- **Drop-in for OpenAI-compatible providers.** The daemon serves
-  `POST /v1/chat/completions`. Requests are forwarded unchanged to the
-  configured upstream. Sixteen presets exist in `pvctl init` (OpenAI,
-  Azure, Anthropic and Gemini through their OpenAI-compatible endpoints,
-  Groq, Mistral, OpenRouter, Together, DeepSeek, xAI, Ollama, LM Studio,
-  vLLM, llama.cpp, LiteLLM, custom).
+- **Drop-in for OpenAI, Anthropic and Gemini.** The daemon serves
+  `POST /v1/chat/completions`. OpenAI-compatible upstreams receive the
+  request unchanged. With `provider = "anthropic"` or `"gemini"` the
+  daemon translates the request into the vendor's native API (Anthropic
+  Messages, Gemini `generateContent`) and translates the answer back,
+  including streaming, tool calls, stop reasons, usage and errors.
+  `n > 1` works with every provider (Anthropic gets one request per
+  choice). Sixteen presets exist in `pvctl init` (OpenAI, Azure,
+  Anthropic and Gemini natively, Groq, Mistral, OpenRouter, Together,
+  DeepSeek, xAI, Ollama, LM Studio, vLLM, llama.cpp, LiteLLM, custom).
 - **Streaming passes through.** Server-sent events are relayed frame by
   frame; `include_usage` is honoured; a failing first frame yields a
   clean error.
@@ -152,49 +158,74 @@ with demonstration data, which is what the public site shows by default.
   light themes, zero serious accessibility findings, works on phone,
   tablet and the three browser engines.
 
-## 6. Not yet, partial, or demo-only
+## 6. Added on 2026-10-31
 
-- **Native Anthropic and Gemini request formats.** The daemon speaks the
-  OpenAI chat-completions format; Anthropic and Gemini are reached
-  through their OpenAI-compatible endpoints.
-- **Policy push from the console to daemons.** Not built.
-- **Billing.** Free preview; Team and Enterprise plans are not
-  purchasable. SCIM does not exist.
-- **Published trust anchor** for the browser verifier
-  (`/.well-known/receipt-keys.json`). Planned.
-- **Guided tour, "simulate an attack" and the onboarding checklist**
-  exist only in the console's mock mode.
-- **Windows.** Through WSL only. Prebuilt binaries cover Linux (x64 and
-  arm64, musl and glibc) and macOS (both chips).
+- **Policy push from the console to daemons.** Budget, allowlist,
+  argument-schema and token-rate policies written in the console reach
+  daemons through `pvctl console-sync --watch --pull-policies`. Each
+  daemon applies the bundle on top of its local config (a pushed
+  policy can only tighten it), survives restarts with it, reports what
+  it actually enforces, and the console shows "Enforced by N of M
+  daemons". Refusals name the console policy.
+- **SCIM 2.0 provisioning** for Okta, Entra ID and other identity
+  providers: users and groups, deactivation, role mapping by group, the
+  last owner protected.
+- **Billing with Stripe**: checkout, customer portal, webhooks, and plan
+  limits. Limits are off unless the operator turns them on.
+- **Receipt trust anchor**: `/.well-known/receipt-keys.json`, and a
+  public per-deployment key endpoint, so a shared verify link says
+  "signed by the key the console pinned for this deployment".
+- **Live-mode guided tour, onboarding checklist and "Simulate an
+  attack"**, with demo rows labelled and removable.
+- **Interoperability verified** against a third-party MCP server and the
+  official MCP SDK client, Keycloak 26.8.1 (OIDC and SAML login in a
+  real browser), and two public AuthZEN interop decision servers.
+- **Windows**: the daemon and CLI compile for Windows x64, and CI and
+  the release workflow build them there.
+
+## 7. Not yet, partial, or needs a decision
+
+- **Billing is built but not switched on.** No Stripe account is
+  connected to the hosted API, and plan limits are off by default. The
+  prices and the free-plan limits (2 deployments, 3 members, no SAML or
+  SCIM) were proposed during development and need a business decision
+  before anyone turns them on; they contradict today's "every
+  governance feature on Free" wording.
+- **Guardrail and transform policies** document intent in the console;
+  daemons do not enforce them.
+- **Windows** has not been run on Windows hardware yet, and its CI job
+  runs only after a push, so it is a Tier-2 platform.
 - **Release state.** The latest release is the pre-release
-  `v0.1.0-rc.5`; nothing is on crates.io yet.
-- **Tested with stand-ins, not production systems:** third-party MCP
-  servers, a production AuthZEN service, a real Cloud Foundry foundation,
-  cloud object storage, and customer identity providers.
-- **Multiple choices per request** (`n > 1`) are refused.
-- **Library code that the daemon does not use:** a token-velocity
-  limiter and a native allow/deny tool list exist in the crates but are
-  not reachable from the shipped binaries.
+  `v0.1.0-rc.5`; nothing is on crates.io yet. Publishing needs explicit
+  approval.
+- **Still tested with stand-ins only:** a real Cloud Foundry
+  foundation, cloud object storage, and identity providers other than
+  Keycloak (for example Okta and Entra ID).
+- **None of this is deployed.** All work above is on local branches; the
+  hosted console and API still run the previous version.
 
-## 7. Verification record for 2026-10-31
+## 8. Verification record for 2026-10-31
+
+All on the merged `integration/all` branch.
 
 | Suite | Result |
 |---|---|
-| Rust workspace, default features | 1,702 tests passed, 0 failed |
-| Rust workspace, all features | 1,799 tests passed, 0 failed |
-| `cargo fmt`, `cargo clippy -D warnings`, `cargo deny` advisories | clean |
-| Daemon loopback provider contracts | 9 of 9 |
+| Rust workspace, all features | 1,827 tests passed, 0 failed |
+| `cargo fmt`, `cargo clippy -D warnings`, `cargo deny` advisories, schema check | clean |
+| Windows x64 compile check (daemon and CLI, all targets) | no errors |
+| Provider contracts with the real daemon (OpenAI, Anthropic, Gemini, `n = 2`) | 14 of 14 |
+| Policy push end to end with the real API, daemon and pvctl | 32 checks passed |
 | Live pillars (identity, exchange, revocation, receipts, end to end) | 84 checks passed |
-| API unit tests (`npm test`) | 66 passed in 8 files |
-| API smoke suite | 22 checks passed |
-| API contract suite (`ci/e2e.mjs`) | 128 of 128 |
-| Browser end-to-end against the real API | all passed |
-| Database drill battery (quarantine, keys, invites, allow-list, retention, SAML, WebAuthn, webhooks, OIDC) | 15 of 15 |
-| Quarantine drill | 25 checks passed |
+| API unit and recovery tests, including SCIM and billing (`npm test`) | 82 passed |
+| API smoke suite | passed |
+| API contract suite (`ci/e2e.mjs`) | 141 of 141 |
+| Browser end-to-end against the real API (live tour, checklist, simulated attack) | all passed |
+| Database drill battery (17 drills, including policy push and the public receipt key) | 17 of 17 |
+| `/verify` page drill (including the deployment pin) | 16 of 16 |
 | Receipt download and offline verification | 8 of 8 |
-| `/verify` page drill | 15 of 15 |
 | Interactive console drill | 35 of 35 |
+| Console injection drill | 207 checks passed |
 | Mobile, accessibility, full investor flow | all passed |
-| Compose and Kubernetes secret installers, buildpack | all passed |
-
-The same checks run in GitHub Actions on every push.
+| Third-party MCP server / official MCP SDK client | 14 / 12 checks passed |
+| Keycloak 26.8.1 OIDC and SAML login | 22 checks passed |
+| AuthZEN public interop PDPs (Cerbos, Aserto Topaz) | allow and deny as expected |
