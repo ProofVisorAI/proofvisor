@@ -965,8 +965,13 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
             passwordHash: await hashPassword(randomToken(32) + randomToken(32)),
             displayName,
             scimExternalId: changes.externalId ?? null,
-            // The IdP asserted this mailbox — same trust SAML JIT gets.
-            emailVerifiedAt: new Date(),
+            // Deliberately NOT emailVerifiedAt, exactly like SAML JIT
+            // (routes/saml.ts): the provisioning IdP is configured by
+            // this tenant and can assert ANY address, and
+            // emailVerifiedAt is the trust anchor of the OAuth
+            // pre-hijack gate. A row verified at birth would let one
+            // workspace pre-claim a victim's address so the victim's
+            // later Google/Microsoft sign-in merged into it.
           },
           select: { id: true },
         });

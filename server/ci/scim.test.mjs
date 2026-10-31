@@ -525,6 +525,16 @@ test("tenants are isolated: ids, filters and groups of one org are invisible to 
   assert.equal((await a.idp.json("GET", `/scim/v2/Users/${userA.data.id}`)).data.active, true);
 });
 
+test("a SCIM-created account never carries mailbox verification (OAuth pre-hijack gate)", async () => {
+  const t = await tenant("verify-gate");
+  const email = `prehijack-${Date.now()}@victim.example`;
+  const created = await t.idp.json("POST", "/scim/v2/Users",
+    { schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"], userName: email, active: true }, { headers: scimHeaders });
+  assert.equal(created.status, 201, JSON.stringify(created.data));
+  const row = await pg.query('SELECT "emailVerifiedAt" FROM users WHERE email = $1', [email]);
+  assert.equal(row.rows[0].emailVerifiedAt, null);
+});
+
 test("SCIM creates count against the same seat usage the billing endpoint reports", async () => {
   // The free-plan 402 on the SCIM path is exercised by
   // ci/billing.test.mjs (where the plan is driven by Stripe events);
