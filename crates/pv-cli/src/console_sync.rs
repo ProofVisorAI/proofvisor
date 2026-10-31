@@ -38,6 +38,11 @@ pub(super) struct ConsoleSyncArgs {
     pub(super) interval: u64,
     pub(super) state_file: Option<PathBuf>,
     pub(super) dry_run: bool,
+    /// Pull the console policy bundle into `policy_bundle_file` and
+    /// report what the daemon applied.
+    pub(super) pull_policies: bool,
+    /// The daemon's `policy_bundle_file`.
+    pub(super) policy_bundle_file: Option<PathBuf>,
 }
 
 pub(super) async fn run(args: ConsoleSyncArgs) -> Result<()> {
@@ -45,8 +50,22 @@ pub(super) async fn run(args: ConsoleSyncArgs) -> Result<()> {
         anyhow::bail!("--interval must be at least 1 second");
     }
     let config = ResolvedSyncConfig::resolve(&args)?;
+    let mut policies = match (args.pull_policies, args.policy_bundle_file.clone().or_else(|| {
+        std::env::var_os("PV_POLICY_BUNDLE_FILE").map(PathBuf::from)
+    })) {
+        (false, _) => None,
+        (true, Some(path)) => Some(PolicyPull::new(path)),
+        (true, None) => anyhow::bail!(
+            "--pull-policies needs --policy-bundle-file (or PV_POLICY_BUNDLE_FILE): the daemon's policy_bundle_file"
+        ),
+    };
     if args.watch {
         loop {
+            if let Some(pull) = policies.as_mut() {
+                if let Err(error) = pull.pass(&config, args.dry_run, false).await {
+                    eprintln!("warning: policy pull failed: {error:#}");
+                }
+            }
             if let Err(error) = run_once(&config, args.dry_run).await {
                 eprintln!("warning: console-sync pass failed: {error:#}");
             }
@@ -62,7 +81,129 @@ pub(super) async fn run(args: ConsoleSyncArgs) -> Result<()> {
         }
         Ok(())
     } else {
+        if let Some(pull) = policies.as_mut() {
+            pull.pass(&config, args.dry_run, true).await?;
+        }
         run_once(&config, args.dry_run).await.map(|_| ())
+    }
+}
+
+/// How long a one-shot `--pull-policies` waits for the daemon to apply a
+/// new bundle before reporting what is in force (the daemon polls its
+/// bundle file every `policy_bundle_poll_s`, 5 s by default).
+const POLICY_APPLY_WAIT: Duration = Duration::from_secs(20);
+
+/// Console → daemon policy pull. The console bundle is written
+/// atomically (owner-only) to the daemon's `policy_bundle_file`; the
+/// daemon applies it and writes `<file>.status.json`; that file — the
+/// daemon's own answer, never what was sent — is posted to
+/// `/api/v1/ingest/policy-status`.
+struct PolicyPull {
+    path: PathBuf,
+    /// Status-file bytes last reported, so an unchanged status is not
+    /// re-posted every pass.
+    reported: Option<Vec<u8>>,
+}
+
+impl PolicyPull {
+    fn new(path: PathBuf) -> Self {
+        Self { path, reported: None }
+    }
+
+    fn status_path(&self) -> PathBuf {
+        let mut name = self.path.as_os_str().to_owned();
+        name.push(".status.json");
+        PathBuf::from(name)
+    }
+
+    /// Etag of the bundle file on disk, if there is one.
+    fn local_etag(&self) -> Option<String> {
+        let bytes = std::fs::read(&self.path).ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        value.get("etag")?.as_str().map(str::to_owned)
+    }
+
+    fn read_status(&self) -> Option<(Vec<u8>, serde_json::Value)> {
+        let bytes = std::fs::read(self.status_path()).ok()?;
+        let value = serde_json::from_slice(&bytes).ok()?;
+        Some((bytes, value))
+    }
+
+    async fn pass(&mut self, config: &ResolvedSyncConfig, dry_run: bool, wait: bool) -> Result<()> {
+        let client = ConsoleClient::new(config)?;
+        let local = self.local_etag();
+        let pulled = client.get_policies(local.as_deref()).await?;
+        let mut expected = local.clone();
+        if let Some((bundle, etag)) = pulled {
+            if dry_run {
+                println!(
+                    "{}",
+                    serde_json::json!({"dryRun": true, "policyBundle": {"etag": etag, "policies": bundle.get("policies").and_then(serde_json::Value::as_array).map_or(0, Vec::len)}})
+                );
+                return Ok(());
+            }
+            let bytes = serde_json::to_vec_pretty(&bundle).context("serialize policy bundle")?;
+            if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+            }
+            pv_core::fsutil::write_atomic(&self.path, &bytes)
+                .with_context(|| format!("write policy bundle {}", self.path.display()))?;
+            eprintln!("policy bundle {etag} written to {}", self.path.display());
+            expected = Some(etag);
+        } else if dry_run {
+            return Ok(());
+        }
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let deadline = std::time::Instant::now() + if wait { POLICY_APPLY_WAIT } else { Duration::ZERO };
+        loop {
+            if let Some((bytes, status)) = self.read_status() {
+                let applied_current = status
+                    .get("etag")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|etag| etag.eq_ignore_ascii_case(&expected));
+                if let Some(error) = status.get("error").and_then(serde_json::Value::as_str) {
+                    eprintln!(
+                        "warning: the daemon refused the newest policy bundle and keeps the rules in force: {}",
+                        sanitize_for_terminal(error)
+                    );
+                }
+                if applied_current || std::time::Instant::now() >= deadline {
+                    if self.reported.as_deref() != Some(bytes.as_slice()) {
+                        let mut body = status.clone();
+                        if let Some(object) = body.as_object_mut() {
+                            object.remove("error");
+                        }
+                        let answer: serde_json::Value = client.post_json("policy-status", &body).await?;
+                        self.reported = Some(bytes);
+                        eprintln!(
+                            "policy status reported: etag {} ({})",
+                            status
+                                .get("etag")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("?"),
+                            if answer.get("stale").and_then(serde_json::Value::as_bool) == Some(false) {
+                                "current"
+                            } else {
+                                "older than the console's bundle"
+                            }
+                        );
+                    }
+                    return Ok(());
+                }
+            } else if std::time::Instant::now() >= deadline {
+                if wait {
+                    eprintln!(
+                        "warning: no {} yet; is proofvisord running with policy_bundle_file = {:?}?",
+                        self.status_path().display(),
+                        self.path.display().to_string()
+                    );
+                }
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 }
 
@@ -992,6 +1133,45 @@ impl ConsoleClient {
             deployment: config.deployment.clone(),
             token: config.token.clone(),
         })
+    }
+
+    /// `GET /policies` with `If-None-Match`. `None` when the console
+    /// answers 304 (the local bundle is current).
+    async fn get_policies(&self, etag: Option<&str>) -> Result<Option<(serde_json::Value, String)>> {
+        let url = format!("{}/policies", self.ingest_base);
+        let mut request = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.token)
+            .header("X-PV-Deployment", &self.deployment);
+        if let Some(etag) = etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, format!("\"{etag}\""));
+        }
+        let response = request.send().await.context("GET policies")?;
+        match response.status() {
+            StatusCode::NOT_MODIFIED => return Ok(None),
+            StatusCode::UNAUTHORIZED => anyhow::bail!(
+                "console returned 401 unauthenticated; check --deployment and the console ingest token"
+            ),
+            status if !status.is_success() => anyhow::bail!("GET policies failed with HTTP {status}"),
+            _ => {}
+        }
+        let bundle: serde_json::Value = response.json().await.context("decode policy bundle")?;
+        if bundle.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+            anyhow::bail!("the console sent a policy bundle version this pvctl does not understand");
+        }
+        let etag = bundle
+            .get("etag")
+            .and_then(serde_json::Value::as_str)
+            .filter(|etag| {
+                !etag.is_empty() && etag.len() <= 128 && etag.chars().all(|c| c.is_ascii_hexdigit())
+            })
+            .map(str::to_owned)
+            .context("policy bundle etag is not a hex hash")?;
+        if !bundle.get("policies").is_some_and(serde_json::Value::is_array) {
+            anyhow::bail!("policy bundle has no policies array");
+        }
+        Ok(Some((bundle, etag)))
     }
 
     async fn post_json<T, R>(&self, endpoint: &str, payload: &T) -> Result<R>
@@ -3270,6 +3450,8 @@ mod tests {
             interval: 30,
             state_file: Some(dir.path().join("state.json")),
             dry_run: false,
+            pull_policies: false,
+            policy_bundle_file: None,
         })
         .unwrap();
         assert_eq!(run_once(&config, false).await.unwrap().failed, 0);
@@ -3403,6 +3585,8 @@ mod tests {
             interval: 30,
             state_file: Some(dir.path().join("state.json")),
             dry_run: false,
+            pull_policies: false,
+            policy_bundle_file: None,
         })
         .unwrap();
 

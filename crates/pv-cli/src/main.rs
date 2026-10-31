@@ -248,6 +248,13 @@ enum Command {
         /// Print what would be uploaded without contacting the console or updating state.
         #[arg(long)]
         dry_run: bool,
+        /// Also pull the console's policy bundle into the daemon's
+        /// `policy_bundle_file` and report what the daemon applied.
+        #[arg(long)]
+        pull_policies: bool,
+        /// The daemon's `policy_bundle_file`. Overrides PV_POLICY_BUNDLE_FILE.
+        #[arg(long)]
+        policy_bundle_file: Option<PathBuf>,
     },
     /// Generate concurrent OpenAI-compatible chat traffic and report latency.
     Loadgen {
@@ -420,6 +427,8 @@ async fn run(cli: Cli) -> Result<()> {
             interval,
             state_file,
             dry_run,
+            pull_policies,
+            policy_bundle_file,
         } => {
             console_sync::run(console_sync::ConsoleSyncArgs {
                 spool_dir,
@@ -431,6 +440,8 @@ async fn run(cli: Cli) -> Result<()> {
                 interval,
                 state_file,
                 dry_run,
+                pull_policies,
+                policy_bundle_file,
             })
             .await
         }

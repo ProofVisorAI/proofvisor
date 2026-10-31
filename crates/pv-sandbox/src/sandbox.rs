@@ -367,11 +367,15 @@ impl Sandbox {
                     // Session refused; unwind the principal debit so a
                     // failed call is fully non-consumptive.
                     principal_budget.refund_tool_call(&req.tool, payout_micros);
-                    let reason = format!("action budget exceeded: {limit} (cap {cap})");
+                    let policy = pushed.budget_policy_for(&self.config.budget, &limit, cap);
+                    let reason = match &policy {
+                        Some(name) => format!("policy {name:?}: action budget exceeded: {limit} (cap {cap})"),
+                        None => format!("action budget exceeded: {limit} (cap {cap})"),
+                    };
                     return ToolVerdict::Blocked {
                         tool: req.tool.clone(),
                         stage: "budget",
-                        policy: pushed.budget_policy_for(&self.config.budget, &limit, cap),
+                        policy,
                         denial_code: DenialCode::BudgetExceeded,
                         reason: reason.clone(),
                         response: denial_error(req.id.as_ref(), DenialCode::BudgetExceeded, &reason),
@@ -405,11 +409,15 @@ impl Sandbox {
                 principal_id: None,
             },
             Ok(BudgetDecision::Refused { limit, cap }) => {
-                let reason = format!("action budget exceeded: {limit} (cap {cap})");
+                let policy = pushed.budget_policy_for(&self.config.budget, &limit, cap);
+                let reason = match &policy {
+                    Some(name) => format!("policy {name:?}: action budget exceeded: {limit} (cap {cap})"),
+                    None => format!("action budget exceeded: {limit} (cap {cap})"),
+                };
                 ToolVerdict::Blocked {
                     tool: req.tool.clone(),
                     stage: "budget",
-                    policy: pushed.budget_policy_for(&self.config.budget, &limit, cap),
+                    policy,
                     denial_code: DenialCode::BudgetExceeded,
                     reason: reason.clone(),
                     response: denial_error(req.id.as_ref(), DenialCode::BudgetExceeded, &reason),
