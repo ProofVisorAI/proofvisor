@@ -57,6 +57,8 @@ run_drill() {
 # name|port[|extra-env...] — | because env values carry URLs with colons
 ALL_DRILLS=(
   "quarantine-drill|20753"
+  "policy-push-drill|20754"
+  "demo-and-keys-drill|20755"
   "apikey-drill|20745"
   "apikey-hardening|20745"
   "invite-drill|20445"
