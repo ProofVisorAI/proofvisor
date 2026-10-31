@@ -22,6 +22,9 @@ export function parseForm(text) {
 export async function startFakeStripe({ port = 0, subscription = {} } = {}) {
   const requests = [];
   let seq = 0;
+  // Ids are unique across runs, like Stripe's: the database keeps
+  // customer ids from earlier runs and enforces their uniqueness.
+  const run = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const state = {
     subscriptions: new Map(),
   };
@@ -37,11 +40,11 @@ export async function startFakeStripe({ port = 0, subscription = {} } = {}) {
         res.end(JSON.stringify(obj));
       };
       if (req.method === "POST" && url.pathname === "/v1/customers") {
-        const id = "cus_fake_" + ++seq;
+        const id = "cus_fake_" + run + "_" + ++seq;
         return send(200, { id, object: "customer", email: form.email ?? null, name: form.name ?? null, metadata: { orgId: form["metadata[orgId]"] } });
       }
       if (req.method === "POST" && url.pathname === "/v1/checkout/sessions") {
-        const id = "cs_fake_" + ++seq;
+        const id = "cs_fake_" + run + "_" + ++seq;
         return send(200, {
           id,
           object: "checkout.session",
@@ -52,7 +55,7 @@ export async function startFakeStripe({ port = 0, subscription = {} } = {}) {
         });
       }
       if (req.method === "POST" && url.pathname === "/v1/billing_portal/sessions") {
-        const id = "bps_fake_" + ++seq;
+        const id = "bps_fake_" + run + "_" + ++seq;
         return send(200, { id, object: "billing_portal.session", customer: form.customer, url: `https://billing.stripe.test/session/${id}` });
       }
       const subMatch = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname);
