@@ -71,12 +71,6 @@ impl ProviderKind {
             Self::Gemini => Some("x-goog-api-key"),
         }
     }
-
-    /// True when requests and responses are translated rather than
-    /// relayed byte for byte.
-    pub(crate) fn translates(self) -> bool {
-        !matches!(self, Self::OpenAi)
-    }
 }
 
 /// Look up the provider for a configured `provider` value. `None`
@@ -119,6 +113,18 @@ pub(crate) fn choice_count(payload: &Value) -> Result<u64, String> {
             )),
         },
     }
+}
+
+/// Refuse a request for token log-probabilities, which neither native
+/// API can return in OpenAI's shape. Answering without them would hand
+/// the client a completion that silently lacks what it asked for.
+pub(crate) fn refuse_logprobs(payload: &Value) -> Result<(), String> {
+    let asked = payload.get("logprobs").and_then(Value::as_bool) == Some(true)
+        || payload.get("top_logprobs").is_some_and(|value| !value.is_null());
+    if asked {
+        return Err("logprobs and top_logprobs are not available from this provider".to_owned());
+    }
+    Ok(())
 }
 
 /// Whether the client asked for `stream: true`.
@@ -176,7 +182,11 @@ pub(crate) fn base64_data_url(url: &str) -> Option<(String, String)> {
     let rest = url.strip_prefix("data:")?;
     let (meta, data) = rest.split_once(',')?;
     let meta = meta.strip_suffix(";base64")?;
-    let media_type = if meta.is_empty() { "application/octet-stream" } else { meta };
+    let media_type = if meta.is_empty() {
+        "application/octet-stream"
+    } else {
+        meta
+    };
     Some((media_type.to_owned(), data.to_owned()))
 }
 
@@ -255,7 +265,7 @@ impl UsageTotals {
     }
 
     /// The OpenAI `usage` object.
-    pub(crate) fn to_openai(&self) -> Value {
+    pub(crate) fn to_openai(self) -> Value {
         let prompt = self.prompt_tokens.unwrap_or(0);
         let completion = self.completion_tokens.unwrap_or(0);
         let mut usage = json!({
@@ -264,10 +274,18 @@ impl UsageTotals {
             "total_tokens": prompt.saturating_add(completion),
         });
         if let Some(cached) = self.cached_tokens {
-            set(&mut usage, "prompt_tokens_details", json!({ "cached_tokens": cached }));
+            set(
+                &mut usage,
+                "prompt_tokens_details",
+                json!({ "cached_tokens": cached }),
+            );
         }
         if let Some(reasoning) = self.reasoning_tokens {
-            set(&mut usage, "completion_tokens_details", json!({ "reasoning_tokens": reasoning }));
+            set(
+                &mut usage,
+                "completion_tokens_details",
+                json!({ "reasoning_tokens": reasoning }),
+            );
         }
         usage
     }
@@ -316,7 +334,11 @@ pub(crate) fn split_sse_frame(raw: &str) -> SseFrame {
         } else if let Some(value) = line.strip_prefix("event:") {
             is_sse = true;
             event = value.strip_prefix(' ').unwrap_or(value).to_owned();
-        } else if line == "data" || line.starts_with("id:") || line.starts_with("retry:") || line.starts_with(':') {
+        } else if line == "data"
+            || line.starts_with("id:")
+            || line.starts_with("retry:")
+            || line.starts_with(':')
+        {
             is_sse = true;
         }
     }
@@ -468,7 +490,8 @@ impl TranslatingStream {
         self.buffer.extend_from_slice(bytes);
         while let Some(end) = crate::routes::sse_frame_end(&self.buffer) {
             let frame: Vec<u8> = self.buffer.drain(..end).collect();
-            let frame = std::str::from_utf8(&frame).map_err(|error| format!("upstream SSE frame is not UTF-8: {error}"))?;
+            let frame = std::str::from_utf8(&frame)
+                .map_err(|error| format!("upstream SSE frame is not UTF-8: {error}"))?;
             for chunk in self.translator.frame(frame)? {
                 self.queued.push_back(TranslatedItem::Chunk(chunk));
             }
@@ -482,7 +505,8 @@ impl TranslatingStream {
     fn end(&mut self) -> Result<(), String> {
         let tail = std::mem::take(&mut self.buffer);
         if !tail.is_empty() {
-            let tail = std::str::from_utf8(&tail).map_err(|error| format!("upstream body is not UTF-8: {error}"))?;
+            let tail =
+                std::str::from_utf8(&tail).map_err(|error| format!("upstream body is not UTF-8: {error}"))?;
             for chunk in self.translator.frame(tail)? {
                 self.queued.push_back(TranslatedItem::Chunk(chunk));
             }
@@ -584,8 +608,12 @@ impl MergedOpenAiStream {
                 self.output.push_back(sse_bytes(&finish));
             }
             if self.usage.is_known() {
-                self.output
-                    .push_back(sse_bytes(&usage_chunk(&self.id, &self.model, self.created, &self.usage)));
+                self.output.push_back(sse_bytes(&usage_chunk(
+                    &self.id,
+                    &self.model,
+                    self.created,
+                    &self.usage,
+                )));
             }
         } else {
             for (position, mut finish) in held.into_iter().enumerate() {
@@ -673,7 +701,10 @@ fn usage_from_openai(usage: Option<&Value>) -> Result<UsageTotals, String> {
     Ok(UsageTotals {
         prompt_tokens: usage_u64(usage.get("prompt_tokens"), "prompt_tokens")?,
         completion_tokens: usage_u64(usage.get("completion_tokens"), "completion_tokens")?,
-        cached_tokens: usage_u64(usage.pointer("/prompt_tokens_details/cached_tokens"), "cached_tokens")?,
+        cached_tokens: usage_u64(
+            usage.pointer("/prompt_tokens_details/cached_tokens"),
+            "cached_tokens",
+        )?,
         reasoning_tokens: usage_u64(
             usage.pointer("/completion_tokens_details/reasoning_tokens"),
             "reasoning_tokens",
@@ -694,7 +725,10 @@ mod tests {
 
     #[test]
     fn provider_lookup_and_native_auth() {
-        assert!(adapter_for("google").is_none(), "the Gemini dialect registers as \"gemini\"");
+        assert!(
+            adapter_for("google").is_none(),
+            "the Gemini dialect registers as \"gemini\""
+        );
         assert!(adapter_for("").is_none());
         for name in SUPPORTED_PROVIDERS {
             let kind = adapter_for(name).unwrap();
@@ -703,8 +737,6 @@ mod tests {
         assert_eq!(ProviderKind::OpenAi.native_auth_header(), None);
         assert_eq!(ProviderKind::Anthropic.native_auth_header(), Some("x-api-key"));
         assert_eq!(ProviderKind::Gemini.native_auth_header(), Some("x-goog-api-key"));
-        assert!(!ProviderKind::OpenAi.translates());
-        assert!(ProviderKind::Anthropic.translates() && ProviderKind::Gemini.translates());
     }
 
     #[test]
@@ -721,7 +753,9 @@ mod tests {
     #[test]
     fn helpers_read_openai_request_fields() {
         assert_eq!(
-            content_text(Some(&json!([{"type":"text","text":"a"},{"type":"image_url"},{"type":"text","text":"b"}]))),
+            content_text(Some(
+                &json!([{"type":"text","text":"a"},{"type":"image_url"},{"type":"text","text":"b"}])
+            )),
             Some("ab".to_owned())
         );
         assert_eq!(content_text(Some(&json!("plain"))), Some("plain".to_owned()));
@@ -734,7 +768,10 @@ mod tests {
         assert_eq!(base64_data_url("data:text/plain,hello"), None);
         assert_eq!(arguments_object(Some(&json!(""))).unwrap(), json!({}));
         assert_eq!(arguments_object(None).unwrap(), json!({}));
-        assert_eq!(arguments_object(Some(&json!("{\"a\":1}"))).unwrap(), json!({"a": 1}));
+        assert_eq!(
+            arguments_object(Some(&json!("{\"a\":1}"))).unwrap(),
+            json!({"a": 1})
+        );
         assert!(arguments_object(Some(&json!("[1]"))).is_err());
         assert!(arguments_object(Some(&json!("{nope"))).is_err());
         assert_eq!(requested_max_tokens(&json!({"max_tokens": 5})), Some(5));
@@ -744,9 +781,14 @@ mod tests {
         );
         assert_eq!(requested_max_tokens(&json!({"max_tokens": 0})), None);
         assert_eq!(stop_sequences(&json!({"stop": "x"})), vec![json!("x")]);
-        assert_eq!(stop_sequences(&json!({"stop": ["x", 1, "y"]})), vec![json!("x"), json!("y")]);
+        assert_eq!(
+            stop_sequences(&json!({"stop": ["x", 1, "y"]})),
+            vec![json!("x"), json!("y")]
+        );
         assert!(wants_stream(&json!({"stream": true})) && !wants_stream(&json!({})));
-        assert!(wants_usage_chunk(&json!({"stream_options": {"include_usage": true}})));
+        assert!(wants_usage_chunk(
+            &json!({"stream_options": {"include_usage": true}})
+        ));
     }
 
     #[test]
@@ -842,7 +884,9 @@ mod tests {
     impl StreamTranslator for Echo {
         fn frame(&mut self, raw: &str) -> Result<Vec<Value>, String> {
             let frame = split_sse_frame(raw);
-            let Some(data) = frame.data else { return Ok(Vec::new()) };
+            let Some(data) = frame.data else {
+                return Ok(Vec::new());
+            };
             if data == "FAIL" {
                 return Err("upstream said fail".to_owned());
             }
@@ -850,7 +894,14 @@ mod tests {
                 return Ok(vec![chunk("id", "m", 1, self.index, json!({}), Some("stop"))]);
             }
             self.completion += 1;
-            Ok(vec![chunk("id", "m", 1, self.index, json!({"content": data}), None)])
+            Ok(vec![chunk(
+                "id",
+                "m",
+                1,
+                self.index,
+                json!({"content": data}),
+                None,
+            )])
         }
         fn finish(&mut self) -> Result<(Vec<Value>, UsageTotals), String> {
             Ok((
@@ -866,8 +917,10 @@ mod tests {
     }
 
     fn byte_stream(frames: &[&str]) -> BoxStream<'static, Result<Bytes, std::io::Error>> {
-        let owned: Vec<Result<Bytes, std::io::Error>> =
-            frames.iter().map(|frame| Ok(Bytes::from((*frame).to_owned()))).collect();
+        let owned: Vec<Result<Bytes, std::io::Error>> = frames
+            .iter()
+            .map(|frame| Ok(Bytes::from((*frame).to_owned())))
+            .collect();
         futures::stream::iter(owned).boxed()
     }
 
@@ -893,22 +946,35 @@ mod tests {
     async fn merged_stream_interleaves_choices_and_sums_usage_with_standalone_chunk() {
         let first = TranslatingStream::new(
             byte_stream(&["data: a1\n\n", "data: a2\n\ndata: END\n\n"]),
-            Box::new(Echo { index: 0, completion: 0 }),
+            Box::new(Echo {
+                index: 0,
+                completion: 0,
+            }),
         );
         let second = TranslatingStream::new(
             byte_stream(&["data: b1\n\n", "data: END\n\n"]),
-            Box::new(Echo { index: 1, completion: 0 }),
+            Box::new(Echo {
+                index: 1,
+                completion: 0,
+            }),
         );
         let merged = MergedOpenAiStream::new(vec![first, second], true, "id".into(), "m".into(), 1);
         let frames = collect(merged).await.unwrap();
         let finishes = frames
             .iter()
-            .filter(|frame| frame.pointer("/choices/0/finish_reason").is_some_and(|r| r == "stop"))
+            .filter(|frame| {
+                frame
+                    .pointer("/choices/0/finish_reason")
+                    .is_some_and(|r| r == "stop")
+            })
             .count();
         assert_eq!(finishes, 2, "one finish per choice: {frames:?}");
         let usage = &frames[frames.len() - 2];
         assert_eq!(usage["choices"], json!([]));
-        assert_eq!(usage["usage"]["prompt_tokens"], 20, "both requests bill their prompt");
+        assert_eq!(
+            usage["usage"]["prompt_tokens"], 20,
+            "both requests bill their prompt"
+        );
         assert_eq!(usage["usage"]["completion_tokens"], 3);
         assert_eq!(frames[frames.len() - 1], json!("[DONE]"));
         let indexes: std::collections::BTreeSet<u64> = frames
@@ -922,7 +988,10 @@ mod tests {
     async fn merged_stream_without_include_usage_folds_usage_into_last_finish() {
         let only = TranslatingStream::new(
             byte_stream(&["data: a1\n\n", "data: END\n\n"]),
-            Box::new(Echo { index: 0, completion: 0 }),
+            Box::new(Echo {
+                index: 0,
+                completion: 0,
+            }),
         );
         let merged = MergedOpenAiStream::new(vec![only], false, "id".into(), "m".into(), 1);
         let frames = collect(merged).await.unwrap();
@@ -938,7 +1007,10 @@ mod tests {
     async fn merged_stream_propagates_translator_failures() {
         let failing = TranslatingStream::new(
             byte_stream(&["data: a1\n\n", "data: FAIL\n\n"]),
-            Box::new(Echo { index: 0, completion: 0 }),
+            Box::new(Echo {
+                index: 0,
+                completion: 0,
+            }),
         );
         let merged = MergedOpenAiStream::new(vec![failing], true, "id".into(), "m".into(), 1);
         let error = collect(merged).await.unwrap_err();
@@ -949,7 +1021,10 @@ mod tests {
     async fn translating_stream_feeds_unterminated_tail_at_eof() {
         let tail = TranslatingStream::new(
             byte_stream(&["data: a1\n\ndata: END"]),
-            Box::new(Echo { index: 0, completion: 0 }),
+            Box::new(Echo {
+                index: 0,
+                completion: 0,
+            }),
         );
         let merged = MergedOpenAiStream::new(vec![tail], true, "id".into(), "m".into(), 1);
         let frames = collect(merged).await.unwrap();

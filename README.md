@@ -154,8 +154,8 @@ cargo install --path crates/pv-cli       # installs `pvctl`
 |---|---|---|
 | `openai` | api.openai.com | `OPENAI_API_KEY` |
 | `azure` | your-resource.openai.azure.com | `AZURE_OPENAI_API_KEY` |
-| `anthropic` | api.anthropic.com | `ANTHROPIC_API_KEY` |
-| `gemini` | generativelanguage.googleapis.com/v1beta/openai | `GEMINI_API_KEY` |
+| `anthropic` | api.anthropic.com (native Messages API) | `ANTHROPIC_API_KEY` |
+| `gemini` | generativelanguage.googleapis.com (native generateContent API) | `GEMINI_API_KEY` |
 | `groq` | api.groq.com/openai | `GROQ_API_KEY` |
 | `mistral` | api.mistral.ai | `MISTRAL_API_KEY` |
 | `openrouter` | openrouter.ai/api | `OPENROUTER_API_KEY` |
@@ -169,10 +169,18 @@ cargo install --path crates/pv-cli       # installs `pvctl`
 | `litellm` | 127.0.0.1:4000 | `LITELLM_MASTER_KEY` |
 | `custom` | `--upstream-url ...` | `--key-env NAME` |
 
-Requests are forwarded to the upstream unchanged. The `provider` setting
-(`openai`, `anthropic`, or `gemini`) only selects how the upstream
-response frames are parsed; the `anthropic` and `gemini` presets point at
-those vendors' OpenAI-compatible endpoints, not at their native APIs.
+Your agent always speaks the OpenAI chat-completions format to
+ProofVisor. With `provider = "openai"` (the default, used by every preset
+except two) the request is forwarded to the upstream unchanged. The
+`anthropic` and `gemini` presets set `provider = "anthropic"` or
+`provider = "gemini"`. ProofVisor then translates each request into that
+vendor's native API (Anthropic Messages, Gemini `generateContent`) and
+translates the answer back into OpenAI chat-completion objects and
+stream chunks, including tool calls, stop reasons and token usage.
+Anthropic requires an output limit, so a request without `max_tokens`
+gets `provider_default_max_tokens` (4096 unless you change it). See
+[OPENAI-COMPATIBILITY.md](docs/reference/OPENAI-COMPATIBILITY.md) for the
+exact mapping and for how `n > 1` works with each provider.
 
 `pvctl doctor` diagnoses the environment (config resolution, key presence, upstream reachability, data dirs, backends, budget posture) without printing secrets. `pvctl health` probes a running instance. `pvctl start` launches the server for you (logs to `~/.proofvisor/proofvisor.log`) and waits until it answers.
 

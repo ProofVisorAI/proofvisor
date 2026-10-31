@@ -20,9 +20,9 @@ pub enum Preset {
     Openai,
     /// Azure OpenAI (custom deployment path + `api-key` header).
     Azure,
-    /// Anthropic's OpenAI-compatible endpoint (api.anthropic.com).
+    /// Anthropic's native Messages API (api.anthropic.com).
     Anthropic,
-    /// Google Gemini's OpenAI-compatible endpoint.
+    /// Google Gemini's native generateContent API.
     Gemini,
     /// Groq (api.groq.com/openai).
     Groq,
@@ -57,6 +57,9 @@ struct PresetSpec {
     auth_header: Option<&'static str>,
     /// `Some("")` means "raw key, no scheme prefix".
     auth_scheme: Option<&'static str>,
+    /// Native wire dialect (`provider = "..."`); `None` keeps the
+    /// OpenAI default.
+    provider: Option<&'static str>,
     notes: &'static [&'static str],
 }
 
@@ -67,6 +70,7 @@ fn spec(preset: Preset) -> PresetSpec {
         key_env: env,
         auth_header: None,
         auth_scheme: None,
+        provider: None,
         notes: &[],
     };
     match preset {
@@ -77,19 +81,22 @@ fn spec(preset: Preset) -> PresetSpec {
             key_env: Some("AZURE_OPENAI_API_KEY"),
             auth_header: Some("api-key"),
             auth_scheme: Some(""),
+            provider: None,
             notes: &[
                 "Replace YOUR-RESOURCE with your Azure OpenAI resource name.",
                 "Replace YOUR-DEPLOYMENT with your model deployment name.",
             ],
         },
-        Preset::Anthropic => plain("https://api.anthropic.com", Some("ANTHROPIC_API_KEY")),
+        Preset::Anthropic => PresetSpec {
+            provider: Some("anthropic"),
+            ..plain("https://api.anthropic.com", Some("ANTHROPIC_API_KEY"))
+        },
         Preset::Gemini => PresetSpec {
-            upstream_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-            chat_path: Some("/chat/completions"),
-            key_env: Some("GEMINI_API_KEY"),
-            auth_header: None,
-            auth_scheme: None,
-            notes: &[],
+            provider: Some("gemini"),
+            ..plain(
+                "https://generativelanguage.googleapis.com",
+                Some("GEMINI_API_KEY"),
+            )
         },
         Preset::Groq => plain("https://api.groq.com/openai", Some("GROQ_API_KEY")),
         Preset::Mistral => plain("https://api.mistral.ai", Some("MISTRAL_API_KEY")),
@@ -108,6 +115,7 @@ fn spec(preset: Preset) -> PresetSpec {
             key_env: None,
             auth_header: None,
             auth_scheme: None,
+            provider: None,
             notes: &["Pass --key-env NAME if the endpoint needs an API key."],
         },
     }
@@ -205,9 +213,16 @@ fn render_config(plan: &ConfigPlan) -> String {
     out.push_str("config_version = 1\n\n");
     out.push_str("# Address the proxy listens on. Use \"0.0.0.0:8484\" inside containers.\n");
     out.push_str("listen = \"127.0.0.1:8484\"\n\n");
-    out.push_str("# OpenAI-compatible provider base URL.\n");
-    out.push_str(&format!("upstream_url = \"{upstream_url}\"\n"));
-    if let Some(path) = chat_path {
+    if let Some(provider) = spec.provider {
+        out.push_str("# Provider base URL. The native adapter translates OpenAI requests\n");
+        out.push_str("# into this provider's own API and owns the request path.\n");
+        out.push_str(&format!("upstream_url = \"{upstream_url}\"\n"));
+        out.push_str(&format!("provider = \"{provider}\"\n"));
+    } else {
+        out.push_str("# OpenAI-compatible provider base URL.\n");
+        out.push_str(&format!("upstream_url = \"{upstream_url}\"\n"));
+    }
+    if let Some(path) = chat_path.filter(|_| spec.provider.is_none()) {
         out.push_str("# Provider-specific chat completions path.\n");
         out.push_str(&format!("upstream_chat_path = \"{path}\"\n"));
     }

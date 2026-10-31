@@ -698,7 +698,8 @@ impl HotMetrics {
 pub fn effective_upstream_auth_header(config: &HarnessConfig) -> (String, String) {
     let at_defaults = config.upstream_auth_header.eq_ignore_ascii_case("authorization")
         && config.upstream_auth_scheme.eq_ignore_ascii_case("bearer");
-    let native = crate::provider::adapter_for(&config.provider).and_then(crate::provider::ProviderKind::native_auth_header);
+    let native = crate::provider::adapter_for(&config.provider)
+        .and_then(crate::provider::ProviderKind::native_auth_header);
     match native {
         Some(header) if at_defaults => (header.to_owned(), String::new()),
         _ => (
@@ -2934,9 +2935,19 @@ impl AppState {
         if let Some(error) = first_error {
             // Sibling responses of a fan-out drop here, which cancels
             // them: a request that only partly reached the provider is
-            // reported as one upstream failure.
+            // reported as one upstream failure. A sibling that answered
+            // proves the provider saw (and may bill) this request, so a
+            // connect failure on another sibling must not refund it.
+            let reached_provider = !responses.is_empty();
             drop(responses);
-            return Err(self.upstream_send_failed(error, session, identity, capture_guard, debited_tokens));
+            return Err(self.upstream_send_failed(
+                error,
+                session,
+                identity,
+                capture_guard,
+                debited_tokens,
+                reached_provider,
+            ));
         }
         let Some(translation) = translation else {
             let Some(response) = responses.pop() else {
@@ -2944,7 +2955,12 @@ impl AppState {
                 // exactly one body); keep the guard armed so its drop
                 // retires the marker and closes the attempt.
                 drop(capture_guard);
-                self.enqueue_failure(session, identity, StopReason::Other, "upstream_no_response".to_owned())?;
+                self.enqueue_failure(
+                    session,
+                    identity,
+                    StopReason::Other,
+                    "upstream_no_response".to_owned(),
+                )?;
                 return Err(PipelineError::upstream("no upstream response".to_owned()));
             };
             if response.status().is_server_error() {
@@ -3007,12 +3023,13 @@ impl AppState {
                 })
             }
             ProviderKind::Anthropic => {
-                let body = provider::anthropic::build_request(payload, self.config.provider_default_max_tokens)
-                    .map_err(|reason| {
-                        PipelineError::bad_request(format!(
-                            "request cannot be expressed in the Anthropic Messages API: {reason}"
-                        ))
-                    })?;
+                let body =
+                    provider::anthropic::build_request(payload, self.config.provider_default_max_tokens)
+                        .map_err(|reason| {
+                            PipelineError::bad_request(format!(
+                                "request cannot be expressed in the Anthropic Messages API: {reason}"
+                            ))
+                        })?;
                 let bytes = serde_json::to_vec(&body).map_err(|error| {
                     PipelineError::bad_request(format!("translated request is not serializable: {error}"))
                 })?;
@@ -3047,7 +3064,8 @@ impl AppState {
                     .filter(|model| !model.is_empty())
                     .ok_or_else(|| PipelineError::bad_request("model is required".to_owned()))?;
                 let stream = provider::wants_stream(payload);
-                let path = provider::gemini::request_path(model, stream).map_err(PipelineError::bad_request)?;
+                let path =
+                    provider::gemini::request_path(model, stream).map_err(PipelineError::bad_request)?;
                 let body = provider::gemini::build_request(payload).map_err(|reason| {
                     PipelineError::bad_request(format!(
                         "request cannot be expressed in the Gemini generateContent API: {reason}"
@@ -3103,8 +3121,9 @@ impl AppState {
             .or_else(|| raw.strip_prefix("bearer "))
             .unwrap_or(raw)
             .trim();
-        let mut value = HeaderValue::from_str(token)
-            .map_err(|_| PipelineError::bad_request("authorization token is not a valid header value".to_owned()))?;
+        let mut value = HeaderValue::from_str(token).map_err(|_| {
+            PipelineError::bad_request("authorization token is not a valid header value".to_owned())
+        })?;
         value.set_sensitive(true);
         Ok(Some((HeaderName::from_static(header), value)))
     }
@@ -3136,7 +3155,10 @@ impl AppState {
             NativeDialect::Anthropic => provider::ProviderKind::Anthropic,
             NativeDialect::Gemini => provider::ProviderKind::Gemini,
         };
-        if let Some(position) = responses.iter().position(|response| !response.status().is_success()) {
+        if let Some(position) = responses
+            .iter()
+            .position(|response| !response.status().is_success())
+        {
             let failed = responses.swap_remove(position);
             // Dropping the siblings cancels them.
             drop(responses);
@@ -3157,7 +3179,9 @@ impl AppState {
             }
             // A failed error-body read still answers with the status;
             // the envelope then carries a generic message.
-            let body = read_bounded(failed, MAX_ERROR_BODY_BYTES).await.unwrap_or_default();
+            let body = read_bounded(failed, MAX_ERROR_BODY_BYTES)
+                .await
+                .unwrap_or_default();
             let envelope = provider::openai_error_envelope(provider_kind, status.as_u16(), &body);
             return ForwardedResponse {
                 status,
@@ -3180,12 +3204,14 @@ impl AppState {
                 .map(|(position, response)| {
                     let index = u64::try_from(position).unwrap_or(u64::MAX);
                     let translator: Box<dyn StreamTranslator> = match dialect {
-                        NativeDialect::Anthropic => Box::new(provider::anthropic::AnthropicStreamTranslator::new(
-                            index,
-                            id.clone(),
-                            model.clone(),
-                            created,
-                        )),
+                        NativeDialect::Anthropic => {
+                            Box::new(provider::anthropic::AnthropicStreamTranslator::new(
+                                index,
+                                id.clone(),
+                                model.clone(),
+                                created,
+                            ))
+                        }
                         NativeDialect::Gemini => Box::new(provider::gemini::GeminiStreamTranslator::new(
                             id.clone(),
                             model.clone(),
@@ -3211,18 +3237,25 @@ impl AppState {
                 let mut completions = Vec::with_capacity(responses.len());
                 for (position, response) in responses.into_iter().enumerate() {
                     let bytes = read_bounded(response, MAX_NATIVE_BODY_BYTES).await?;
-                    let value: Value = serde_json::from_slice(&bytes)
-                        .map_err(|error| std::io::Error::other(format!("upstream body is not JSON: {error}")))?;
+                    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+                        std::io::Error::other(format!("upstream body is not JSON: {error}"))
+                    })?;
                     let index = u64::try_from(position).unwrap_or(u64::MAX);
                     let completion = match dialect {
-                        NativeDialect::Anthropic => provider::anthropic::translate_message(&value, &id, created, index),
-                        NativeDialect::Gemini => provider::gemini::translate_response(&value, &id, created, &model),
+                        NativeDialect::Anthropic => {
+                            provider::anthropic::translate_message(&value, &id, created, index)
+                        }
+                        NativeDialect::Gemini => {
+                            provider::gemini::translate_response(&value, &id, created, &model)
+                        }
                     }
                     .map_err(std::io::Error::other)?;
                     completions.push(completion);
                 }
                 let merged = if completions.len() == 1 {
-                    completions.pop().ok_or_else(|| std::io::Error::other("no upstream completion"))?
+                    completions
+                        .pop()
+                        .ok_or_else(|| std::io::Error::other("no upstream completion"))?
                 } else {
                     provider::merge_completions(completions).map_err(std::io::Error::other)?
                 };
@@ -3250,6 +3283,7 @@ impl AppState {
         identity: AgentIdentity,
         mut capture_guard: ResponseCaptureGuard,
         debited_tokens: u64,
+        reached_provider: bool,
     ) -> PipelineError {
         let kind = UpstreamErrorKind::from_reqwest(&error);
         #[allow(clippy::indexing_slicing)]
@@ -3285,11 +3319,15 @@ impl AppState {
         // reached the provider, so the debit conservatively
         // stands. Best-effort; a store blip must never turn a
         // 502 into a 5xx cascade.
-        if error.is_connect() {
-            ActionBudget::new(self.store.as_ref(), &session.id, &self.config.budget).refund_tokens(debited_tokens);
+        // A sibling of an Anthropic fan-out that got an answer counts
+        // as "may have reached the provider" for the whole request.
+        if error.is_connect() && !reached_provider {
+            ActionBudget::new(self.store.as_ref(), &session.id, &self.config.budget)
+                .refund_tokens(debited_tokens);
             if let Some(spec) = self.config.principal_budget.as_ref() {
                 let principal_id = principal_id_for_budget(&identity);
-                ActionBudget::for_principal(self.store.as_ref(), &principal_id, spec).refund_tokens(debited_tokens);
+                ActionBudget::for_principal(self.store.as_ref(), &principal_id, spec)
+                    .refund_tokens(debited_tokens);
             }
         }
         tracing::warn!(

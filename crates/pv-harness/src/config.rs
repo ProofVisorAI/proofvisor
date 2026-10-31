@@ -1964,7 +1964,9 @@ impl HarnessConfig {
             ));
         }
         if self.provider_default_max_tokens == 0 {
-            errors.push("provider_default_max_tokens must be at least 1 (Anthropic requires max_tokens)".into());
+            errors.push(
+                "provider_default_max_tokens must be at least 1 (Anthropic requires max_tokens)".into(),
+            );
         }
         if self.bridge_manifest_path.is_empty() {
             errors.push("bridge_manifest_path is required".into());

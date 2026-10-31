@@ -25,9 +25,14 @@
 //!   `presencePenalty`, `frequencyPenalty`, and `response_format` →
 //!   `responseMimeType` (+ `responseJsonSchema`).
 //!
-//! Dropped: `user`, `logit_bias`, `logprobs`, `top_logprobs`, `store`,
-//! `service_tier`, per-message `name`, tool-call ids (Gemini
-//! correlates function responses by name).
+//! Refused with a 400: `logprobs`/`top_logprobs` (Gemini's log
+//! probabilities do not map onto OpenAI's per-token shape), and
+//! `response_format` types other than `text`, `json_object` and
+//! `json_schema`.
+//!
+//! Dropped: `user`, `logit_bias`, `store`, `service_tier`, per-message
+//! `name`, tool-call ids (Gemini correlates function responses by
+//! name).
 //!
 //! Response: `candidates[]` → `choices[]` keyed by candidate `index`;
 //! text parts → `content` (parts flagged `thought` →
@@ -77,6 +82,7 @@ pub(crate) fn build_request(payload: &Value) -> Result<Value, String> {
         .get("messages")
         .and_then(Value::as_array)
         .ok_or_else(|| "messages must be an array".to_owned())?;
+    super::refuse_logprobs(payload)?;
     let mut system_parts: Vec<Value> = Vec::new();
     let mut contents: Vec<Value> = Vec::new();
     let mut pending_responses: Vec<Value> = Vec::new();
@@ -182,14 +188,19 @@ pub(crate) fn build_request(payload: &Value) -> Result<Value, String> {
                 set(&mut generation, "responseJsonSchema", schema.clone());
             }
         }
-        _ => {}
+        None | Some("text") => {}
+        Some(other) => return Err(format!("response_format {other:?} is not supported")),
     }
     if generation.as_object().is_some_and(|object| !object.is_empty()) {
         set(&mut body, "generationConfig", generation);
     }
     let declarations = function_declarations(payload.get("tools"))?;
     if !declarations.is_empty() {
-        set(&mut body, "tools", json!([{"functionDeclarations": declarations}]));
+        set(
+            &mut body,
+            "tools",
+            json!([{"functionDeclarations": declarations}]),
+        );
         if let Some(config) = function_calling_config(payload.get("tool_choice"))? {
             set(&mut body, "toolConfig", json!({"functionCallingConfig": config}));
         }
@@ -222,7 +233,8 @@ fn user_parts(content: Option<&Value>) -> Result<Vec<Value>, String> {
                             .and_then(Value::as_str)
                             .ok_or_else(|| "image_url parts need image_url.url".to_owned())?;
                         let (mime_type, data) = base64_data_url(url).ok_or_else(|| {
-                            "Gemini accepts images only as base64 data URLs (data:<mime>;base64,...)".to_owned()
+                            "Gemini accepts images only as base64 data URLs (data:<mime>;base64,...)"
+                                .to_owned()
                         })?;
                         parts.push(json!({"inlineData": {"mimeType": mime_type, "data": data}}));
                     }
@@ -254,9 +266,16 @@ fn function_declarations(tools: Option<&Value>) -> Result<Vec<Value>, String> {
             .ok_or_else(|| "function tools need a name".to_owned())?;
         let mut declaration = json!({"name": name});
         if let Some(description) = function.get("description").and_then(Value::as_str) {
-            set(&mut declaration, "description", Value::String(description.to_owned()));
+            set(
+                &mut declaration,
+                "description",
+                Value::String(description.to_owned()),
+            );
         }
-        if let Some(parameters) = function.get("parameters").filter(|parameters| parameters.is_object()) {
+        if let Some(parameters) = function
+            .get("parameters")
+            .filter(|parameters| parameters.is_object())
+        {
             set(&mut declaration, "parametersJsonSchema", parameters.clone());
         }
         out.push(declaration);
@@ -355,9 +374,13 @@ fn gather_parts(candidate: &Value) -> Result<Gathered, String> {
             }
         }
         if let Some(call) = part.get("functionCall").filter(|call| !call.is_null()) {
-            let args = call.get("args").filter(|args| !args.is_null()).cloned().unwrap_or_else(|| json!({}));
-            let arguments =
-                serde_json::to_string(&args).map_err(|error| format!("function args are not serializable: {error}"))?;
+            let args = call
+                .get("args")
+                .filter(|args| !args.is_null())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let arguments = serde_json::to_string(&args)
+                .map_err(|error| format!("function args are not serializable: {error}"))?;
             gathered.tool_calls.push(json!({
                 "id": call.get("id").and_then(Value::as_str).map_or_else(fresh_tool_call_id, str::to_owned),
                 "type": "function",
@@ -383,11 +406,19 @@ fn candidate_index(candidate: &Value, position: usize) -> u64 {
 
 /// Translate one buffered `generateContent` response into an OpenAI
 /// `chat.completion`.
-pub(crate) fn translate_response(body: &Value, id: &str, created: u64, fallback_model: &str) -> Result<Value, String> {
+pub(crate) fn translate_response(
+    body: &Value,
+    id: &str,
+    created: u64,
+    fallback_model: &str,
+) -> Result<Value, String> {
     if let Some(error) = body.get("error").filter(|error| !error.is_null()) {
         return Err(format!(
             "upstream error: {}",
-            error.get("message").and_then(Value::as_str).unwrap_or("(no message)")
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("(no message)")
         ));
     }
     let candidates = match body.get("candidates") {
@@ -411,7 +442,11 @@ pub(crate) fn translate_response(body: &Value, id: &str, created: u64, fallback_
             set(&mut message, "content", Value::String(gathered.text));
         }
         if !gathered.reasoning.is_empty() {
-            set(&mut message, "reasoning_content", Value::String(gathered.reasoning));
+            set(
+                &mut message,
+                "reasoning_content",
+                Value::String(gathered.reasoning),
+            );
         }
         if !gathered.tool_calls.is_empty() {
             set(&mut message, "tool_calls", Value::Array(gathered.tool_calls));
@@ -508,7 +543,10 @@ impl StreamTranslator for GeminiStreamTranslator {
         let value: Value =
             serde_json::from_str(&data).map_err(|error| format!("invalid upstream JSON frame: {error}"))?;
         if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
-            let message = error.get("message").and_then(Value::as_str).unwrap_or("(no message)");
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("(no message)");
             let status = error.get("status").and_then(Value::as_str).unwrap_or("");
             return Err(if status.is_empty() {
                 format!("upstream stream error: {message}")
@@ -647,46 +685,76 @@ mod tests {
         assert_eq!(contents.len(), 4, "{contents:?}");
         assert_eq!(contents[0]["role"], "user");
         assert_eq!(contents[0]["parts"][0], json!({"text": "Describe"}));
-        assert_eq!(contents[0]["parts"][1], json!({"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}}));
+        assert_eq!(
+            contents[0]["parts"][1],
+            json!({"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}})
+        );
         assert_eq!(contents[1]["role"], "model");
         assert_eq!(contents[1]["parts"][0], json!({"text": "Looking."}));
-        assert_eq!(contents[1]["parts"][1], json!({"functionCall": {"name": "find", "args": {"q": "cat"}}}));
+        assert_eq!(
+            contents[1]["parts"][1],
+            json!({"functionCall": {"name": "find", "args": {"q": "cat"}}})
+        );
         assert_eq!(contents[2]["role"], "user");
-        assert_eq!(contents[2]["parts"][0], json!({"functionResponse": {"name": "find", "response": {"hits": 3}}}));
+        assert_eq!(
+            contents[2]["parts"][0],
+            json!({"functionResponse": {"name": "find", "response": {"hits": 3}}})
+        );
         assert_eq!(
             contents[2]["parts"][1],
             json!({"functionResponse": {"name": "call_missing", "response": {"result": "plain text"}}}),
             "unknown ids fall back to the id as name and wrap text in an object"
         );
         assert_eq!(contents[3]["parts"][0]["text"], "ok");
-        assert_eq!(body["generationConfig"], json!({
-            "temperature": 0.5,
-            "topP": 0.8,
-            "seed": 3,
-            "presencePenalty": 0.1,
-            "frequencyPenalty": 0.2,
-            "maxOutputTokens": 64,
-            "stopSequences": ["END"],
-            "candidateCount": 2,
-            "responseMimeType": "application/json",
-        }));
+        assert_eq!(
+            body["generationConfig"],
+            json!({
+                "temperature": 0.5,
+                "topP": 0.8,
+                "seed": 3,
+                "presencePenalty": 0.1,
+                "frequencyPenalty": 0.2,
+                "maxOutputTokens": 64,
+                "stopSequences": ["END"],
+                "candidateCount": 2,
+                "responseMimeType": "application/json",
+            })
+        );
         assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "find");
-        assert_eq!(body["tools"][0]["functionDeclarations"][0]["description"], "Find things");
-        assert_eq!(body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["properties"]["q"]["type"], "string");
-        assert_eq!(body["toolConfig"]["functionCallingConfig"], json!({"mode": "ANY", "allowedFunctionNames": ["find"]}));
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["description"],
+            "Find things"
+        );
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["properties"]["q"]["type"],
+            "string"
+        );
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"],
+            json!({"mode": "ANY", "allowedFunctionNames": ["find"]})
+        );
         assert!(body.get("user").is_none() && body.get("n").is_none());
 
         let base = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function", "function": {"name": "f"}}]});
         for (choice, mode) in [("auto", "AUTO"), ("none", "NONE"), ("required", "ANY")] {
             let mut payload = base.clone();
             set(&mut payload, "tool_choice", json!(choice));
-            assert_eq!(build_request(&payload).unwrap()["toolConfig"]["functionCallingConfig"]["mode"], mode);
+            assert_eq!(
+                build_request(&payload).unwrap()["toolConfig"]["functionCallingConfig"]["mode"],
+                mode
+            );
         }
-        let plain = build_request(&json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]})).unwrap();
+        let plain =
+            build_request(&json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]})).unwrap();
         assert!(plain.get("generationConfig").is_none() && plain.get("tools").is_none());
         let remote_image = json!({"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x/y.png"}}]}]});
-        assert!(build_request(&remote_image).is_err(), "Gemini has no remote image URL input");
-        assert!(build_request(&json!({"model": "m", "messages": [{"role": "tool", "content": "x"}]})).is_err());
+        assert!(
+            build_request(&remote_image).is_err(),
+            "Gemini has no remote image URL input"
+        );
+        assert!(
+            build_request(&json!({"model": "m", "messages": [{"role": "tool", "content": "x"}]})).is_err()
+        );
         assert!(build_request(&json!({"model": "m", "messages": [], "n": 9})).is_err());
     }
 
@@ -713,28 +781,58 @@ mod tests {
         assert_eq!(choices[0]["index"], 0, "choices are ordered by candidate index");
         assert_eq!(choices[0]["message"]["content"], "first");
         assert_eq!(choices[0]["message"]["reasoning_content"], "think");
-        assert_eq!(choices[0]["message"]["tool_calls"][0]["function"], json!({"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}));
-        assert_eq!(choices[0]["message"]["tool_calls"][1]["function"]["arguments"], "{}");
-        assert!(choices[0]["message"]["tool_calls"][0]["id"].as_str().unwrap().starts_with("call_"));
-        assert_eq!(choices[0]["finish_reason"], "tool_calls", "STOP with function calls finishes as tool_calls");
+        assert_eq!(
+            choices[0]["message"]["tool_calls"][0]["function"],
+            json!({"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"})
+        );
+        assert_eq!(
+            choices[0]["message"]["tool_calls"][1]["function"]["arguments"],
+            "{}"
+        );
+        assert!(choices[0]["message"]["tool_calls"][0]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("call_"));
+        assert_eq!(
+            choices[0]["finish_reason"], "tool_calls",
+            "STOP with function calls finishes as tool_calls"
+        );
         assert_eq!(choices[1]["index"], 1);
         assert_eq!(choices[1]["message"]["content"], "second");
         assert_eq!(choices[1]["finish_reason"], "length");
-        assert_eq!(completion["usage"], json!({
-            "prompt_tokens": 25,
-            "completion_tokens": 110,
-            "total_tokens": 135,
-            "prompt_tokens_details": {"cached_tokens": 5},
-            "completion_tokens_details": {"reasoning_tokens": 100},
-        }));
+        assert_eq!(
+            completion["usage"],
+            json!({
+                "prompt_tokens": 25,
+                "completion_tokens": 110,
+                "total_tokens": 135,
+                "prompt_tokens_details": {"cached_tokens": 5},
+                "completion_tokens_details": {"reasoning_tokens": 100},
+            })
+        );
 
-        let blocked = translate_response(&json!({"promptFeedback": {"blockReason": "SAFETY"}}), "id", 0, "m").unwrap();
+        let blocked = translate_response(
+            &json!({"promptFeedback": {"blockReason": "SAFETY"}}),
+            "id",
+            0,
+            "m",
+        )
+        .unwrap();
         assert_eq!(blocked["choices"][0]["finish_reason"], "content_filter");
         assert!(blocked["choices"][0]["message"]["content"].is_null());
-        let empty = translate_response(&json!({"candidates": [{"index": 0, "content": {"parts": []}, "finishReason": "STOP"}]}), "id", 0, "m").unwrap();
+        let empty = translate_response(
+            &json!({"candidates": [{"index": 0, "content": {"parts": []}, "finishReason": "STOP"}]}),
+            "id",
+            0,
+            "m",
+        )
+        .unwrap();
         assert_eq!(empty["choices"][0]["message"]["content"], "");
         assert_eq!(empty["choices"][0]["finish_reason"], "stop");
-        assert!(translate_response(&json!({}), "id", 0, "m").is_err(), "no candidates and no block is a failure");
+        assert!(
+            translate_response(&json!({}), "id", 0, "m").is_err(),
+            "no candidates and no block is a failure"
+        );
         assert!(translate_response(&json!({"error": {"message": "bad"}}), "id", 0, "m").is_err());
         for (native, expected) in [
             ("STOP", "stop"),
@@ -760,7 +858,10 @@ mod tests {
             .unwrap();
         assert_eq!(first.len(), 2);
         assert_eq!(first[0]["choices"][0]["index"], 0);
-        assert_eq!(first[0]["choices"][0]["delta"], json!({"role": "assistant", "content": "Hello"}));
+        assert_eq!(
+            first[0]["choices"][0]["delta"],
+            json!({"role": "assistant", "content": "Hello"})
+        );
         assert_eq!(first[1]["choices"][0]["index"], 1);
         assert_eq!(first[1]["choices"][0]["delta"]["content"], "Salut");
         assert_eq!(first[0]["model"], "gemini-2.0-flash-001");
@@ -768,7 +869,10 @@ mod tests {
             .frame("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{\"city\":\"Paris\"}}}]},\"index\":0},{\"content\":{\"parts\":[{\"text\":\"!\"}]},\"finishReason\":\"STOP\",\"index\":1}],\"usageMetadata\":{\"promptTokenCount\":25,\"candidatesTokenCount\":12,\"thoughtsTokenCount\":3}}\n\n")
             .unwrap();
         assert_eq!(second[0]["choices"][0]["delta"]["tool_calls"][0]["index"], 0);
-        assert_eq!(second[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"], "{\"city\":\"Paris\"}");
+        assert_eq!(
+            second[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"],
+            "{\"city\":\"Paris\"}"
+        );
         assert!(second[0]["choices"][0]["delta"].get("role").is_none());
         assert_eq!(second[1]["choices"][0]["delta"]["content"], "!");
         assert_eq!(second[2]["choices"][0]["index"], 1);
@@ -776,11 +880,21 @@ mod tests {
         let third = translator
             .frame("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"get_time\"}}]},\"finishReason\":\"STOP\",\"index\":0}]}\n\n")
             .unwrap();
-        assert_eq!(third[0]["choices"][0]["delta"]["tool_calls"][0]["index"], 1, "second call gets the next slot");
-        assert_eq!(third[1]["choices"][0]["finish_reason"], "tool_calls", "STOP after function calls finishes as tool_calls");
+        assert_eq!(
+            third[0]["choices"][0]["delta"]["tool_calls"][0]["index"], 1,
+            "second call gets the next slot"
+        );
+        assert_eq!(
+            third[1]["choices"][0]["finish_reason"], "tool_calls",
+            "STOP after function calls finishes as tool_calls"
+        );
         let (_, usage) = translator.finish().unwrap();
         assert_eq!(usage.prompt_tokens, Some(25));
-        assert_eq!(usage.completion_tokens, Some(15), "candidates + thoughts from the latest frame");
+        assert_eq!(
+            usage.completion_tokens,
+            Some(15),
+            "candidates + thoughts from the latest frame"
+        );
         assert_eq!(usage.reasoning_tokens, Some(3));
     }
 
@@ -791,15 +905,52 @@ mod tests {
             .frame("data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n")
             .unwrap();
         assert_eq!(blocked[0]["choices"][0]["finish_reason"], "content_filter");
-        assert!(translator.frame("data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n").unwrap().is_empty(), "the block is reported once");
+        assert!(
+            translator
+                .frame("data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n")
+                .unwrap()
+                .is_empty(),
+            "the block is reported once"
+        );
         assert!(translator.frame(": keepalive\n\n").unwrap().is_empty());
         assert!(translator.frame("data: [DONE]\n\n").unwrap().is_empty());
         let error = translator
             .frame("data: {\"error\":{\"code\":429,\"message\":\"resource exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n")
             .unwrap_err();
-        assert!(error.contains("RESOURCE_EXHAUSTED") && error.contains("resource exhausted"), "{error}");
-        assert!(translator.frame("event: custom\ndata: {\"candidates\":[]}\n\n").is_err(), "named frames are not Gemini");
+        assert!(
+            error.contains("RESOURCE_EXHAUSTED") && error.contains("resource exhausted"),
+            "{error}"
+        );
+        assert!(
+            translator
+                .frame("event: custom\ndata: {\"candidates\":[]}\n\n")
+                .is_err(),
+            "named frames are not Gemini"
+        );
         assert!(translator.frame("data: {not json\n\n").is_err());
-        assert!(translator.frame("data: {\"candidates\":[{\"index\":0,\"content\":{\"parts\":\"x\"}}]}\n\n").is_err());
+        assert!(translator
+            .frame("data: {\"candidates\":[{\"index\":0,\"content\":{\"parts\":\"x\"}}]}\n\n")
+            .is_err());
+    }
+
+    #[test]
+    fn requests_the_provider_cannot_honour_are_refused() {
+        let base = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        for (field, value) in [
+            ("logprobs", json!(true)),
+            ("top_logprobs", json!(3)),
+            ("response_format", json!({"type": "grammar"})),
+        ] {
+            let mut payload = base.clone();
+            payload[field] = value;
+            assert!(build_request(&payload).is_err(), "{field} must be refused");
+        }
+        let mut payload = base.clone();
+        payload["logprobs"] = json!(false);
+        payload["response_format"] = json!({"type": "text"});
+        assert!(
+            build_request(&payload).is_ok(),
+            "logprobs:false and a text format are harmless"
+        );
     }
 }

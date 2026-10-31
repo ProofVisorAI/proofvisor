@@ -4402,8 +4402,6 @@ pub(crate) struct ProviderToolCallDelta {
 
 #[derive(Debug)]
 pub(crate) struct ParsedProviderChunk {
-    pub(crate) message: String,
-    pub(crate) reasoning: Option<String>,
     pub(crate) model_name: Option<String>,
     pub(crate) metrics: pv_events::EventMetrics,
     pub(crate) usage_reported: bool,
@@ -4414,16 +4412,12 @@ pub(crate) struct ParsedProviderChunk {
     /// (`{"prompt_tokens": 7}` or `"completion_tokens": null`) would
     /// otherwise feed a non-cumulative estimate into cumulative math.
     pub(crate) completion_reported: bool,
-    pub(crate) finish_reason: Option<String>,
     pub(crate) cost_usd_micros: u64,
     pub(crate) cost_reported: bool,
     pub(crate) has_choices: bool,
     pub(crate) tool_call_deltas: Vec<ProviderToolCallDelta>,
-    /// Per-choice text, reasoning and finish reason. `message`,
-    /// `reasoning` and `finish_reason` above are the whole-frame
-    /// aggregates (every choice's text concatenated, the last finish
-    /// reason seen) kept for the token estimate and for callers that
-    /// do not care about choices.
+    /// Per-choice text, reasoning and finish reason, keyed by the
+    /// provider's `choices[].index`.
     pub(crate) choices: Vec<ParsedChoiceDelta>,
 }
 
@@ -4818,7 +4812,6 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
     let mut completion_tokens = None;
     let mut cached_tokens = None;
     let mut usage_reported = false;
-    let mut finish_reason = None;
     let mut cost_usd_micros = 0u64;
     let mut cost_reported = false;
     let mut tool_call_deltas = Vec::new();
@@ -5010,7 +5003,6 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
                 // rejects at publish (`minLength: 1`) — permanently
                 // fail-closing the session AFTER the bytes were
                 // already relayed. Treat empty as absent.
-                finish_reason = Some(reason.to_owned());
                 choice_delta.finish_reason = Some(reason.to_owned());
             }
             let content = choice
@@ -5080,8 +5072,6 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
         estimated
     });
     Ok(Some(ParsedProviderChunk {
-        message,
-        reasoning: (!reasoning.is_empty()).then_some(reasoning),
         model_name,
         metrics: pv_events::EventMetrics {
             prompt_tokens,
@@ -5092,7 +5082,6 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
         },
         usage_reported,
         completion_reported,
-        finish_reason,
         cost_usd_micros,
         cost_reported,
         has_choices,
@@ -6124,7 +6113,7 @@ mod tests {
     async fn test_state_anthropic(spool: &std::path::Path) -> (AppState, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let provider = Router::new().route("/v1/chat/completions", post(mock_anthropic_chat));
+        let provider = Router::new().route("/v1/messages", post(mock_anthropic_chat));
         let server = tokio::spawn(async move {
             axum::serve(listener, provider).await.unwrap();
         });
@@ -6211,7 +6200,10 @@ mod tests {
     async fn test_state_gemini(spool: &std::path::Path) -> (AppState, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let provider = Router::new().route("/v1/chat/completions", post(mock_gemini_chat));
+        let provider = Router::new().route(
+            "/v1beta/models/mock:streamGenerateContent",
+            post(mock_gemini_chat),
+        );
         let server = tokio::spawn(async move {
             axum::serve(listener, provider).await.unwrap();
         });
@@ -6236,7 +6228,7 @@ mod tests {
     /// S3 step 3: a session against a mock Gemini
     /// upstream produces the same audit-chain shape as an OpenAI one —
     /// provider-true usage, SCREAMING_CASE stop reason folded into the
-    /// stop taxonomy, verbatim relay.
+    /// stop taxonomy, and the native stream translated to OpenAI chunks.
     #[tokio::test]
     async fn gemini_session_records_the_same_audit_shape() {
         let directory = tempfile::tempdir().unwrap();
@@ -6250,7 +6242,13 @@ mod tests {
         let body = String::from_utf8_lossy(&body);
         assert!(
             body.contains("hello from gemini"),
-            "streamed bytes must relay verbatim: {body}"
+            "the translated stream must carry the upstream text: {body}"
+        );
+        assert!(
+            body.contains("\"object\":\"chat.completion.chunk\"")
+                && !body.contains("candidates")
+                && body.trim_end().ends_with("data: [DONE]"),
+            "an OpenAI client must receive OpenAI chunks, not the native stream: {body}"
         );
 
         let session = state.sessions.get("gemini-flow").unwrap();
@@ -6317,7 +6315,10 @@ mod tests {
     async fn test_state_gemini_tool(spool: &std::path::Path) -> (AppState, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let provider = Router::new().route("/v1/chat/completions", post(mock_gemini_tool_chat));
+        let provider = Router::new().route(
+            "/v1beta/models/mock:streamGenerateContent",
+            post(mock_gemini_tool_chat),
+        );
         let server = tokio::spawn(async move {
             axum::serve(listener, provider).await.unwrap();
         });
@@ -6439,7 +6440,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let upstream = Router::new().route("/v1/chat/completions", post(mock_gemini_parallel_tool_chat));
+        let upstream = Router::new().route(
+            "/v1beta/models/mock:streamGenerateContent",
+            post(mock_gemini_parallel_tool_chat),
+        );
         let provider = tokio::spawn(async move {
             axum::serve(listener, upstream).await.unwrap();
         });
@@ -6554,7 +6558,7 @@ mod tests {
     ) -> (AppState, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let provider = Router::new().route("/v1/chat/completions", post(mock_anthropic_refusal));
+        let provider = Router::new().route("/v1/messages", post(mock_anthropic_refusal));
         let server = tokio::spawn(async move {
             axum::serve(listener, provider).await.unwrap();
         });
@@ -6681,10 +6685,7 @@ mod tests {
     ) -> (AppState, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let provider = Router::new().route(
-            "/v1/chat/completions",
-            post(mock_anthropic_context_window_exceeded),
-        );
+        let provider = Router::new().route("/v1/messages", post(mock_anthropic_context_window_exceeded));
         let server = tokio::spawn(async move {
             axum::serve(listener, provider).await.unwrap();
         });
@@ -6776,7 +6777,8 @@ mod tests {
     /// S3 step 2: a session against a mock Anthropic
     /// upstream produces the same audit-chain shape as an OpenAI one —
     /// provider-true usage in the totals, the native stop reason folded
-    /// into the stop taxonomy, and the streamed bytes relayed verbatim.
+    /// into the stop taxonomy, and the native stream translated to
+    /// OpenAI chunks.
     #[tokio::test]
     async fn anthropic_session_records_the_same_audit_shape() {
         let directory = tempfile::tempdir().unwrap();
@@ -6790,7 +6792,13 @@ mod tests {
         let body = String::from_utf8_lossy(&body);
         assert!(
             body.contains("hello from anthropic"),
-            "streamed bytes must relay verbatim: {body}"
+            "the translated stream must carry the upstream text: {body}"
+        );
+        assert!(
+            body.contains("\"object\":\"chat.completion.chunk\"")
+                && !body.contains("message_start")
+                && body.trim_end().ends_with("data: [DONE]"),
+            "an OpenAI client must receive OpenAI chunks, not the native stream: {body}"
         );
 
         let session = state.sessions.get("anthropic-flow").unwrap();
@@ -7188,7 +7196,10 @@ mod tests {
 
     /// A single captured choice at index 0, for relay tests that start
     /// from an already-accumulated response.
-    fn captured_choice(text: &str, finish_reason: Option<&str>) -> std::collections::BTreeMap<u64, ChoiceCapture> {
+    fn captured_choice(
+        text: &str,
+        finish_reason: Option<&str>,
+    ) -> std::collections::BTreeMap<u64, ChoiceCapture> {
         let mut choices = std::collections::BTreeMap::new();
         choices.insert(
             0,
@@ -10059,14 +10070,14 @@ mod tests {
             "\"prompt_tokens_details\":{\"cached_tokens\":4}}}\n\n"
         );
         let parsed = parse_provider_chunk(raw).unwrap().unwrap();
-        assert_eq!(parsed.message, "answer");
-        assert_eq!(parsed.reasoning.as_deref(), Some("thought"));
+        assert_eq!(parsed.choices[0].content, "answer");
+        assert_eq!(parsed.choices[0].reasoning, "thought");
         assert_eq!(parsed.model_name.as_deref(), Some("gpt-test"));
         assert_eq!(parsed.metrics.prompt_tokens, Some(10));
         assert_eq!(parsed.metrics.completion_tokens, Some(3));
         assert_eq!(parsed.metrics.cached_tokens, Some(4));
         assert!(parsed.usage_reported);
-        assert_eq!(parsed.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(parsed.choices[0].finish_reason.as_deref(), Some("stop"));
         assert_eq!(parsed.cost_usd_micros, 1250);
         assert!(parsed.tool_call_deltas.is_empty());
     }
@@ -10084,7 +10095,7 @@ mod tests {
         let parsed = parse_provider_chunk(raw).unwrap().unwrap();
         assert!(!parsed.usage_reported, "null usage must not count as reported");
         assert!(!parsed.completion_reported);
-        assert_eq!(parsed.message, "Hello");
+        assert_eq!(parsed.choices[0].content, "Hello");
         // Estimated from the delta text, not taken from the null object.
         assert_eq!(
             parsed.metrics.completion_tokens,
@@ -10177,7 +10188,7 @@ mod tests {
         let parsed = parse_provider_chunk(raw)
             .expect("BOM-prefixed SSE frame must parse")
             .expect("must yield a chunk");
-        assert_eq!(parsed.message, "hi");
+        assert_eq!(parsed.choices[0].content, "hi");
     }
 
     /// SSE §9.2.8: an SSE client dispatches events by name, so
@@ -10213,7 +10224,7 @@ mod tests {
             Ok(None) => panic!("explicit event: message must yield a chunk"),
             Err(error) => panic!("explicit event: message must be accepted, got: {error}"),
         };
-        assert_eq!(parsed.message, "hi");
+        assert_eq!(parsed.choices[0].content, "hi");
     }
 
     /// A named SSE event with EMPTY
