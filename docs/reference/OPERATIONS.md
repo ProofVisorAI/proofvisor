@@ -200,6 +200,40 @@ enter the console URL, paste the deployment id and ingest token, then run:
 pvctl console-sync --watch
 ```
 
+### Pulling policies from the console
+
+Policies created in the console reach a daemon only through
+`console-sync` on the same host; the daemon itself never calls the
+console. Set `policy_bundle_file` in the daemon config (see
+[CONFIGURATION.md](CONFIGURATION.md#console-pushed-policy)) and add
+the same path to the sync command:
+
+```sh
+pvctl console-sync --watch --pull-policies \
+  --policy-bundle-file /var/lib/proofvisor/policies.json
+```
+
+Each pass sends `If-None-Match` with the bundle's etag and writes a
+changed bundle atomically with owner-only permissions. The daemon
+checks the file every `policy_bundle_poll_s` seconds, applies it, and
+writes `policies.json.status.json` with the policy ids it now enforces
+and the ones it could not enforce (with a reason, for example a kind or
+spec field newer than the daemon). `pvctl` posts that file to the
+console, which then shows "Enforced by N of M daemons" and names
+daemons that still run an older bundle. Without `--watch`, `pvctl`
+waits up to 20 seconds for the daemon to apply a new bundle before it
+reports.
+
+Pushed policies only tighten the host's own config: a pushed budget
+cap binds only when it is stricter than the local `[budget]`, and
+pushed allowlists and schemas run in addition to the local ones. If
+the console were compromised it could block calls, but it could not
+allow a call the local config refuses. A newer bundle file the daemon
+cannot apply leaves the rules in force unchanged and records the error
+in the status file; at boot, such a file stops the daemon, so it never
+silently runs without rules it was given. `guardrail` and `transform`
+policies document intent and are not enforced by daemons.
+
 ### Releasing a quarantined session id
 
 A SIGKILL / OOMKill / node loss mid-request leaves a sealed marker
