@@ -16,14 +16,14 @@ datasource db {
 
 // A person with a login. Owns one or more organizations.
 model User {
-  id               String    @id @default(cuid())
-  email            String    @unique
-  passwordHash     String
-  displayName      String?
+  id                    String    @id @default(cuid())
+  email                 String    @unique
+  passwordHash          String
+  displayName           String?
   // Short-lived password-reset token (argon2-hashed). Both the token and the
   // "issuedAt" timestamp are cleared on successful use or expiry (24h).
-  resetTokenHash   String?
-  resetTokenAt     DateTime?
+  resetTokenHash        String?
+  resetTokenAt          DateTime?
   // Pending email change: the NEW address awaiting verification, plus the
   // argon2-hashed token mailed to it. Cleared on confirm/cancel/overwrite;
   // stale requests expire after 24h (checked at confirm time, same TTL
@@ -45,9 +45,9 @@ model User {
   // is rejected in authenticate(). Bumped on logout and password change so
   // a captured cookie stops working immediately even though the JWT itself
   // is still cryptographically valid until its 7-day exp.
-  sessionRevokedAt DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  sessionRevokedAt      DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   memberships         Membership[]
   webauthnCredentials WebauthnCredential[]
@@ -285,7 +285,7 @@ model SamlConfig {
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
-  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org           Org                @relation(fields: [orgId], references: [id], onDelete: Cascade)
   authnRequests SamlAuthnRequest[]
 
   @@unique([orgId, displayName])
@@ -366,15 +366,44 @@ model Deployment {
   ingestTokenHash String
   ingestTokenHint String // prefix plus first 8 chars (pv_live_XXXXXXXX) for UI display
   lastIngestAt    DateTime?
+  // True for the "demo-attack" deployment the console's live-mode
+  // "Simulate an attack" creates. Its sessions and receipts are staged
+  // by the server (signed with the public demo key), labeled as demo
+  // everywhere, excluded from policy-enforcement totals, and removed
+  // as a unit by DELETE /api/v1/demo.
+  isDemo          Boolean   @default(false)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  org      Org       @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  sessions Session[]
+  org          Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sessions     Session[]
+  policyStatus DeploymentPolicyStatus?
 
   @@unique([orgId, name])
   @@index([orgId])
   @@map("deployments")
+}
+
+// What a daemon last reported about the policy bundle it pulled from
+// GET /api/v1/ingest/policies. One row per deployment, upserted by
+// POST /api/v1/ingest/policy-status. `etag` is the bundle hash the
+// daemon applied; comparing it with the org's current bundle etag tells
+// the console whether that daemon is current or stale. `applied` is
+// the list of policy ids the daemon enforces; `unsupported` lists the
+// ids it could not enforce with a reason (older daemon, unknown kind).
+model DeploymentPolicyStatus {
+  id            String   @id @default(cuid())
+  deploymentId  String   @unique
+  etag          String
+  appliedAt     DateTime
+  daemonVersion String?
+  applied       Json
+  unsupported   Json
+  updatedAt     DateTime @updatedAt
+
+  deployment Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  @@map("deployment_policy_status")
 }
 
 // One conversation as observed by the checkpoint.
@@ -404,6 +433,10 @@ model Session {
   toolsBlocked           Int       @default(0)
   stopReasonId           Int?
   stopReason             String?
+  // Staged by POST /api/v1/demo/attack (lives under an isDemo
+  // deployment). Denormalized so list queries can label demo rows
+  // without a join.
+  isDemo                 Boolean   @default(false)
 
   deployment Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
   events     Event[]
@@ -462,11 +495,16 @@ model Receipt {
   @@map("receipts")
 }
 
-// Governance policy definitions as authored in the console. The daemon
-// enforces its own local policy files (WASM / schema); these rows are
-// the org's declarative source of truth the console displays and
-// operators edit. Hit/block counters are NOT stored here — the read
-// endpoint aggregates them from ingest events that carry a policyName
+// Governance policy definitions as authored in the console. These rows
+// are the org's declarative source of truth: daemons pull the enabled
+// ones as a signed-hash bundle from GET /api/v1/ingest/policies
+// (`pvctl console-sync --watch --pull-policies`) and report what they
+// applied to POST /api/v1/ingest/policy-status. For the kinds budget,
+// allowlist, rate and schema `body` must be the JSON spec the daemon
+// enforces (validated in lib/policy-bundle.ts); guardrail and
+// transform keep free text and are documentation/attribution only.
+// Hit/block counters are NOT stored here — the read endpoint
+// aggregates them from ingest events that carry a policyName
 // attribution (Event.policyName), scoped through sessions.orgId.
 model Policy {
   id          String   @id @default(cuid())

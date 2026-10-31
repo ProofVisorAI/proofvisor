@@ -4,6 +4,7 @@ import { db } from "../db.js";
 import { hashPassword, randomToken } from "../lib/auth.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
 import { requireSession } from "../lib/session-middleware.js";
+import { orgEnforcementSnapshot, policyBundleStatusFor } from "../lib/policy-bundle.js";
 
 const envSchema = z.enum(["production", "staging", "development"]);
 
@@ -64,9 +65,14 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         // to render receipt trust status).
         ingestTokenHint: !isMember,
         lastIngestAt: !isMember,
+        isDemo: true,
         createdAt: true,
       },
     });
+    // Policy-bundle status per daemon (what it last applied from
+    // GET /ingest/policies, and whether that bundle is the org's current
+    // one). daemonVersion inside follows the member redaction above.
+    const policySnap = await orgEnforcementSnapshot(claims.orgId);
     // Real 24-hour activity per deployment, aggregated in Postgres over
     // the sessions opened in the window. The console used to leave these
     // two cells blank in live mode; a session count and the LLM spend
@@ -83,12 +89,15 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({
       deployments: deployments.map((d) => {
         const a = byDeployment.get(d.id);
+        const bundle = policyBundleStatusFor(policySnap, d.id);
         return {
           ...d,
           sessions24h: a ? a._count._all : 0,
           spend24hUsdMicros: isMember ? null : (a?._sum.costUsdMicros ?? 0n).toString(),
+          policyBundle: bundle && isMember ? { ...bundle, daemonVersion: null } : bundle,
         };
       }),
+      bundleEtag: policySnap.etag,
     });
   });
 

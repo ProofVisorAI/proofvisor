@@ -17,8 +17,10 @@ import {
 import { authenticate } from "./lib/session-middleware.js";
 import { apiKeyRoutes } from "./routes/api-keys.js";
 import { authRoutes } from "./routes/auth.js";
+import { demoRoutes } from "./routes/demo.js";
 import { deploymentRoutes } from "./routes/deployments.js";
 import { ingestRoutes } from "./routes/ingest.js";
+import { publicRoutes } from "./routes/public.js";
 import { memberRoutes } from "./routes/members.js";
 import { oauthRoutes } from "./routes/oauth.js";
 import { orgRoutes } from "./routes/org.js";
@@ -502,6 +504,8 @@ const PROBLEM_DETAIL_COPY: Record<string, string> = {
   invalid_token: "That link is invalid or has expired.",
   unknown_session: "That session doesn't exist.",
   session_evidence_incomplete: "This session contains incomplete crash evidence and cannot receive a signed receipt.",
+  demo_name_in_use: "A real deployment is already named demo-attack — rename it before staging the demo.",
+  policy_name_in_use: "Another policy already has that name.",
 };
 
 function problemDetail(slug: string): string {
@@ -772,6 +776,13 @@ function problemDetail(slug: string): string {
   });
   await app.register(async (r) => r.register(ingestRoutes), {
     prefix: "/api/v1/ingest",
+  });
+  await app.register(async (r) => r.register(demoRoutes), {
+    prefix: "/api/v1/demo",
+  });
+  // Unauthenticated trust-anchor lookups for the public /verify page.
+  await app.register(async (r) => r.register(publicRoutes), {
+    prefix: "/api/v1/public",
   });
   await app.register(async (r) => r.register(readRoutes), {
     prefix: "/api/v1",

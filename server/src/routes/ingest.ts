@@ -7,6 +7,7 @@ import { verifyPassword } from "../lib/auth.js";
 import { bus } from "../lib/bus.js";
 import { dispatchEvent } from "../lib/webhooks.js";
 import { writeAudit } from "../lib/audit.js";
+import { buildPolicyBundle, currentOrgEtag } from "../lib/policy-bundle.js";
 
 // ── Auth for the ingest endpoint ────────────────────────────────────────────
 //
@@ -204,7 +205,7 @@ const eventPayload = z.object({
 // artifact for a session the customer trusted.
 const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("proofvisor-receipt-v2\0", "utf8");
 
-function receiptSigningMessage(rawBody: string): Buffer {
+export function receiptSigningMessage(rawBody: string): Buffer {
   const canonical = Buffer.from(rawBody, "utf8");
   let receiptVersion = 1;
   try {
@@ -234,7 +235,7 @@ function receiptSigningMessage(rawBody: string): Buffer {
 /** SPKI DER prefix for a raw 32-byte Ed25519 public key. */
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
-function verifyReceiptSignature(
+export function verifyReceiptSignature(
   publicKeyHex: string,
   sigB64: string,
   rawBody: string,
@@ -1529,5 +1530,126 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       receiptId: r.receiptId,
     });
     return reply.send({ ok: true });
+  });
+  // ── Policy push ───────────────────────────────────────────────────────
+  //
+  // GET /policies hands a daemon the org's enabled policies as one
+  // bundle (contract in lib/policy-bundle.ts). The daemon polls it from
+  // `pvctl console-sync --watch --pull-policies`, sends the last etag as
+  // If-None-Match, and gets 304 while nothing changed. Same daemon auth
+  // as the other ingest routes; rate-limit exempt via the /api/v1/ingest
+  // allowList in index.ts.
+  app.get("/policies", async (req, reply) => {
+    const daemon = await authenticateDaemon(req, reply);
+    if (!daemon) return;
+    const bundle = await buildPolicyBundle(daemon.orgId, daemon.deploymentId);
+    reply.header("ETag", `"${bundle.etag}"`);
+    const inm = req.headers["if-none-match"];
+    if (typeof inm === "string" && inm.length > 0) {
+      // Accept the bare hash, a quoted entity tag, a weak validator
+      // (W/"…") or a comma-separated list of any of those.
+      const offered = inm
+        .split(",")
+        .map((t) => t.trim().replace(/^W\//i, "").replace(/^"(.*)"$/, "$1"));
+      if (offered.includes(bundle.etag)) return reply.code(304).send();
+    }
+    return reply.send(bundle);
+  });
+
+  // POST /policy-status: what the daemon applied from the bundle it
+  // pulled. One row per deployment (upsert); the etag is the bundle hash
+  // the daemon received, echoed verbatim. `applied` lists the policy
+  // ids now enforced; `unsupported` lists ids the daemon could not
+  // enforce with a short reason (older daemon, unknown kind, bad spec).
+  // An etag change writes a `policy.applied` audit entry so operators
+  // can see WHEN each daemon picked up a change.
+  const policyStatusPayload = z.object({
+    etag: z.string().min(1).max(128).regex(/^[0-9a-fA-F]+$/, "etag must be the bundle's hex hash"),
+    appliedAt: z.coerce.date(),
+    daemonVersion: z
+      .string()
+      .max(40)
+      .regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]*$/)
+      .optional(),
+    applied: z.array(z.string().min(1).max(64)).max(1000),
+    unsupported: z
+      .array(
+        z.object({
+          id: z.string().min(1).max(64),
+          reason: z.string().max(200).refine(noControlOrFormatChars, "must not contain control or format characters"),
+        }),
+      )
+      .max(1000),
+  });
+  app.post("/policy-status", async (req, reply) => {
+    const daemon = await authenticateDaemon(req, reply);
+    if (!daemon) return;
+    const body = policyStatusPayload.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const st = body.data;
+    const etag = st.etag.toLowerCase();
+    // Clamp like the session clock: a daemon with a skewed clock must
+    // not report an application time hours in the future.
+    const nowMs = Date.now();
+    const appliedAt = new Date(
+      Math.min(Math.max(st.appliedAt.getTime(), new Date("2000-01-01T00:00:00Z").getTime()), nowMs + 5 * 60_000),
+    );
+    const [previous, dep] = await Promise.all([
+      db.deploymentPolicyStatus.findUnique({
+        where: { deploymentId: daemon.deploymentId },
+        select: { etag: true },
+      }),
+      db.deployment.findUnique({
+        where: { id: daemon.deploymentId },
+        select: { name: true },
+      }),
+    ]);
+    await db.deploymentPolicyStatus.upsert({
+      where: { deploymentId: daemon.deploymentId },
+      create: {
+        deploymentId: daemon.deploymentId,
+        etag,
+        appliedAt,
+        daemonVersion: st.daemonVersion ?? null,
+        applied: st.applied,
+        unsupported: st.unsupported,
+      },
+      update: {
+        etag,
+        appliedAt,
+        daemonVersion: st.daemonVersion ?? null,
+        applied: st.applied,
+        unsupported: st.unsupported,
+      },
+    });
+    if (st.daemonVersion) {
+      // Same display-only version the pubkey check-in records.
+      await db.deployment
+        .update({ where: { id: daemon.deploymentId }, data: { daemonVersion: st.daemonVersion } })
+        .catch(() => void 0);
+    }
+    const currentEtag = await currentOrgEtag(daemon.orgId);
+    if (!previous || previous.etag !== etag) {
+      writeAudit(
+        {
+          orgId: daemon.orgId,
+          event: "policy.applied",
+          actorId: `daemon:${daemon.deploymentId}`,
+          actorEmail: `daemon@${dep?.name ?? daemon.deploymentId}`,
+          target: dep?.name ?? daemon.deploymentId,
+          metadata: {
+            deploymentId: daemon.deploymentId,
+            etag,
+            current: etag === currentEtag,
+            appliedCount: st.applied.length,
+            unsupported: st.unsupported,
+            daemonVersion: st.daemonVersion ?? null,
+          },
+          req,
+        },
+        req.log,
+      );
+    }
+    return reply.send({ ok: true, etag, currentEtag, stale: etag !== currentEtag });
   });
 }

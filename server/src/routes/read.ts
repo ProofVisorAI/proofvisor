@@ -144,15 +144,16 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
         toolsAllowed: true,
         toolsBlocked: true,
         stopReason: true,
+        isDemo: true,
         _count: { select: { events: true } },
-        deployment: { select: { id: true, name: true, environment: true } },
+        deployment: { select: { id: true, name: true, environment: true, isDemo: true } },
       },
     });
 
     // Aggregate in Postgres rather than hydrating every matching row
     // into JavaScript. The selected window and tenant constrain each
     // scan, while fleet counts include deployments without sessions.
-    const [countByStatus, sums, deploymentCount, connectedDeploymentCount, eventCount] = await Promise.all([
+    const [countByStatus, sums, deploymentCount, connectedDeploymentCount, demoDeploymentCount, demoSessionCount, eventCount] = await Promise.all([
       db.session.groupBy({
         by: ["status"],
         where: sessionFilter,
@@ -172,6 +173,10 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
       db.deployment.count({
         where: { ...fleetFilter, lastIngestAt: { gte: new Date(nowMs - 5 * 60_000) } },
       }),
+      // Demo footprint, so the console can label the overview and offer
+      // "Remove demo data" without a second round trip.
+      db.deployment.count({ where: { ...fleetFilter, isDemo: true } }),
+      db.session.count({ where: { ...sessionFilter, isDemo: true } }),
       // Journaled events across the sessions in the window. The console
       // used to hard-code this tile to 0 in live mode.
       db.event.count({ where: { session: sessionFilter } }),
@@ -236,6 +241,8 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
       toolsAllowed: sums._sum.toolsAllowed ?? 0,
       toolsBlocked: sums._sum.toolsBlocked ?? 0,
       blockedPayoutUsdMicros: sums._sum.blockedPayoutUsdMicros ?? 0n,
+      demoDeployments: demoDeploymentCount,
+      demoSessions: demoSessionCount,
     };
 
     // R114 F3: redact spend/blocked-payout counters for members.
@@ -394,8 +401,9 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
           toolsAllowed: true,
           toolsBlocked: true,
           stopReason: true,
+          isDemo: true,
           _count: { select: { events: true } },
-          deployment: { select: { id: true, name: true, environment: true } },
+          deployment: { select: { id: true, name: true, environment: true, isDemo: true } },
         },
       });
     } catch (err) {
@@ -466,7 +474,7 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
       },
       include: {
         _count: { select: { events: true } },
-        deployment: { select: { id: true, name: true, environment: true } },
+        deployment: { select: { id: true, name: true, environment: true, isDemo: true } },
         events: {
           where: query.data.eventCursor !== undefined
             ? { seq: { gt: query.data.eventCursor } }
