@@ -208,6 +208,65 @@ uploader is this separate, opt-in command.
 | `GET`  | `/audit` (+ `/audit.csv`) | Cursor-paginated audit trail; CSV streams up to 10k rows |
 | `GET`  | `/stream` | SSE: session/event/receipt updates, multi-instance via PG LISTEN/NOTIFY |
 
+### SCIM 2.0 provisioning
+
+Owners manage SCIM under `/api/v1/scim`: `GET`/`PATCH /settings`
+(`enabled`, `defaultRole` member|admin, `deprovisionAction`
+deactivate|remove) and `GET`/`POST`/`DELETE /tokens[/:id]`. A token is
+`pv_scim_` plus 32 base64url characters, shown once and stored as an
+argon2 hash. Every change is audited (`scim.*`).
+
+The identity provider talks to `<API origin>/scim/v2` with
+`Authorization: Bearer pv_scim_…` (the org comes from the token):
+`ServiceProviderConfig`, `ResourceTypes`, `Schemas`, and `Users` and
+`Groups` with `filter` (`userName eq`, `externalId eq`, `displayName
+eq`), `startIndex`/`count` paging, `POST`, `PUT`, `PATCH`
+(add/replace/remove) and `DELETE`. Responses use
+`application/scim+json` and SCIM error bodies with `scimType`.
+
+- Creating a user whose email is new makes an account with a random
+  password and a verified email, and a membership with the default role.
+- `active: false` or `DELETE` runs the deprovision action: `deactivate`
+  revokes the member's sessions and API keys and blocks sign-in to this
+  org until the IdP re-activates them; `remove` deletes the membership.
+- Groups map to roles by name: a group called `owner`, `admin` or
+  `member` gives its members that role; removing someone from a role
+  group falls back to the default role; other groups have no effect.
+- The last active owner can never be deactivated, removed or demoted.
+
+### Billing and plan limits
+
+`GET /api/v1/billing` returns the plan, its status and renewal date,
+the limits, current usage, and two flags: `configured` (Stripe is set
+up) and `enforced` (limits apply). `POST /checkout {plan}` and
+`POST /portal` (owner only) return a Stripe Checkout or Customer Portal
+URL. `POST /webhook` verifies the `Stripe-Signature` over the raw body,
+ignores a repeated event id, and handles `checkout.session.completed`
+and `checkout.session.async_payment_succeeded` (a checkout still
+`unpaid` grants nothing), `customer.subscription.created|updated|deleted`
+and `invoice.payment_failed` (status `past_due`).
+
+| Variable | Purpose |
+| --- | --- |
+| `STRIPE_SECRET_KEY` | Enables billing. Without it checkout and portal answer 503 `billing_not_configured`. |
+| `STRIPE_WEBHOOK_SECRET` | Required to accept webhooks. |
+| `STRIPE_PRICE_TEAM_MONTHLY`, `STRIPE_PRICE_ENTERPRISE_MONTHLY` | Recurring Price ids of the paid plans. |
+| `PLAN_LIMITS_ENFORCED` | `true` to enforce the limits below; requires `STRIPE_SECRET_KEY`. Default `false`: every workspace keeps every feature. |
+| `PLAN_<PLAN>_<LIMIT>` | Override one limit, for example `PLAN_FREE_DEPLOYMENTS=5` or `PLAN_TEAM_SAML=true`; `0` or `unlimited` removes a cap. |
+| `STRIPE_API_BASE` | Test-only stand-in for api.stripe.com; refused in production. |
+
+Default limits, applied only when `PLAN_LIMITS_ENFORCED=true`, and only
+to new creations (nothing a workspace already has is removed):
+
+| Plan | Deployments | Members + invites | Max retention | Webhooks | SAML | SCIM |
+| --- | --- | --- | --- | --- | --- | --- |
+| free | 2 | 3 | 30 days | 1 | no | no |
+| team | 10 | 25 | 365 days | 10 | yes | yes |
+| enterprise | unlimited | unlimited | unlimited | unlimited | yes | yes |
+
+A refused creation answers 402 `plan_limit_reached` naming the limit,
+the current plan and the plan that lifts it.
+
 ## Testing
 
 Five layers, all runnable locally and (except the browser drills'

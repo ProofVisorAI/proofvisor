@@ -322,7 +322,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // password branch has to enter the same code path
       // below).
       include: {
-        memberships: { include: { org: true }, orderBy: { createdAt: "asc" } },
+        // SCIM-deactivated memberships are not login targets.
+        memberships: { where: { active: true }, include: { org: true }, orderBy: { createdAt: "asc" } },
         _count: { select: { webauthnCredentials: true } },
       },
     });
@@ -573,7 +574,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!claims) return;
     const user = await db.user.findUnique({
       where: { id: claims.sub },
-      include: { memberships: { include: { org: true } } },
+      include: { memberships: { where: { active: true }, include: { org: true } } },
     });
     if (!user) {
       clearSessionCookie(reply);
@@ -650,11 +651,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(403).send({ error: "sso_session_org_locked" });
     }
     const membership = await db.membership.findFirst({
-      where: { userId: claims.sub, orgId: body.data.orgId },
+      where: { userId: claims.sub, orgId: body.data.orgId, active: true },
       include: { org: true, user: true },
     });
-    // Uniform 404 whether the org doesn't exist or the caller simply
-    // isn't a member — no existence oracle for org ids.
+    // Uniform 404 whether the org doesn't exist, the caller simply
+    // isn't a member, or SCIM deactivated them — no existence oracle
+    // for org ids.
     if (!membership) return reply.code(404).send({ error: "not_found" });
     const token = await mintSession({
       sub: claims.sub,

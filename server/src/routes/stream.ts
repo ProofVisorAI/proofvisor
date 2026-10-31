@@ -235,7 +235,7 @@ export async function streamRoutes(app: FastifyInstance): Promise<void> {
           select: {
             sessionRevokedAt: true,
             memberships: {
-              where: { orgId: claims.orgId },
+              where: { orgId: claims.orgId, active: true },
               select: { id: true, org: { select: { ipAllowlist: true } } },
             },
           },

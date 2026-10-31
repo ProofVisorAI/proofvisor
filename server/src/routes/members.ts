@@ -35,6 +35,7 @@ import {
   verifyPassword,
 } from "../lib/auth.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
+import { planUsage, refuseIfOverLimit } from "../lib/entitlements.js";
 import { dispatchEvent } from "../lib/webhooks.js";
 import { getMailer, inviteMail, adminMfaResetMail } from "../lib/mail.js";
 import { perIpCookieOnly } from "../lib/rate-limit.js";
@@ -523,6 +524,20 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
     });
     if (existingUser?.memberships.length) {
       return reply.code(409).send({ error: "already_a_member" });
+    }
+
+    // Plan seat limit: active members + pending invites. Re-sending an
+    // invite to an address that already has a pending row does not
+    // consume a new seat.
+    const pendingForEmail = await db.invite.findUnique({
+      where: { orgId_email: { orgId: claims.orgId, email: body.data.email } },
+      select: { acceptedAt: true, revokedAt: true, expiresAt: true },
+    });
+    const isResend =
+      !!pendingForEmail && !pendingForEmail.acceptedAt && !pendingForEmail.revokedAt && pendingForEmail.expiresAt > new Date();
+    if (!isResend) {
+      const usage = await planUsage(claims.orgId);
+      if (refuseIfOverLimit(req, reply, org.plan, "members", usage.members)) return;
     }
 
     // R122 F1: rung parity on the UPSERT PATH. R83 F1 above only

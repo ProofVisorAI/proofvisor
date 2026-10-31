@@ -16,6 +16,7 @@ import { db } from "../db.js";
 import { requireSession } from "../lib/session-middleware.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
 import { sweepRetentionForOrg } from "../lib/retention.js";
+import { refuseIfRetentionTooLong } from "../lib/entitlements.js";
 import { ipMatchesAny, tryParseCidr } from "../lib/cidr.js";
 
 export async function orgRoutes(app: FastifyInstance): Promise<void> {
@@ -107,9 +108,18 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     // works at admin.
     const currentRetention = await db.org.findUnique({
       where: { id: claims.orgId },
-      select: { sessionRetentionDays: true, auditRetentionDays: true },
+      select: { sessionRetentionDays: true, auditRetentionDays: true, plan: true },
     });
     if (!currentRetention) return reply.code(404).send({ error: "not_found" });
+    // Plan entitlement on the session window. Only LENGTHENING is
+    // gated (0 = forever counts as the longest value): an org whose
+    // current window already exceeds its plan keeps it and may still
+    // shorten it.
+    if (body.data.sessionRetentionDays !== undefined) {
+      const asDays = (d: number) => (d === 0 ? Number.POSITIVE_INFINITY : d);
+      const lengthening = asDays(body.data.sessionRetentionDays) > asDays(currentRetention.sessionRetentionDays);
+      if (lengthening && refuseIfRetentionTooLong(req, reply, currentRetention.plan, body.data.sessionRetentionDays)) return;
+    }
     const narrowingSession =
       body.data.sessionRetentionDays !== undefined &&
       body.data.sessionRetentionDays !== 0 &&

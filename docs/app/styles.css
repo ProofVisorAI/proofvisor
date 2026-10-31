@@ -2251,8 +2251,7 @@ a.ob-step:hover { border-color: var(--accent); }
  * content column (focus is managed deliberately; SR still announces). */
 .main:focus { outline: none; box-shadow: none; }
 
-/* ============================================================
- * POLICY PUSH + DEMO LABELS
+/* ===================================================== * POLICY PUSH + DEMO LABELS
  * ============================================================ */
 /* Structured spec fields in the policy dialogs: two columns on wide
    screens, one on phones. */
@@ -2268,3 +2267,8 @@ a.ob-step:hover { border-color: var(--accent); }
   display: flex; align-items: center; gap: var(--s-3);
   background: var(--accent-bg); border-color: var(--accent-border); color: var(--fg-2);
 }
+=======
+/* Billing usage against plan limits */
+.usage-row { margin: 10px 0; }
+.usage-label { display: flex; justify-content: space-between; font-size: var(--t-sec); color: var(--fg-2); margin-bottom: 4px; }
+.usage-label span { font-variant-numeric: tabular-nums; }

@@ -89,7 +89,10 @@ export async function authenticate(
     select: {
       sessionRevokedAt: true,
       memberships: {
-        where: { orgId: claims.orgId },
+        // `active: false` is what SCIM deprovisioning (deactivate) sets:
+        // the row stays for re-activation and history, but no cookie
+        // minted for this org may resolve to a session.
+        where: { orgId: claims.orgId, active: true },
         select: {
           id: true,
           role: true,
@@ -156,9 +159,9 @@ export async function assertOrgMembership(
 ): Promise<boolean> {
   const m = await db.membership.findUnique({
     where: { userId_orgId: { userId, orgId } },
-    select: { id: true },
+    select: { active: true },
   });
-  return !!m;
+  return !!m && m.active;
 }
 
 export function clearSessionCookie(reply: FastifyReply): void {

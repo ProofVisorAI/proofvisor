@@ -863,7 +863,8 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     const user = await db.user.findUnique({
       where: { id: cred.userId },
       // R105 F4: deterministic membership ordering (see auth.ts).
-      include: { memberships: { include: { org: true }, orderBy: { createdAt: "asc" } } },
+      // SCIM-deactivated memberships are not login targets.
+      include: { memberships: { where: { active: true }, include: { org: true }, orderBy: { createdAt: "asc" } } },
     });
     if (!user) return reply.code(401).send({ error: "user_disappeared" });
     const membership = user.memberships[0];

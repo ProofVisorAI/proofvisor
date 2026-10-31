@@ -5741,7 +5741,9 @@
         '<div style="padding: 20px 16px">' + mfaRows + '</div>' +
       '</div>';
 
-    root.innerHTML = oauthCard + samlCard + mfaCard;
+    root.innerHTML = oauthCard + samlCard + mfaCard + '<div id="scimCard"></div>';
+    var ssoRole = (state.session && state.session.org && state.session.org.role) || "member";
+    if (ssoRole === "owner" && typeof state.ds.getScimSettings === "function") renderScimCard($("#scimCard", root));
 
     var addBtn = $("#addSamlBtn", root);
     if (addBtn) addBtn.addEventListener("click", function () { openSamlEditor(root, null); });
@@ -5851,6 +5853,80 @@
           },
         });
       }
+    });
+  }
+
+  // ---------- SCIM provisioning card (owner only) ----------
+  async function renderScimCard(host) {
+    if (!host) return;
+    host.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";
+    var settings, tokens;
+    try {
+      settings = await state.ds.getScimSettings();
+      tokens = await state.ds.listScimTokens();
+    } catch (e) {
+      host.innerHTML = '<div class="card empty"><h3>Could not load SCIM</h3><p>' + esc((e && e.message) || "Try again in a moment.") + "</p></div>";
+      return;
+    }
+    var rows = (tokens || []).map(function (t) {
+      return '<tr data-id="' + esc(t.id) + '"><td>' + esc(t.name) + '<div class="id">' + esc(t.hint) + "</div></td>" +
+        "<td>" + esc(t.lastUsedAt ? new Date(t.lastUsedAt).toLocaleString() : "never") + "</td>" +
+        '<td class="actions"><button class="btn danger" data-revoke="' + esc(t.id) + '">Revoke</button></td></tr>';
+    }).join("");
+    host.innerHTML = '<div class="card" id="scimPanel">' +
+      "<h2>SCIM provisioning</h2>" +
+      '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0 0 12px">Let your identity provider (Okta, Entra ID, Google) create, update and remove members automatically. ' +
+        "Groups named owner, admin or member set the member's role.</p>" +
+      (settings.planAllows ? "" : '<p class="notice" role="status">SCIM is not included in your plan. Upgrade on the Billing tab to enable it.</p>') +
+      '<div class="spec-grid">' +
+        '<div class="field"><label><input type="checkbox" id="scimEnabled"' + (settings.enabled ? " checked" : "") + (settings.planAllows ? "" : " disabled") + "> Enable SCIM</label></div>" +
+        '<div class="field"><label for="scimRole">Default role for new users</label><select id="scimRole">' +
+          ["member", "admin"].map(function (r) { return '<option value="' + r + '"' + (settings.defaultRole === r ? " selected" : "") + ">" + r + "</option>"; }).join("") +
+        "</select></div>" +
+        '<div class="field"><label for="scimDeprov">When a user is deactivated in the IdP</label><select id="scimDeprov">' +
+          '<option value="deactivate"' + (settings.deprovisionAction === "deactivate" ? " selected" : "") + ">Suspend access (keep the member record)</option>" +
+          '<option value="remove"' + (settings.deprovisionAction === "remove" ? " selected" : "") + ">Remove the member</option>" +
+        "</select></div>" +
+      "</div>" +
+      '<div class="field"><label>SCIM base URL</label><div class="copy-row"><code>' + esc(settings.baseUrl) + '</code> <button class="btn" type="button" id="scimCopyUrl">Copy</button></div></div>' +
+      '<div style="display:flex; align-items:center; gap:8px; margin: 12px 0 8px"><h3 style="margin:0">Tokens</h3>' +
+        '<button class="btn accent" id="scimNewToken" style="margin-left:auto"' + (settings.planAllows ? "" : " disabled") + ">New token</button></div>" +
+      (rows ? '<table><thead><tr><th>Name</th><th>Last used</th><th class="sr-only">Actions</th></tr></thead><tbody>' + rows + "</tbody></table>"
+        : '<p style="color: var(--fg-3); font-size: var(--t-sec)">No tokens yet. Create one and paste it into your identity provider.</p>') +
+    "</div>";
+    function save(fields) {
+      state.ds.updateScimSettings(fields).then(function () { toast("SCIM settings saved"); renderScimCard(host); })
+        .catch(function (err) { toast((err && err.data && err.data.detail) || (err && err.message) || "Save failed", true); renderScimCard(host); });
+    }
+    $("#scimEnabled", host).addEventListener("change", function (e) { save({ enabled: e.target.checked }); });
+    $("#scimRole", host).addEventListener("change", function (e) { save({ defaultRole: e.target.value }); });
+    $("#scimDeprov", host).addEventListener("change", function (e) { save({ deprovisionAction: e.target.value }); });
+    $("#scimCopyUrl", host).addEventListener("click", function () { copyText(settings.baseUrl); });
+    $("#scimNewToken", host).addEventListener("click", function () {
+      var name = window.prompt("Name this token (for example the identity provider it is for):", "Okta");
+      if (!name || !name.trim()) return;
+      state.ds.createScimToken(name.trim()).then(function (r) {
+        confirmModal({
+          title: "SCIM token created",
+          body: "Copy it now and paste it into your identity provider as the bearer token. It is shown only once.\n\n" + r.plaintextToken,
+          confirmLabel: "Done",
+          onConfirm: function () { renderScimCard(host); },
+        });
+      }).catch(function (err) { toast((err && err.data && err.data.detail) || (err && err.message) || "Could not create the token", true); });
+    });
+    $$("[data-revoke]", host).forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-revoke");
+        confirmModal({
+          title: "Revoke this SCIM token?",
+          body: "Your identity provider stops provisioning with it immediately.",
+          confirmLabel: "Revoke", danger: true,
+          onConfirm: function () {
+            state.ds.revokeScimToken(id).then(function () { toast("Token revoked"); renderScimCard(host); })
+              .catch(function (err) { toast((err && err.message) || "Revoke failed", true); });
+          },
+        });
+      });
     });
   }
 
@@ -6521,40 +6597,97 @@
   }
   async function renderSettingsBilling(root) {
     root.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";
-    // Pull the org's real usage so the pricing story runs on the same
-    // numbers the investor just saw on the Overview.
+    var billing = null;
     var stats = null;
+    try { billing = await state.ds.getBilling(); } catch (e) { billing = null; }
+    // Pull the org's real usage so the pricing math runs on the same
+    // numbers the Overview shows.
     try { stats = await state.ds.getOverview("24h"); } catch (e) { /* tiers still render */ }
     // Coerced to numbers: a string count would otherwise concatenate
     // ("3" + "4" = "34") and reach innerHTML unescaped.
     var calls = stats ? (Number(stats.toolsAllowed) || 0) + (Number(stats.toolsBlocked) || 0) : 0;
     var meteredUsd = (calls / 1000) * 0.10;
     var kept = stats ? Number(stats.blockedSpendUsd) || 0 : 0;
-    var tier = function (name, price, priceSub, items, cta, highlight) {
+    var role = (state.session && state.session.org && state.session.org.role) || "member";
+    var isOwner = role === "owner";
+    var plan = billing ? billing.plan : "free";
+    var plans = (billing && billing.plans) || {};
+    var planName = { free: "Free", team: "Team", enterprise: "Enterprise" };
+    function limitText(n, unit) { return n == null ? "unlimited " + unit : n.toLocaleString() + " " + unit; }
+    function tierLimits(p) {
+      var l = plans[p];
+      if (!l || !billing || !billing.enforced) return null;
+      return [limitText(l.deployments, "deployments"), limitText(l.members, "members"),
+        l.retentionDays == null ? "Unlimited retention" : l.retentionDays + "-day retention"];
+    }
+    var tier = function (id, price, priceSub, items, cta, highlight) {
       return '<div class="price-tier' + (highlight ? " highlight" : "") + '">' +
-        '<h3>' + esc(name) + "</h3>" +
+        "<h3>" + esc(planName[id]) + "</h3>" +
         '<div class="pt-price">' + price + "</div>" +
         '<div class="pt-price-sub">' + esc(priceSub) + "</div>" +
         "<ul>" + items.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") + "</ul>" +
         cta +
       "</div>";
     };
+    function ctaFor(id) {
+      if (id === plan) {
+        return billing && billing.hasSubscription && isOwner
+          ? '<button class="btn" id="portalBtn">Manage billing</button>'
+          : '<span class="pill ok">Current plan</span>';
+      }
+      if (id === "free") return "";
+      if (billing && billing.purchasable && billing.purchasable[id] && isOwner) {
+        return '<button class="btn' + (id === "team" ? " accent" : "") + '" data-checkout="' + id + '">Upgrade to ' + esc(planName[id]) + "</button>";
+      }
+      if (id === "enterprise") return '<a class="btn" href="mailto:hello@proofvisor.com?subject=ProofVisor%20Enterprise">Contact us</a>';
+      return billing && billing.configured && !isOwner
+        ? '<span class="pill neutral">Ask an owner to upgrade</span>'
+        : "";
+    }
+    function usageRow(label, used, cap) {
+      var u = Number(used) || 0;
+      var pct = cap == null ? 0 : Math.min(100, Math.round((u / Math.max(1, cap)) * 100));
+      return '<div class="usage-row"><div class="usage-label">' + esc(label) + '<span>' + esc(u.toLocaleString()) + " of " + esc(cap == null ? "unlimited" : Number(cap).toLocaleString()) + "</span></div>" +
+        '<div class="ob-bar"><span style="width:' + pct + '%"></span></div></div>';
+    }
+    var statusPill = !billing ? "" : billing.planStatus === "past_due"
+      ? '<span class="pill err">payment failed — update your card</span>'
+      : billing.planStatus === "canceled" ? '<span class="pill neutral">canceled</span>'
+      : billing.planStatus === "trialing" ? '<span class="pill accent">trial</span>'
+      : '<span class="pill accent">current plan</span>';
+    var planLine = !billing
+      ? "Billing details could not be loaded. Try again in a moment."
+      : !billing.configured
+      ? "Billing is not enabled on this instance, so every workspace has every feature and nothing is limited."
+      : !billing.enforced
+      ? "Plan limits are not enforced on this instance: every workspace has every feature."
+      : billing.planRenewsAt
+      ? "Renews on " + new Date(billing.planRenewsAt).toLocaleDateString() + "."
+      : "Limits below apply to new deployments, members and webhooks; nothing you already have is removed.";
+    var usageCard = billing && billing.enforced && billing.limits && billing.usage
+      ? '<div class="card" style="margin-top:12px"><h2>Usage on the ' + esc(planName[plan] || plan) + " plan</h2>" +
+          usageRow("Deployments", billing.usage.deployments, billing.limits.deployments) +
+          usageRow("Members and pending invites", billing.usage.members, billing.limits.members) +
+          usageRow("Webhooks", billing.usage.webhooks, billing.limits.webhooks) +
+        "</div>"
+      : "";
     root.innerHTML =
       '<div class="card">' +
         "<h2>Plan</h2>" +
-        '<div style="display:flex; align-items:baseline; gap:8px; margin-bottom: 12px"><span style="font-size:22px; font-weight:600">Free</span> <span class="pill accent">current plan</span></div>' +
-        '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0">All governance features included while ProofVisor is in preview. Pricing below is what launches with the beta.</p>' +
+        '<div style="display:flex; align-items:baseline; gap:8px; margin-bottom: 12px"><span style="font-size:22px; font-weight:600">' + esc(planName[plan] || plan) + "</span> " + statusPill + "</div>" +
+        '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0">' + esc(planLine) + "</p>" +
       "</div>" +
+      usageCard +
       '<div class="pricing-grid">' +
-        tier("Free", "$0", "up to 10 deployments",
-          ["Every governance feature", "Signed receipts + offline verify", "90-day retention", "Community support"],
-          '<span class="pill ok">You are here</span>') +
-        tier("Team", "$99<span class=\"pt-per\">/mo</span>", "+ $0.10 per 1,000 policed tool calls",
-          ["Everything in Free", "SSO enforcement + SCIM", "1-year retention", "Priority support"],
-          '<button class="btn accent" id="upgradeBtn">Upgrade to Team</button>', true) +
-        tier("Enterprise", "Custom", "annual, self-hosted or dedicated",
-          ["Self-hosted control plane", "Custom receipt trust anchors", "SLAs + dedicated support", "Airgapped verify tooling"],
-          '<button class="btn" id="contactBtn">Contact us</button>') +
+        tier("free", "$0", "for small teams getting started",
+          tierLimits("free") || ["Every governance feature", "Signed receipts + offline verify", "Community support"],
+          ctaFor("free")) +
+        tier("team", "$99<span class=\"pt-per\">/mo</span>", "+ $0.10 per 1,000 policed tool calls",
+          (tierLimits("team") || []).concat(["SAML single sign-on + SCIM provisioning", "Priority support"]),
+          ctaFor("team"), true) +
+        tier("enterprise", "Custom", "annual, self-hosted or dedicated",
+          ["Unlimited deployments and members", "Self-hosted control plane", "SLAs + dedicated support"],
+          ctaFor("enterprise")) +
       "</div>" +
       (stats
         ? '<div class="card" style="margin-top:12px">' +
@@ -6567,10 +6700,27 @@
             '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 12px 0 0">Policing an agent\'s tool call costs a fraction of a cent. One blocked bad order pays for years of it.</p>' +
           "</div>"
         : "");
-    var b = $("#upgradeBtn", root);
-    if (b) b.addEventListener("click", function () { comingSoon("Upgrade to Team", "Billing lands in the beta. In the meantime, ping the ProofVisor team to enable Team features on your workspace."); });
-    var c = $("#contactBtn", root);
-    if (c) c.addEventListener("click", function () { comingSoon("Enterprise", "Talk to us about a self-hosted control plane, custom trust anchors, and SLAs: hello@proofvisor.com"); });
+    // Only an https Stripe page is followed: a malformed API answer
+    // must never turn into a javascript: or plain-http navigation.
+    function go(url) {
+      if (typeof url === "string" && /^https:\/\//.test(url)) location.assign(url);
+      else toast("The billing provider returned an unexpected link.", true);
+    }
+    function billingError(err) {
+      return (err && err.data && err.data.detail) || (err && err.message) || "Billing is unavailable right now.";
+    }
+    $$("[data-checkout]", root).forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        state.ds.startCheckout(btn.getAttribute("data-checkout")).then(go).catch(function (err) { btn.disabled = false; toast(billingError(err), true); });
+      });
+    });
+    var portal = $("#portalBtn", root);
+    if (portal) portal.addEventListener("click", function () {
+      portal.disabled = true;
+      state.ds.openBillingPortal().then(go)
+        .catch(function (err) { portal.disabled = false; toast(billingError(err), true); });
+    });
   }
   async function renderSettingsAudit(root) {
     // R124 F2: if the user was bounced here from a failed

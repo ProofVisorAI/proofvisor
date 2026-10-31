@@ -260,6 +260,10 @@
    * DEPLOYMENTS
    * ============================================================ */
 
+  var MOCK_SCIM = {
+    settings: { enabled: false, defaultRole: "member", deprovisionAction: "deactivate" },
+    tokens: [],
+  };
   var MOCK_DEPLOYMENTS = [
     {
       id: "dep_prod",
@@ -1544,6 +1548,64 @@
       recordAudit("deployment.delete", name);
     },
 
+    /* SCIM provisioning (same shapes as /api/v1/scim/*). */
+    async getScimSettings() {
+      await delay(60);
+      return Object.assign({ baseUrl: "https://api.proofvisor.com/scim/v2", planAllows: true,
+        groupMapping: { owner: "owner", admin: "admin", member: "member" } }, MOCK_SCIM.settings);
+    },
+    async updateScimSettings(fields) {
+      await delay(60);
+      Object.assign(MOCK_SCIM.settings, fields);
+      return this.getScimSettings();
+    },
+    async listScimTokens() {
+      await delay(60);
+      return MOCK_SCIM.tokens.slice();
+    },
+    async createScimToken(name) {
+      await delay(80);
+      var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      var raw = ""; for (var i = 0; i < 32; i++) raw += chars[Math.floor(Math.random() * chars.length)];
+      var token = { id: "scimtok_" + Date.now().toString(36), name: name, hint: "pv_scim_" + raw.slice(0, 6) + "…",
+        createdByEmail: "olivia.tan@northwind.com", lastUsedAt: null, createdAt: new Date().toISOString() };
+      MOCK_SCIM.tokens.unshift(token);
+      return { token: token, plaintextToken: "pv_scim_" + raw };
+    },
+    async revokeScimToken(id) {
+      await delay(60);
+      MOCK_SCIM.tokens = MOCK_SCIM.tokens.filter(function (t) { return t.id !== id; });
+      return { ok: true };
+    },
+    /* Billing (same shape as GET /api/v1/billing). The mock instance
+     * has no Stripe account: billing is not configured, nothing is
+     * gated, and the workspace is on the free plan. */
+    async getBilling() {
+      await delay(80);
+      var unlimited = { deployments: null, members: null, retentionDays: null, webhooks: null, scim: true, saml: true };
+      return {
+        configured: false, enforced: false, plan: "free", planStatus: "active", planRenewsAt: null,
+        hasStripeCustomer: false, hasSubscription: false,
+        limits: { deployments: 2, members: 3, retentionDays: 30, webhooks: 1, scim: false, saml: false },
+        usage: { deployments: MOCK_DEPLOYMENTS.length, members: 4, webhooks: 1, retentionDays: 90 },
+        plans: {
+          free: { deployments: 2, members: 3, retentionDays: 30, webhooks: 1, scim: false, saml: false },
+          team: { deployments: 10, members: 25, retentionDays: 365, webhooks: 10, scim: true, saml: true },
+          enterprise: unlimited,
+        },
+        purchasable: { team: false, enterprise: false },
+      };
+    },
+    async startCheckout() {
+      var e = new Error("billing_not_configured"); e.status = 503; e.errorCode = "billing_not_configured";
+      e.data = { detail: "Billing is not enabled on this demo workspace." };
+      throw e;
+    },
+    async openBillingPortal() {
+      var e = new Error("billing_not_configured"); e.status = 503; e.errorCode = "billing_not_configured";
+      e.data = { detail: "Billing is not enabled on this demo workspace." };
+      throw e;
+    },
     async getOverview(range) {
       await delay(140);
       if (freshElapsed() != null) return freshOverview(range || "24h");
@@ -2684,6 +2746,32 @@
       await apiFetch("/api/v1/deployments/" + id + qs, { method: "DELETE" });
     },
 
+    async getScimSettings() {
+      return (await apiFetch("/api/v1/scim/settings")).settings;
+    },
+    async updateScimSettings(fields) {
+      return (await apiFetch("/api/v1/scim/settings", { method: "PATCH", body: fields })).settings;
+    },
+    async listScimTokens() {
+      return (await apiFetch("/api/v1/scim/tokens")).tokens;
+    },
+    async createScimToken(name) {
+      return apiFetch("/api/v1/scim/tokens", { method: "POST", body: { name: name } });
+    },
+    async revokeScimToken(id) {
+      return apiFetch("/api/v1/scim/tokens/" + encodeURIComponent(id), { method: "DELETE" });
+    },
+    async getBilling() {
+      return apiFetch("/api/v1/billing");
+    },
+    async startCheckout(plan) {
+      var r = await apiFetch("/api/v1/billing/checkout", { method: "POST", body: { plan: plan } });
+      return r.url;
+    },
+    async openBillingPortal() {
+      var r = await apiFetch("/api/v1/billing/portal", { method: "POST" });
+      return r.url;
+    },
     async getOverview(range) {
       var r = await apiFetch("/api/v1/overview?range=" + encodeURIComponent(range || "24h"));
       var stats = r.stats || {};

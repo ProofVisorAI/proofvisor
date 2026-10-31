@@ -25,6 +25,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { requireSession } from "../lib/session-middleware.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
+import { orgPlan, refuseIfOverLimit } from "../lib/entitlements.js";
 import { dispatchEvent, generateWebhookSecret, validateWebhookUrl } from "../lib/webhooks.js";
 
 const urlSchema = z
@@ -94,6 +95,11 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       })
       .safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const [plan, existingCount] = await Promise.all([
+      orgPlan(claims.orgId),
+      db.webhookEndpoint.count({ where: { orgId: claims.orgId } }),
+    ]);
+    if (refuseIfOverLimit(req, reply, plan, "webhooks", existingCount)) return;
     const ssrf = await validateWebhookUrl(body.data.url);
     if (!ssrf.ok) {
       return reply.code(400).send({ error: "ssrf_" + (ssrf.reason ?? "blocked") });
