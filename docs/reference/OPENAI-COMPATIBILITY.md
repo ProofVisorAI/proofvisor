@@ -23,18 +23,80 @@ The client-facing surface is always the OpenAI protocol. The
 | `provider` | Upstream dialect | Also fits |
 | --- | --- | --- |
 | `"openai"` (default) | OpenAI Chat Completions | vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral, Azure OpenAI |
-| `"anthropic"` | Anthropic Messages API (named SSE events, content blocks, `input_tokens`/`output_tokens`) | — |
-| `"gemini"` | Google Gemini `generateContent` (candidates/parts, `usageMetadata`, SCREAMING_CASE finish reasons) | — |
+| `"anthropic"` | Anthropic Messages API (`POST /v1/messages`), translated both ways | — |
+| `"gemini"` | Google Gemini `generateContent` / `streamGenerateContent`, translated both ways | — |
 
-All three dialects normalize into one provider-neutral chunk before
-accounting, enforcement, and capture, so the audit chain (receipts,
-ATIF trajectories, stop-reason taxonomy, provider-true token totals)
-records the same shape regardless of the upstream. Pair `provider`
-with the matching `upstream_url`, `upstream_chat_path`,
-`upstream_auth_header` and `upstream_auth_scheme` (e.g. Anthropic's
-`x-api-key` header with an empty scheme). Unsupported `provider`
-values are refused at pre-flight by `pvctl config-validate` and at
-boot by the daemon.
+With `provider = "openai"` the request body is forwarded unchanged to
+`upstream_url` + `upstream_chat_path`. With `anthropic` or `gemini` the
+harness translates the OpenAI request into the provider's native API,
+sends it there, and translates the answer back, so an OpenAI client
+receives an ordinary `chat.completion` object or a stream of
+`chat.completion.chunk` frames ending with `data: [DONE]`. The audit
+chain (receipts, ATIF trajectories, stop-reason taxonomy, provider-true
+token totals) is built from the translated OpenAI frames and therefore
+has the same shape for every provider. Unsupported `provider` values are
+refused at pre-flight by `pvctl config-validate` and at boot by the
+daemon.
+
+### What the native adapters translate
+
+| OpenAI request field | Anthropic | Gemini |
+| --- | --- | --- |
+| `system` / `developer` messages | joined into `system` | `systemInstruction.parts` |
+| `user` / `assistant` messages | `messages` with content blocks | `contents` with roles `user` / `model` |
+| image parts (`image_url`) | `image` block (base64 data URL or http(s) URL) | `inlineData` (base64 data URL) |
+| assistant `tool_calls` | `tool_use` blocks | `functionCall` parts |
+| `tool` messages | `tool_result` blocks, grouped into one user turn | `functionResponse` parts |
+| `tools` (functions) | `tools` with `input_schema` | `tools[0].functionDeclarations` |
+| `tool_choice` | `auto` / `none` / `any` / named `tool`; `parallel_tool_calls: false` → `disable_parallel_tool_use` | `toolConfig.functionCallingConfig` (`AUTO`, `NONE`, `ANY`, `allowedFunctionNames`) |
+| `max_tokens` / `max_completion_tokens` | `max_tokens` (mandatory; `provider_default_max_tokens`, default 4096, when absent) | `generationConfig.maxOutputTokens` |
+| `temperature`, `top_p`, `stop` | `temperature`, `top_p`, `stop_sequences` | `temperature`, `topP`, `stopSequences` |
+| `seed`, `presence_penalty`, `frequency_penalty` | dropped (no equivalent) | `seed`, `presencePenalty`, `frequencyPenalty` |
+| `response_format` | refused unless `{"type": "text"}` (no JSON mode) | `json_object` / `json_schema` → `responseMimeType` (+ `responseJsonSchema`) |
+| `logprobs`, `top_logprobs` | refused | refused |
+| `user` | `metadata.user_id` | dropped |
+| `n` | one upstream request per choice (see below) | `generationConfig.candidateCount` |
+
+A refused field returns HTTP 400 before any upstream call, because
+answering without it would silently give the client something other
+than what it asked for.
+
+Responses map back as follows: text becomes `message.content` (or
+`delta.content`), tool use becomes `tool_calls` with JSON-encoded
+`arguments`, Anthropic `thinking` blocks become `reasoning_content`, and
+usage becomes `usage.prompt_tokens` / `completion_tokens` /
+`total_tokens`. A non-success upstream status is returned with the same
+HTTP status and an OpenAI error envelope
+(`{"error": {"message", "type", "param", "code"}}`); `Retry-After` is
+relayed.
+
+### Credentials
+
+When `upstream_auth_header` and `upstream_auth_scheme` are left at their
+defaults, the native adapters send the raw key in the provider's own
+header: `x-api-key` (plus `anthropic-version: 2023-06-01`) for Anthropic
+and `x-goog-api-key` for Gemini. In passthrough mode the client's
+`Authorization: Bearer <key>` is moved into that header without the
+scheme.
+
+### Multiple choices (`n > 1`)
+
+`n` is accepted from 1 to 8 and must be a plain integer; `2.0` or `"2"`
+is refused. Each choice is audited separately (its own text, tool calls
+and finish reason), not concatenated.
+
+* **OpenAI dialect:** `n` is forwarded; the provider returns every
+  choice.
+* **Gemini:** `n` becomes `candidateCount`; one request returns every
+  candidate, and the prompt is billed once.
+* **Anthropic:** the Messages API has no `n`, so the harness sends `n`
+  identical requests concurrently and merges the answers into one
+  response with choices indexed `0..n-1`. When streaming, the chunks of
+  all choices are interleaved, each carrying its `index`, and each
+  choice ends with exactly one finish reason. The provider bills the
+  prompt once per choice, so the reported usage is the sum over all
+  choices, and budgets are charged that sum. If any of the requests
+  fails, the whole request fails with that status.
 
 Cross-provider stop-reason normalization deserves calling out
 because the upstream dialects disagree. OpenAI emits
@@ -109,7 +171,8 @@ receipt object (the artifact itself, suitable for piping to
 
 ## Supported request fields
 
-Passed through verbatim to the upstream:
+With `provider = "openai"`, passed through verbatim to the upstream
+(the native adapters translate them as described above):
 
 * `model` (required by the upstream, opaque to the harness)
 * `messages` (system / user / assistant / tool)

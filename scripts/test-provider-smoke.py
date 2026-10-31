@@ -30,6 +30,40 @@ def stream():
     return ''.join('data: '+json.dumps(x)+'\n\n' for x in frames).encode()+b'data: [DONE]\n\n'
 
 
+def two_choice_stream():
+    frames = [
+        {'choices': [{'index': 0, 'delta': {'content': 'Hi!'}, 'finish_reason': None},
+                     {'index': 1, 'delta': {'content': 'Hello!'}, 'finish_reason': None}]},
+        {'choices': [{'index': 1, 'delta': {}, 'finish_reason': 'stop'}]},
+        {'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]},
+        {'choices': [], 'usage': {'prompt_tokens': 9, 'completion_tokens': 4, 'total_tokens': 13}},
+    ]
+    return ''.join('data: '+json.dumps(x)+'\n\n' for x in frames).encode()+b'data: [DONE]\n\n'
+
+
+def anthropic_stream():
+    events = [
+        ('message_start', {'type': 'message_start', 'message': {'id': 'msg_fixture', 'model': 'loopback-fixture',
+                                                                'usage': {'input_tokens': 9, 'output_tokens': 1}}}),
+        ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}}),
+        ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': 'Hello!'}}),
+        ('content_block_stop', {'type': 'content_block_stop', 'index': 0}),
+        ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'output_tokens': 2}}),
+        ('message_stop', {'type': 'message_stop'}),
+    ]
+    return ''.join('event: '+name+'\ndata: '+json.dumps(data)+'\n\n' for name, data in events).encode()
+
+
+def gemini_stream():
+    frames = [
+        {'candidates': [{'index': 0, 'content': {'role': 'model', 'parts': [{'text': 'Hello'}]}}],
+         'usageMetadata': {'promptTokenCount': 9, 'candidatesTokenCount': 1}},
+        {'candidates': [{'index': 0, 'content': {'role': 'model', 'parts': [{'text': '!'}]}, 'finishReason': 'STOP'}],
+         'usageMetadata': {'promptTokenCount': 9, 'candidatesTokenCount': 2, 'totalTokenCount': 11}},
+    ]
+    return ''.join('data: '+json.dumps(x)+'\n\n' for x in frames).encode()
+
+
 @contextlib.contextmanager
 def provider(response, status=200, pause=None):
     seen = []
@@ -82,6 +116,20 @@ class StreamContracts(unittest.TestCase):
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(SMOKE.ValidationError):
                 SMOKE.stream_contract(value)
+
+    def test_multi_choice_stream(self):
+        self.assertEqual(SMOKE.stream_contract(two_choice_stream(), 2)['usage']['total_tokens'], 13)
+        # One choice missing its finish, a choice out of range, or a
+        # second finish for the same choice is not a complete stream.
+        invalid = [two_choice_stream().replace(b'{"index": 1, "delta": {}, "finish_reason": "stop"}',
+                                               b'{"index": 1, "delta": {}, "finish_reason": null}'),
+                   two_choice_stream().replace(b'"index": 1, "delta": {}', b'"index": 2, "delta": {}'),
+                   two_choice_stream().replace(b'"index": 1, "delta": {}', b'"index": 0, "delta": {}')]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(SMOKE.ValidationError):
+                SMOKE.stream_contract(value, 2)
+        with self.assertRaises(SMOKE.ValidationError):
+            SMOKE.stream_contract(two_choice_stream())
 
     def test_provider_url_boundary(self):
         for value in ['http://example.org', 'https://user:pass@example.org', 'https://example.org/v1',
@@ -139,6 +187,65 @@ class RealDaemonContracts(unittest.TestCase):
             for path in output.iterdir():
                 self.assertNotIn(KEY, path.read_text())
                 self.assertFalse(path.stat().st_mode & 0o077)
+
+    def passed(self, output, result):
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr+(output/'daemon.log').read_text())
+        report = json.loads((output/'result.json').read_text())
+        self.assertEqual(report['status'], 'passed')
+        self.assertEqual(len(report['checks']), 11)
+        for path in output.iterdir():
+            self.assertNotIn(KEY, path.read_text())
+        return report
+
+    def test_openai_two_choices_forward_n(self):
+        with tempfile.TemporaryDirectory() as folder, provider(two_choice_stream()) as (origin, seen):
+            output = Path(folder)/'result'
+            report = self.passed(output, self.execute(output, origin, extra=['--choices', '2']))
+            self.assertEqual(report['stream']['usage']['completion_tokens'], 4)
+            self.assertEqual(len(seen), 1)
+            self.assertEqual(seen[0]['body']['n'], 2)
+
+    def test_native_anthropic_stream_and_signed_receipt(self):
+        with tempfile.TemporaryDirectory() as folder, provider(anthropic_stream()) as (origin, seen):
+            output = Path(folder)/'result'
+            report = self.passed(output, self.execute(output, origin, extra=['--provider', 'anthropic']))
+            self.assertEqual(report['stream']['usage'],
+                             {'prompt_tokens': 9, 'completion_tokens': 2, 'total_tokens': 11})
+            self.assertEqual(len(seen), 1)
+            request = seen[0]
+            self.assertEqual(request['path'], '/v1/messages')
+            headers = {k.lower(): v for k,v in request['headers'].items()}
+            self.assertEqual(headers['x-api-key'], KEY)
+            self.assertNotIn('authorization', headers)
+            self.assertEqual(headers['anthropic-version'], '2023-06-01')
+            self.assertEqual(request['body']['max_tokens'], 32)
+            self.assertTrue(request['body']['stream'])
+            self.assertNotIn('stream_options', request['body'])
+
+    def test_native_anthropic_two_choices_fan_out(self):
+        with tempfile.TemporaryDirectory() as folder, provider(anthropic_stream()) as (origin, seen):
+            output = Path(folder)/'result'
+            report = self.passed(output, self.execute(output, origin, extra=['--provider', 'anthropic',
+                                                                            '--choices', '2']))
+            self.assertEqual(len(seen), 2)
+            self.assertTrue(all('n' not in request['body'] for request in seen))
+            # Both choices are billed, and the signed receipt says so.
+            self.assertEqual(report['stream']['usage'],
+                             {'prompt_tokens': 18, 'completion_tokens': 4, 'total_tokens': 22})
+
+    def test_native_gemini_stream_and_signed_receipt(self):
+        with tempfile.TemporaryDirectory() as folder, provider(gemini_stream()) as (origin, seen):
+            output = Path(folder)/'result'
+            report = self.passed(output, self.execute(output, origin, extra=['--provider', 'gemini']))
+            self.assertEqual(report['stream']['usage'],
+                             {'prompt_tokens': 9, 'completion_tokens': 2, 'total_tokens': 11})
+            self.assertEqual(len(seen), 1)
+            request = seen[0]
+            self.assertEqual(request['path'], '/v1beta/models/loopback-fixture:streamGenerateContent?alt=sse')
+            headers = {k.lower(): v for k,v in request['headers'].items()}
+            self.assertEqual(headers['x-goog-api-key'], KEY)
+            self.assertNotIn('authorization', headers)
+            self.assertEqual(request['body']['generationConfig']['maxOutputTokens'], 32)
 
     def test_truncated_response_fails_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as folder, provider(stream().replace(b'data: [DONE]\n\n', b'')) as (origin, seen):

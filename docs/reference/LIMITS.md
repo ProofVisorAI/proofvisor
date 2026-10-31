@@ -147,12 +147,11 @@ intentional (round 51 §8.5).
 
 ## Audit-fidelity notes
 
-* **`n > 1` responses concatenate.** Multi-choice completions relay
-  verbatim to the client, and tool-call deltas are keyed per choice
-  in the audit record — but the recorded response *text* is the
-  concatenation of every choice's content (round-51 §9.3). If your
-  compliance story requires per-choice message attribution, use
-  `n = 1` (the near-universal default).
+* **`n > 1` is limited to 8 choices.** Each choice is audited as its
+  own message, with its own tool calls and finish reason. With
+  `provider = "anthropic"`, each choice is a separate upstream request,
+  so the prompt is billed once per choice. See
+  [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md#multiple-choices-n--1).
 
 ## What the harness will NEVER limit
 
