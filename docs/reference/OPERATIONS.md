@@ -83,6 +83,13 @@ deployments and mirrors `/livez` — new deployments should probe
 4. Abort background tasks (reconciler tick, retention sweep, etc.).
 5. Flush and close the state store, broker, and Bridge.
 
+On Windows there are no POSIX signals: the daemon runs the same five
+steps on Ctrl-C (`tokio::signal::ctrl_c`, which also covers the console
+close and logoff control events). A service manager that stops the
+process without a console control event ends it without a drain; see
+[`docs/PLATFORMS.md`](../PLATFORMS.md#windows) for the other Windows
+differences (no `0600` checks on secret files, no directory fsync).
+
 Step-3 tail latency that exhausts the drain budget shows up as
 `pv_http_shutdown_drain_timeouts_total`. Alert on any increase — it
 usually means a request was stuck waiting on the upstream and the
