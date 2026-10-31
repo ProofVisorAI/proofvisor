@@ -795,7 +795,8 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         response_permit: Some(response_permit),
         worker: state.worker.clone(),
         store: Arc::clone(&state.store),
-        budget: state.config.budget.clone(),
+        budget: state.effective_budget(),
+        rates: Arc::clone(&state.pushed_rates),
         finalizer: state.finalizer.clone(),
         _lease: lease,
         response_marker,
@@ -1218,7 +1219,7 @@ async fn refund_tool_admission(
     let store = Arc::clone(&state.store);
     let session_id = execution.session_id.clone();
     let tool = execution.tool.clone();
-    let budget = state.config.budget.clone();
+    let budget = state.effective_budget();
     let principal = principal_id
         .zip(state.config.principal_budget.as_ref())
         .map(|(id, spec)| (id.to_owned(), spec.clone()));
@@ -3600,6 +3601,9 @@ struct AbortFinalizingStream {
     worker: crate::worker::WorkerHandle,
     store: Arc<dyn pv_state::StateStore>,
     budget: pv_state::BudgetSpec,
+    /// Console-pushed token-rate windows; completion tokens are recorded
+    /// as the provider reports them.
+    rates: Arc<crate::policy_push::RateLimits>,
     finalizer: crate::reconciler::Finalizer,
     _lease: crate::session::SessionLease,
     response_marker: Option<String>,
@@ -3972,6 +3976,8 @@ impl AbortFinalizingStream {
             .charged_completion_tokens
             .checked_add(delta)
             .ok_or_else(|| "charged completion-token counter overflow".to_owned())?;
+        self.rates
+            .record(&crate::pipeline::principal_id_for_budget(&self.identity), delta);
         Ok(delta)
     }
 
@@ -7615,6 +7621,7 @@ mod tests {
             worker: state.worker.clone(),
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
+            rates: Arc::clone(&state.pushed_rates),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -7712,6 +7719,7 @@ mod tests {
             worker: state.worker.clone(),
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
+            rates: Arc::clone(&state.pushed_rates),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -7799,6 +7807,7 @@ mod tests {
             worker: state.worker.clone(),
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
+            rates: Arc::clone(&state.pushed_rates),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -7870,6 +7879,7 @@ mod tests {
             worker: state.worker.clone(),
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
+            rates: Arc::clone(&state.pushed_rates),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),

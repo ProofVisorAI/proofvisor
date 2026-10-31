@@ -42,6 +42,34 @@ impl BudgetSpec {
             || self.max_total_tool_calls.is_some()
             || !self.max_tool_calls.is_empty()
     }
+
+    /// The stricter of two specs on every dimension: a limit set in
+    /// either spec binds, and where both set one the smaller wins.
+    /// Console-pushed policy is layered on the local config with this,
+    /// so a pushed bundle can only ever tighten what the operator
+    /// configured on the host, never loosen it.
+    pub fn tightened_by(&self, other: &BudgetSpec) -> BudgetSpec {
+        fn min_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+            match (a, b) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, None) => a,
+                (None, b) => b,
+            }
+        }
+        let mut max_tool_calls = self.max_tool_calls.clone();
+        for (tool, cap) in &other.max_tool_calls {
+            max_tool_calls
+                .entry(tool.clone())
+                .and_modify(|existing| *existing = (*existing).min(*cap))
+                .or_insert(*cap);
+        }
+        BudgetSpec {
+            max_tokens: min_opt(self.max_tokens, other.max_tokens),
+            max_payout_usd_micros: min_opt(self.max_payout_usd_micros, other.max_payout_usd_micros),
+            max_tool_calls,
+            max_total_tool_calls: min_opt(self.max_total_tool_calls, other.max_total_tool_calls),
+        }
+    }
 }
 
 /// Outcome of a budget check.
@@ -613,5 +641,45 @@ mod tests {
         let mut per_tool = BudgetSpec::default();
         per_tool.max_tool_calls.insert("db_write".to_owned(), 1);
         assert!(per_tool.binds_anything());
+    }
+
+    #[test]
+    fn tightened_by_keeps_the_stricter_limit_on_every_dimension() {
+        let mut local = BudgetSpec {
+            max_tokens: Some(1_000),
+            max_payout_usd_micros: None,
+            max_total_tool_calls: Some(10),
+            ..BudgetSpec::default()
+        };
+        local.max_tool_calls.insert("db_write".to_owned(), 5);
+        local.max_tool_calls.insert("search".to_owned(), 50);
+        let mut pushed = BudgetSpec {
+            max_tokens: Some(5_000),
+            max_payout_usd_micros: Some(2_000_000),
+            max_total_tool_calls: Some(3),
+            ..BudgetSpec::default()
+        };
+        pushed.max_tool_calls.insert("db_write".to_owned(), 2);
+        pushed.max_tool_calls.insert("create_payment".to_owned(), 1);
+        let merged = local.tightened_by(&pushed);
+        assert_eq!(
+            merged.max_tokens,
+            Some(1_000),
+            "a looser pushed cap never loosens the local one"
+        );
+        assert_eq!(
+            merged.max_payout_usd_micros,
+            Some(2_000_000),
+            "a pushed cap binds where local had none"
+        );
+        assert_eq!(merged.max_total_tool_calls, Some(3));
+        assert_eq!(merged.max_tool_calls.get("db_write"), Some(&2));
+        assert_eq!(merged.max_tool_calls.get("search"), Some(&50));
+        assert_eq!(merged.max_tool_calls.get("create_payment"), Some(&1));
+        assert_eq!(
+            local.tightened_by(&BudgetSpec::default()),
+            local,
+            "an empty overlay changes nothing"
+        );
     }
 }

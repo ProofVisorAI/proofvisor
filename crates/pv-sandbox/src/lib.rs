@@ -20,11 +20,13 @@
 
 pub mod denial_code;
 pub mod policy;
+pub mod pushed;
 pub mod rpc;
 pub mod sandbox;
 
 pub use denial_code::DenialCode;
 pub use policy::{NativePolicy, PolicyDecision, PolicyEngine};
+pub use pushed::{PushedAllowlist, PushedRules, PushedSchema, ToolPattern};
 pub use rpc::{parse_tool_call, refuse_duplicate_json_keys, RpcError, ToolCallRequest};
 pub use sandbox::{Sandbox, SandboxConfig, ToolVerdict};
 

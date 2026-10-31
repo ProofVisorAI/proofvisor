@@ -271,6 +271,19 @@ pub struct HarnessConfig {
     /// Reject tool calls when no matching schema was loaded.
     #[serde(default = "default_true")]
     pub require_tool_schema: bool,
+    /// Console-pushed policy bundle, written by `pvctl console-sync
+    /// --watch --pull-policies` on this host. When set, the daemon
+    /// applies the file at boot (it refuses to start if the file exists
+    /// but cannot be applied), polls it every `policy_bundle_poll_s`, and
+    /// writes what it enforces to `<file>.status.json`. Pushed policies
+    /// only tighten the local config: budgets take the stricter cap,
+    /// allowlists and schemas apply on top of local ones, and rate
+    /// policies limit tokens per principal. Unset: nothing is pulled.
+    #[serde(default)]
+    pub policy_bundle_file: Option<String>,
+    /// Seconds between checks of `policy_bundle_file` (1–3600).
+    #[serde(default = "default_policy_bundle_poll_s")]
+    pub policy_bundle_poll_s: u64,
     /// Tool-call argument field carrying a payout amount in USD, charged
     /// against `budget.max_payout_usd_micros`. This was a
     /// hardcoded `"amount_usd"` buried in the sandbox constructor — a
@@ -916,6 +929,9 @@ fn default_tool_schema_dir() -> Option<String> {
 }
 fn default_true() -> bool {
     true
+}
+fn default_policy_bundle_poll_s() -> u64 {
+    5
 }
 fn default_payout_field() -> String {
     "amount_usd".to_owned()
@@ -1962,6 +1978,16 @@ impl HarnessConfig {
                 crate::provider::SUPPORTED_PROVIDERS,
                 self.provider
             ));
+        }
+        if self
+            .policy_bundle_file
+            .as_deref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            errors.push("policy_bundle_file must not be empty when set".into());
+        }
+        if !(1..=3600).contains(&self.policy_bundle_poll_s) {
+            errors.push("policy_bundle_poll_s must be between 1 and 3600".into());
         }
         if self.provider_default_max_tokens == 0 {
             errors.push(

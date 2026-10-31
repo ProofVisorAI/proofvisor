@@ -65,6 +65,8 @@ impl HarnessConfig {
             consequential_tools: default_consequential_tools(),
             tool_schema_dir: None,
             require_tool_schema: false,
+            policy_bundle_file: None,
+            policy_bundle_poll_s: default_policy_bundle_poll_s(),
             payout_field: default_payout_field(),
             wasm_policy_paths: Vec::new(),
             session_idle_close_s: 900,

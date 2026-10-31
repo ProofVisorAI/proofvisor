@@ -178,6 +178,10 @@ pub struct AppState {
     /// `pv_shutdown_session_close_timeouts_total` on an otherwise-
     /// recoverable session.
     pub mcp_inflight: Arc<crate::inflight::InflightTracker>,
+    /// Per-principal token-rate limits pushed from the console
+    /// (`policy_bundle_file`); empty until a bundle with rate policies is
+    /// applied.
+    pub pushed_rates: Arc<crate::policy_push::RateLimits>,
     /// Admission semaphore bounding concurrent `mcp_call_inner`
     /// executions to `config.mcp_concurrency`. R70 F1 (landed R71):
     /// without this limit a slow-tool-upstream attack + N
@@ -1472,6 +1476,13 @@ impl PipelineError {
 }
 
 impl AppState {
+    /// The per-session budget in force: the local `[budget]` tightened by
+    /// any console-pushed budget policy (stricter wins on every
+    /// dimension, so a pushed bundle can never loosen the host config).
+    pub fn effective_budget(&self) -> pv_state::BudgetSpec {
+        self.config.budget.tightened_by(&self.sandbox.pushed().budget)
+    }
+
     /// Build fully wired application state with a bounded worker and shared
     /// lifecycle services.
     pub fn new(
@@ -2111,6 +2122,7 @@ impl AppState {
             identity_rejection_window: Arc::new(parking_lot::Mutex::new((Instant::now(), 0))),
             journal_key,
             mcp_inflight: Arc::new(crate::inflight::InflightTracker::new()),
+            pushed_rates: Arc::new(crate::policy_push::RateLimits::default()),
             mcp_admission,
             mcp_admission_refusals_counter,
             backend_router: Arc::new(backend_router),
@@ -2378,6 +2390,25 @@ impl AppState {
         };
         self.observe_stage("compression", stage);
 
+        // Console-pushed token-rate policy (per principal, sliding
+        // window), checked before either budget ledger is debited so a
+        // refusal debits nothing. Admitted tokens count against the
+        // window even if a budget below then refuses the request, which
+        // errs on the strict side.
+        if let Err(reason) = self
+            .pushed_rates
+            .admit(&principal_id_for_budget(&identity), compression.tokens_after)
+        {
+            let error = PipelineError::blocked(reason);
+            worker_permit.submit(self.failure_job(
+                Arc::clone(&session),
+                identity.clone(),
+                StopReason::PolicyBlocked,
+                error.to_string(),
+            ));
+            return Err(error);
+        }
+
         // Post-compression budget charge. Both the principal and session
         // ledgers spend `compression.tokens_after` — the same number
         // the signed receipt attests, so budget refusals and the audit
@@ -2428,7 +2459,7 @@ impl AppState {
                 return Err(error);
             }
         }
-        let quota = match ActionBudget::new(self.store.as_ref(), &session_id, &self.config.budget)
+        let quota = match ActionBudget::new(self.store.as_ref(), &session_id, &self.effective_budget())
             .try_tokens(billed_tokens)
         {
             Ok(quota) => quota,
@@ -2481,7 +2512,7 @@ impl AppState {
             Err(error) => {
                 // Never forwarded — refund the post-compression debit on
                 // BOTH ledgers (see the refusal arms above).
-                ActionBudget::new(self.store.as_ref(), &session_id, &self.config.budget)
+                ActionBudget::new(self.store.as_ref(), &session_id, &self.effective_budget())
                     .refund_tokens(billed_tokens);
                 if let (Some(spec), Some(principal_id)) = (
                     self.config.principal_budget.as_ref(),
@@ -2552,7 +2583,7 @@ impl AppState {
         let admission_debit = AdmissionDebit {
             store: Arc::clone(&self.store),
             session_id: session.id.clone(),
-            budget: self.config.budget.clone(),
+            budget: self.effective_budget(),
             principal: self
                 .config
                 .principal_budget
@@ -2625,7 +2656,7 @@ impl AppState {
         // Above 16 KiB, CPU-bound gates can stall the reactor. Any token
         // budget can also call a synchronous state backend, regardless of size.
         body_bytes <= 16 * 1024
-            && self.config.budget.max_tokens.is_none()
+            && self.effective_budget().max_tokens.is_none()
             && self.config.principal_budget.is_none()
     }
 
@@ -3322,7 +3353,7 @@ impl AppState {
         // A sibling of an Anthropic fan-out that got an answer counts
         // as "may have reached the provider" for the whole request.
         if error.is_connect() && !reached_provider {
-            ActionBudget::new(self.store.as_ref(), &session.id, &self.config.budget)
+            ActionBudget::new(self.store.as_ref(), &session.id, &self.effective_budget())
                 .refund_tokens(debited_tokens);
             if let Some(spec) = self.config.principal_budget.as_ref() {
                 let principal_id = principal_id_for_budget(&identity);

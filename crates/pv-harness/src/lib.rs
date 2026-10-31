@@ -26,6 +26,7 @@ pub mod mcp_client;
 #[cfg(feature = "otel")]
 pub mod otel_content;
 pub mod pipeline;
+pub mod policy_push;
 pub(crate) mod provider;
 pub mod reconciler;
 pub(crate) mod recovery;

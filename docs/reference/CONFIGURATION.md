@@ -153,6 +153,13 @@ max_payout_usd_micros }`).
 | `principal_budget` | unset | Optional principal-scoped budget layered on top. Its key is derived from the validated NHI identity — same principal, same key across session-id rotation (round 51 §3.2). Refused-by-session refunds bring the principal ledger back to whole. |
 | `allow_anonymous_principal_budget` | `false` | Opt-in for setting `principal_budget` while `require_identity = false`. Otherwise the harness refuses to boot — anonymous callers all share one key and DoS each other. |
 
+## Console-pushed policy
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `policy_bundle_file` | none | File that `pvctl console-sync --watch --pull-policies` writes the console's policy bundle to (owner-only; a group- or world-writable file is refused). The daemon applies it at boot and refuses to start if the file exists but cannot be applied, then polls it for changes and writes what it enforces to `<file>.status.json`, which `pvctl` reports to the console. Pushed policies only tighten the local config: `budget` caps merge with `[budget]` (the stricter cap wins), `allowlist` and `schema` rules run after the local policy chain and schemas, and `rate` policies limit model tokens per principal over a sliding window. `guardrail` and `transform` policies are not enforced. A newer file that cannot be applied leaves the rules in force unchanged. Unset: nothing is pulled. |
+| `policy_bundle_poll_s` | `5` | Seconds between checks of `policy_bundle_file` (1–3600). |
+
 ## Storage
 
 | Key | Default | Notes |

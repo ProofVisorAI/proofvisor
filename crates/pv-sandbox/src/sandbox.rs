@@ -2,10 +2,12 @@
 
 use crate::denial_code::DenialCode;
 use crate::policy::{PolicyDecision, PolicyEngine};
+use crate::pushed::PushedRules;
 use crate::rpc::{denial_error, parse_tool_call, RpcError};
 use pv_state::{ActionBudget, BudgetDecision, BudgetSpec, StateStore};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Sandbox configuration.
 pub struct SandboxConfig {
@@ -101,6 +103,10 @@ pub struct Sandbox {
     validators: HashMap<String, jsonschema::Validator>,
     policies: Vec<Box<dyn PolicyEngine>>,
     config: SandboxConfig,
+    /// Console-pushed rules, swapped in whole when a new bundle is
+    /// applied. Every check reads one snapshot, so a call never sees half
+    /// of an old bundle and half of a new one.
+    pushed: parking_lot::RwLock<Arc<PushedRules>>,
 }
 
 impl Sandbox {
@@ -125,7 +131,25 @@ impl Sandbox {
             validators,
             policies,
             config,
+            pushed: parking_lot::RwLock::new(Arc::new(PushedRules::default())),
         })
+    }
+
+    /// Replace the console-pushed rules. They only ever add restrictions
+    /// (see [`crate::pushed`]).
+    pub fn set_pushed(&self, rules: PushedRules) {
+        *self.pushed.write() = Arc::new(rules);
+    }
+
+    /// The console-pushed rules currently in force.
+    pub fn pushed(&self) -> Arc<PushedRules> {
+        Arc::clone(&self.pushed.read())
+    }
+
+    /// The local budget tightened by any pushed budget: the spec every
+    /// session ledger is checked against.
+    pub fn effective_budget(&self) -> BudgetSpec {
+        self.config.budget.tightened_by(&self.pushed().budget)
     }
 
     /// Evaluate a raw MCP payload for `session`.
@@ -154,6 +178,7 @@ impl Sandbox {
     ) -> ToolVerdict {
         let started = std::time::Instant::now();
         let elapsed = |s: std::time::Instant| u64::try_from(s.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let pushed = self.pushed();
 
         // Gate 1: parse.
         let req = match parse_tool_call(raw) {
@@ -223,6 +248,27 @@ impl Sandbox {
             };
         }
 
+        // Gate 2b: console-pushed schemas, on top of the local one.
+        for schema in pushed.schemas.iter().filter(|schema| schema.tool == req.tool) {
+            let errors = schema.errors(&req.arguments);
+            if !errors.is_empty() {
+                let reason = format!(
+                    "policy {:?}: schema validation failed: {}",
+                    schema.policy,
+                    errors.join("; ")
+                );
+                return ToolVerdict::Blocked {
+                    tool: req.tool.clone(),
+                    stage: "schema",
+                    policy: Some(schema.policy.clone()),
+                    denial_code: DenialCode::SchemaViolation,
+                    reason: reason.clone(),
+                    response: denial_error(req.id.as_ref(), DenialCode::SchemaViolation, &reason),
+                    elapsed_us: elapsed(started),
+                };
+            }
+        }
+
         // Gate 3: policy chain (first deny wins).
         for policy in &self.policies {
             if let PolicyDecision::Deny { reason } = policy.evaluate(&req.tool, &req.arguments) {
@@ -231,6 +277,22 @@ impl Sandbox {
                     tool: req.tool.clone(),
                     stage: "policy",
                     policy: Some(policy.name().to_owned()),
+                    denial_code: DenialCode::PolicyDenied,
+                    reason: reason.clone(),
+                    response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
+                    elapsed_us: elapsed(started),
+                };
+            }
+        }
+
+        // Gate 3b: console-pushed allowlists, after the local chain.
+        for rule in &pushed.allowlists {
+            if let Some(reason) = rule.refuses(&req.tool) {
+                let reason = format!("policy {:?}: {reason}", rule.policy);
+                return ToolVerdict::Blocked {
+                    tool: req.tool.clone(),
+                    stage: "policy",
+                    policy: Some(rule.policy.clone()),
                     denial_code: DenialCode::PolicyDenied,
                     reason: reason.clone(),
                     response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
@@ -254,7 +316,8 @@ impl Sandbox {
                 }
             }
         };
-        let budget = ActionBudget::new(store, session, &self.config.budget);
+        let effective_budget = self.config.budget.tightened_by(&pushed.budget);
+        let budget = ActionBudget::new(store, session, &effective_budget);
         // Principal-scoped pre-check. Debit the principal ledger
         // first — a header-rotation attack that resets the session bucket
         // still charges the same principal. If the principal ledger admits
@@ -308,7 +371,7 @@ impl Sandbox {
                     return ToolVerdict::Blocked {
                         tool: req.tool.clone(),
                         stage: "budget",
-                        policy: None,
+                        policy: pushed.budget_policy_for(&self.config.budget, &limit, cap),
                         denial_code: DenialCode::BudgetExceeded,
                         reason: reason.clone(),
                         response: denial_error(req.id.as_ref(), DenialCode::BudgetExceeded, &reason),
@@ -346,7 +409,7 @@ impl Sandbox {
                 ToolVerdict::Blocked {
                     tool: req.tool.clone(),
                     stage: "budget",
-                    policy: None,
+                    policy: pushed.budget_policy_for(&self.config.budget, &limit, cap),
                     denial_code: DenialCode::BudgetExceeded,
                     reason: reason.clone(),
                     response: denial_error(req.id.as_ref(), DenialCode::BudgetExceeded, &reason),
@@ -458,6 +521,93 @@ mod tests {
             vec![Box::new(NativePolicy::deny_tools(&["rm_rf"]))],
         )
         .unwrap()
+    }
+
+    fn blocked_policy(verdict: &ToolVerdict) -> (Option<String>, &'static str) {
+        match verdict {
+            ToolVerdict::Blocked { policy, stage, .. } => (policy.clone(), *stage),
+            other => panic!("expected a block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pushed_rules_add_restrictions_and_name_the_console_policy() {
+        let s = sandbox();
+        let store = InMemoryStore::new();
+        // Before any bundle: the local config alone decides.
+        assert!(s
+            .check(&store, "sess-p", &raw_call("send_wire", json!({})))
+            .is_allowed());
+        let mut rules = PushedRules {
+            etag: Some("ab12".into()),
+            budget_policies: vec!["finance.calls".into()],
+            ..PushedRules::default()
+        };
+        rules.budget.max_total_tool_calls = Some(3);
+        rules.allowlists.push(crate::pushed::PushedAllowlist {
+            policy: "runtime.no_wires".into(),
+            scope: crate::pushed::ToolPattern::from_scope("tool.*").unwrap(),
+            allow_only: None,
+            deny: ["send_wire".to_owned()].into_iter().collect(),
+        });
+        rules.schemas.push(
+            crate::pushed::PushedSchema::compile(
+                "procurement.vendors",
+                "create_purchase_order",
+                &json!({"type": "object", "required": ["vendor"], "properties": {"vendor": {"enum": ["Contoso"]}}}),
+            )
+            .unwrap(),
+        );
+        s.set_pushed(rules);
+        assert_eq!(s.pushed().etag.as_deref(), Some("ab12"));
+        assert_eq!(
+            s.effective_budget().max_total_tool_calls,
+            Some(3),
+            "pushed 3 beats local 100"
+        );
+        assert_eq!(
+            s.effective_budget().max_tool_calls.get("db_write"),
+            Some(&3),
+            "local caps survive"
+        );
+
+        let wire = s.check(&store, "sess-q", &raw_call("send_wire", json!({})));
+        assert_eq!(blocked_policy(&wire), (Some("runtime.no_wires".into()), "policy"));
+        let bad_vendor = s.check(
+            &store,
+            "sess-q",
+            &raw_call("create_purchase_order", json!({"vendor": "Initech"})),
+        );
+        assert_eq!(
+            blocked_policy(&bad_vendor),
+            (Some("procurement.vendors".into()), "schema")
+        );
+        assert!(s
+            .check(
+                &store,
+                "sess-q",
+                &raw_call("create_purchase_order", json!({"vendor": "Contoso"}))
+            )
+            .is_allowed());
+        // The local schema still applies on top of nothing pushed for db_write.
+        let local_schema = s.check(&store, "sess-q", &raw_call("db_write", json!({"table": ""})));
+        assert_eq!(blocked_policy(&local_schema), (None, "schema"));
+        assert!(s
+            .check(&store, "sess-q", &raw_call("search", json!({})))
+            .is_allowed());
+        assert!(s
+            .check(&store, "sess-q", &raw_call("search", json!({})))
+            .is_allowed());
+        // Third allowed call above was the cap; the fourth hits the pushed budget.
+        let over = s.check(&store, "sess-q", &raw_call("search", json!({})));
+        assert_eq!(blocked_policy(&over), (Some("finance.calls".into()), "budget"));
+
+        // A new bundle replaces the old rules entirely.
+        s.set_pushed(PushedRules::default());
+        assert!(s
+            .check(&store, "sess-r", &raw_call("send_wire", json!({})))
+            .is_allowed());
+        assert_eq!(s.effective_budget().max_total_tool_calls, Some(100));
     }
 
     #[test]

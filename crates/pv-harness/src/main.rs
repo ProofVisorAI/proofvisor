@@ -171,6 +171,30 @@ async fn run(config_override: Option<PathBuf>) -> Result<()> {
         Arc::clone(&metrics),
     )
     .map_err(anyhow::Error::new)?;
+    // Console-pushed policy (`pvctl console-sync --pull-policies`). It is
+    // applied before the listener binds, so after a restart no request
+    // runs without the rules that were pushed before it; a bundle file
+    // that exists but cannot be applied stops the boot.
+    let _policy_watcher = match config.policy_bundle_file.as_deref() {
+        Some(path) => {
+            let push = Arc::new(pv_harness::policy_push::PolicyPush::new(
+                std::path::PathBuf::from(path),
+                Arc::clone(&state.sandbox),
+                Arc::clone(&state.pushed_rates),
+            ));
+            if let Some(status) = push
+                .load_at_boot()
+                .map_err(anyhow::Error::msg)
+                .context("apply the console policy bundle")?
+            {
+                tracing::info!(etag = %status.etag, applied = status.applied.len(), "console policy bundle in force");
+            }
+            Some(tokio::spawn(push.watch(std::time::Duration::from_secs(
+                config.policy_bundle_poll_s,
+            ))))
+        }
+        None => None,
+    };
     #[cfg(feature = "otel")]
     let content_provider = tenant_content_provider(&config)?;
     #[cfg(feature = "otel")]
