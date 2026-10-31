@@ -13,7 +13,8 @@ target/release/proofvisord --version && target/release/pvctl --version
 # 2. The offline set piece is green (10/10 beats, ~8 s)
 node scripts/demo-agent.mjs
 
-# 3. Prod is up
+# 3. Prod is up (api.proofvisor.com is pending DNS; until it resolves,
+#    use the Render hostname https://agentvisor-api.onrender.com instead)
 curl -fsS https://api.proofvisor.com/healthz
 curl -fsS -o /dev/null https://proofvisor.com/app/
 

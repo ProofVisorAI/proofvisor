@@ -8,7 +8,10 @@ and Ed25519 signed receipts. Event content can include prompts, completions, and
 tool payloads after the daemon's configured redaction; this API stores those
 uploaded fields and restricts their visibility by role.
 
-**For deployment (Fly.io, Cloud Run, Neon, self-host) see [DEPLOY.md](./DEPLOY.md).**
+**For deployment (Render, Cloud Run, Neon, self-host) see [DEPLOY.md](./DEPLOY.md).**
+The live instance is a Render web service (`agentvisor-api`, reachable at
+`https://agentvisor-api.onrender.com`; the custom domain `api.proofvisor.com`
+is pending DNS). Nothing runs on Fly.io; `fly.toml` is an unused template.
 
 ## Architecture
 
@@ -26,7 +29,7 @@ uploaded fields and restricts their visibility by role.
 ## Requirements
 
 - Node.js ≥ 22
-- Postgres 15+ (any provider — Neon / Supabase / Fly Postgres / self-host)
+- Postgres 15+ (any provider — Neon / Supabase / Render Postgres / self-host)
 - Docker (for local reproducibility via `docker-compose`)
 
 ## Local dev
@@ -146,15 +149,38 @@ All routes are prefixed `/api/v1`.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET`/`POST` | `/deployments` | Token returned **once** on create |
+| `GET`/`POST` | `/deployments` | Token returned **once** on create. Each row carries `sessions24h` and `spend24hUsdMicros` (the spend is `null` for members) |
 | `PATCH`/`DELETE` | `/deployments/:id` (+ `POST /:id/rotate-token`) | Rename/env edit (labels only), delete (409 if sealed receipts unless forced), rotate |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/keys[/:id]` | API keys: list / mint (shown once) / rename / revoke — rank-guarded |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/policies[/:id]` | Policy CRUD (name/description/body/enabled) |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/webhooks[/:id]` (+ `POST /:id/test`, `GET /:id/deliveries`) | Endpoints (SSRF-guarded), HMAC-signed deliveries with retries, cursor-paginated delivery log |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/keys[/:id]` | API keys: list / mint (shown once) / rename / revoke — rank-guarded. `POST` accepts `role` (`owner`, `admin`, or `member`; default `admin`; never above the caller's own role, else 403 `cannot_grant_role_above_own`). The console sends the role chosen in its create dialog |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/policies[/:id]` | Policy CRUD (name/description/body/enabled). Definitions only: nothing is pushed to daemons, which enforce their local policy files |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/webhooks[/:id]` (+ `POST /:id/test`, `GET /:id/deliveries`) | Endpoints (SSRF-guarded), HMAC-signed deliveries with retries, cursor-paginated delivery log. Emitted events: `test`; `member.invited`; `policy.block` (every ingest batch that contains a blocked tool call); `session.blocked` (once per session, on its first blocked tool call or on a `status: "blocked"` upsert, with a `reason` of `first_blocked_event` or `status_blocked`); `apikey.created` (carries the key's display hint and role only, never the plaintext) |
 
 ### Ingest (daemon → API)
 
 Auth: `Authorization: Bearer <ingest_token>` + `X-PV-Deployment: <deployment_id>`.
+
+**Token shape.** Ingest tokens are minted as `pv_live_` followed by 32
+base64url characters (24 random bytes). The stored and displayed hint is
+the first 16 characters (`pv_live_` plus 8). Tokens minted before the
+prefix existed have no prefix and keep working; their hint is 8 raw
+characters. Programmatic API keys use a different prefix, `pv_srv_`.
+
+**Connecting a daemon.** The console's "Connect your daemon" card on a
+deployment page prints exactly the three variables `pvctl console-sync`
+reads (`crates/pv-cli/src/console_sync.rs`):
+
+```sh
+PV_CONSOLE_URL=https://api.proofvisor.com      # the bare API origin, no path
+PV_CONSOLE_DEPLOYMENT=<deployment id>
+PV_CONSOLE_TOKEN=<ingest token, shown once at create or rotate>
+pvctl console-sync --watch
+```
+
+`PV_CONSOLE_URL` is the API origin only; `pvctl` appends `/api/v1/ingest`
+itself. (While `api.proofvisor.com` is pending DNS, the origin is
+`https://agentvisor-api.onrender.com`; for a self-hosted API it is that
+server's origin.) The daemon never calls the console on its own: the
+uploader is this separate, opt-in command.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -167,20 +193,25 @@ Auth: `Authorization: Bearer <ingest_token>` + `X-PV-Deployment: <deployment_id>
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET`  | `/overview` | Session totals and time-series for the selected UTC bucket window, plus fleet counts and recent sessions |
-| `GET`  | `/sessions` (+ `/sessions/:id`) | Cursor-paginated list; detail with cursor-paginated events + receipt; `eventCount` remains the total across all pages |
+| `GET`  | `/overview` | Session totals and time-series for the selected UTC bucket window, plus fleet counts and recent sessions. `stats` includes `events` (total event count) alongside `sessions`, `live`, `sealed`, `blocked`, cost and tool counters |
+| `GET`  | `/sessions` (+ `/sessions/:id`) | Cursor-paginated list; detail with cursor-paginated events + receipt; `eventCount` remains the total across all pages. Both the list rows and the detail carry `policiesFired`, the names of the policies that fired in that session |
 | `GET`  | `/receipts/:sessionId` | Raw receipt + deployment public key for offline verify |
 | `GET`  | `/audit` (+ `/audit.csv`) | Cursor-paginated audit trail; CSV streams up to 10k rows |
 | `GET`  | `/stream` | SSE: session/event/receipt updates, multi-instance via PG LISTEN/NOTIFY |
 
 ## Testing
 
-Four layers, all runnable locally and (except the browser drills'
+Five layers, all runnable locally and (except the browser drills'
 prod target) wired into CI:
 
-- **`ci/e2e.mjs`** — API contract suite. Boot the server,
-  then `API_BASE=http://127.0.0.1:<port> node ci/e2e.mjs`. Runs in the
-  Console + API workflow.
+- **`npm test`** — the `node:test` unit and recovery suites under
+  `ci/*.test.mjs` (startup env guard, container entrypoint, bus and
+  datasource recovery, multi-instance, external auth). No database or
+  running server is needed. On 2026-10-30 this was 66 tests across
+  8 files, all passing.
+- **`ci/e2e.mjs`** — API contract suite (128 checks as of 2026-10-30).
+  Boot the server, then `API_BASE=http://127.0.0.1:<port> node ci/e2e.mjs`.
+  Runs in the Console + API workflow.
 - **`scripts/run-drill-battery.sh`** — the 15 DB-backed attack drills
   (apikey ×2, invite ×2, ip-allowlist, retention, saml ×2, webauthn ×2,
   webhook ×3, oidc, crash-evidence quarantine). Boots a fresh server per drill

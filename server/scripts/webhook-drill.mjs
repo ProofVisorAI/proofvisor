@@ -222,5 +222,96 @@ capture = [];
   console.log(`✅ sweeper retried: status=${latest.status} attempt=${latest.attempt}`);
 }
 
+// 10. apikey.created + session.blocked fan-out. Subscribe the endpoint
+// to both, then trigger each through its real producer: POST /keys and
+// the ingest path (first blocked tool call fires session.blocked once;
+// a later blocked batch fires policy.block again but not a second
+// session.blocked; a daemon upsert with status=blocked fires the
+// status edge).
+async function waitFor(pred, tries = 40) {
+  for (let i = 0; i < tries; i++) {
+    if (pred()) return true;
+    await wait(150);
+  }
+  return pred();
+}
+{
+  const r = await jsonReq("PATCH", `/api/v1/webhooks/${epId}`, {
+    events: ["test", "policy.block", "member.invited", "session.blocked", "apikey.created"],
+  });
+  if (r.status !== 200) fail(`subscribe new events -> ${r.status}: ${await r.text()}`);
+
+  // apikey.created — payload carries the hint, never the plaintext.
+  capture = [];
+  const kr = await jsonReq("POST", "/api/v1/keys", { name: "drill-key", role: "member" });
+  if (kr.status !== 201) fail(`create key -> ${kr.status}: ${await kr.text()}`);
+  const key = await kr.json();
+  if (!(await waitFor(() => capture.some((c) => c.headers["x-proofvisor-event"] === "apikey.created")))) {
+    fail(`apikey.created never delivered: ${JSON.stringify(capture.map((c) => c.headers["x-proofvisor-event"]))}`);
+  }
+  const kc = capture.find((c) => c.headers["x-proofvisor-event"] === "apikey.created");
+  if (!verify(secret, kc.headers["x-proofvisor-timestamp"], kc.body, kc.headers["x-proofvisor-signature"])) fail("apikey.created signature verify failed");
+  const kp = JSON.parse(kc.body);
+  if (kp.data.apiKeyId !== key.key.id || kp.data.role !== "member") fail(`apikey.created payload: ${kc.body}`);
+  if (!String(kp.data.hint).startsWith("pv_srv_")) fail(`apikey.created hint: ${kp.data.hint}`);
+  if (kc.body.includes(key.plaintextToken)) fail("apikey.created payload leaked the plaintext key");
+  console.log("✅ apikey.created delivered with hint only (no plaintext)");
+
+  // Deployment + daemon credentials for the ingest path.
+  const dr = await jsonReq("POST", "/api/v1/deployments", { name: "wh-drill-daemon", environment: "staging" });
+  if (dr.status !== 201) fail(`create deployment -> ${dr.status}: ${await dr.text()}`);
+  const dep = await dr.json();
+  if (!String(dep.ingestToken).startsWith("pv_live_")) fail(`ingest token shape: ${dep.ingestToken.slice(0, 12)}`);
+  if (!String(dep.deployment.ingestTokenHint).startsWith("pv_live_")) fail(`ingest token hint shape: ${dep.deployment.ingestTokenHint}`);
+  const daemonHeaders = {
+    "Content-Type": "application/json",
+    Authorization: "Bearer " + dep.ingestToken,
+    "X-PV-Deployment": dep.deployment.id,
+  };
+  const ingest = (path, body) => fetch(BASE + path, { method: "POST", headers: daemonHeaders, body: JSON.stringify(body) });
+  const now = new Date().toISOString();
+
+  const s1 = await ingest("/api/v1/ingest/sessions", { externalId: "wh-sess-1", agent: "refund-agent", openedAt: now });
+  if (s1.status !== 200) fail(`ingest session -> ${s1.status}: ${await s1.text()}`);
+  capture = [];
+  const e1 = await ingest("/api/v1/ingest/events", [
+    { sessionExternalId: "wh-sess-1", seq: 0, kind: "tool", tag: "TOOL", body: "lookup", occurredAt: now, addToolsAllowed: 1 },
+    { sessionExternalId: "wh-sess-1", seq: 1, kind: "block", tag: "BLOCKED", body: "issue_refund", occurredAt: now, policyName: "refunds.cap", addToolsBlocked: 1, addBlockedPayoutUsdMicros: 5_000_000 },
+  ]);
+  if (e1.status !== 200) fail(`ingest events -> ${e1.status}: ${await e1.text()}`);
+  const names = () => capture.map((c) => c.headers["x-proofvisor-event"]);
+  if (!(await waitFor(() => names().includes("policy.block") && names().includes("session.blocked")))) {
+    fail(`first blocked batch delivered ${JSON.stringify(names())}, expected policy.block + session.blocked`);
+  }
+  const sb = capture.find((c) => c.headers["x-proofvisor-event"] === "session.blocked");
+  if (!verify(secret, sb.headers["x-proofvisor-timestamp"], sb.body, sb.headers["x-proofvisor-signature"])) fail("session.blocked signature verify failed");
+  const sbp = JSON.parse(sb.body);
+  if (sbp.data.sessionExternalId !== "wh-sess-1" || sbp.data.reason !== "first_blocked_event" || sbp.data.blockedCount !== 1) fail(`session.blocked payload: ${sb.body}`);
+  console.log("✅ first blocked tool call -> policy.block + session.blocked");
+
+  capture = [];
+  const e2 = await ingest("/api/v1/ingest/events", [
+    { sessionExternalId: "wh-sess-1", seq: 2, kind: "block", tag: "BLOCKED", body: "issue_refund again", occurredAt: now, addToolsBlocked: 1 },
+  ]);
+  if (e2.status !== 200) fail(`ingest events #2 -> ${e2.status}`);
+  if (!(await waitFor(() => names().includes("policy.block")))) fail("second blocked batch: policy.block missing");
+  await wait(600);
+  if (names().includes("session.blocked")) fail("session.blocked fired twice for the same session");
+  console.log("✅ later blocked batch -> policy.block only (session.blocked is once per session)");
+
+  capture = [];
+  const s2 = await ingest("/api/v1/ingest/sessions", { externalId: "wh-sess-2", agent: "refund-agent", status: "blocked", openedAt: now });
+  if (s2.status !== 200) fail(`ingest blocked session -> ${s2.status}: ${await s2.text()}`);
+  if (!(await waitFor(() => names().includes("session.blocked")))) fail("status=blocked upsert did not fire session.blocked");
+  const sb2 = JSON.parse(capture.find((c) => c.headers["x-proofvisor-event"] === "session.blocked").body);
+  if (sb2.data.sessionExternalId !== "wh-sess-2" || sb2.data.reason !== "status_blocked") fail(`status-edge payload: ${JSON.stringify(sb2)}`);
+  capture = [];
+  const s2b = await ingest("/api/v1/ingest/sessions", { externalId: "wh-sess-2", agent: "refund-agent", status: "blocked", openedAt: now });
+  if (s2b.status !== 200) fail(`re-upsert blocked session -> ${s2b.status}`);
+  await wait(600);
+  if (names().includes("session.blocked")) fail("re-upserting an already-blocked session fired session.blocked again");
+  console.log("✅ status=blocked upsert -> session.blocked once (status edge)");
+}
+
 receiver.close();
 console.log("\nAll webhook drill scenarios passed.");

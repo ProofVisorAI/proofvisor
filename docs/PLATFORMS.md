@@ -48,9 +48,11 @@ process and file-permission semantics in its evidence spool).
 
 ## Hosted console (self-host)
 
-`server/Dockerfile` builds and passes the full 93-check e2e suite on
-both `linux/amd64` and `linux/arm64` (node:22-slim, Prisma
-auto-migrate, non-root, fail-closed production env guard).
+`server/Dockerfile` builds and passes the full API e2e suite (128
+checks as of 2026-10-30) on both `linux/amd64` and `linux/arm64`. The
+build stage uses `node:22` on Debian 13; the runtime stage is Google's
+Distroless Node 22 image (Debian 13, non-root, no shell), with Prisma
+auto-migrate and a fail-closed production env guard.
 
 ## Continuously verified
 

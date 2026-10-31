@@ -1,7 +1,9 @@
 # Build/test/scan jobs have read-only credentials, including on fork PRs.
 # Only a successful main run can copy validated OCI bytes to GHCR. Candidate
 # references are not deployment outputs; convenience tags move after every
-# platform and required attestation passes. Fly receives the verified digest.
+# platform and required attestation passes. The optional deploy-fly job would
+# hand the verified digest to Fly, but it is unused (no FLY_API_TOKEN; the live
+# API runs on Render and builds from server/Dockerfile there).
 name: Deploy
 
 on:

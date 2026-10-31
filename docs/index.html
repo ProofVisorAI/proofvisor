@@ -48,8 +48,9 @@
         ProofVisor is a small server you drop in front of your agent&rsquo;s LLM
         and tool calls. Every request is recorded. Every limit you set is
         enforced before the call goes out. Every session can end with a signed
-        receipt anyone can verify offline. Without asking you or us for
-        anything except a public key.
+        receipt (the shipped configs sign by default). Anyone who holds your
+        deployment&rsquo;s public key can verify that receipt offline, without
+        asking you or us for anything else.
       </p>
       <p class="cta-row">
         <a class="cta primary" href="app/?tour=1">See the full flow</a>
@@ -58,7 +59,7 @@
         <a class="cta" href="verify/">Verify a receipt</a>
       </p>
       <p class="hero-meta">
-        v0.1.0 &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
+        v0.1.0&#8209;rc.5 (pre&#8209;release) &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
       </p>
     </div>
   </header>
@@ -80,9 +81,12 @@
           <p class="muted">
             Works the same way for Ollama, LM&nbsp;Studio, Azure OpenAI,
             vLLM, LiteLLM, and anything else that speaks the OpenAI
-            <code>chat/completions</code> wire format. (Anthropic&rsquo;s
-            native API is not OpenAI-shaped. Front it with a
-            LiteLLM-style shim.)
+            <code>chat/completions</code> wire format. Requests are
+            forwarded unchanged; the <code>provider</code> setting
+            (<code>openai</code>, <code>anthropic</code>, or
+            <code>gemini</code>) only selects how the upstream response
+            frames are parsed. The Anthropic and Gemini presets point at
+            those vendors&rsquo; OpenAI-compatible endpoints.
           </p>
         </div>
         <div>
@@ -119,8 +123,18 @@
             </p>
             <p>
               Verification is one <code>pvctl receipt-verify</code> call with
-              your public key. Or 30 lines of your language&rsquo;s Ed25519 library.
-              You don&rsquo;t need to trust ProofVisor to trust the receipt.
+              your public key. Or about 30 lines of your language&rsquo;s Ed25519
+              library. You don&rsquo;t need to trust ProofVisor to trust the
+              receipt; you only need the public key, obtained from the
+              operator out of band.
+            </p>
+            <p class="muted">
+              The browser verifier at <a href="verify/">/verify/</a> checks
+              the signature and the receipt&rsquo;s internal consistency, but
+              it only knows the sample and demo keys. For a real deployment
+              it reports &ldquo;internally consistent, trust anchor not
+              verified&rdquo; until you compare the key fingerprint with the
+              deployment page in the console.
             </p>
           </div>
           <div class="feature-visual">
@@ -164,7 +178,8 @@
             <h3>Hard limits, refused at the door</h3>
             <p>
               That <code>blocked: 1</code> in the receipt was a tool call that
-              would have blown past the session&rsquo;s cost cap. Your agent
+              would have blown past the session&rsquo;s payout cap
+              (<code>max_payout_usd_micros</code>). Your agent
               received a plain HTTP&nbsp;403 and moved on. The provider was
               never contacted; the money was never spent.
             </p>
@@ -197,15 +212,19 @@ Content-Type: application/json
             <h3>Evidence you can send anywhere</h3>
             <p>
               Every event is written as OCSF-shaped JSON. The same
-              schema your SIEM already speaks. Every session that never
-              finishes becomes an ATIF trajectory file compatible with the
-              Harbor validator. Every artifact is just a file on
-              disk.
+              schema your SIEM already speaks. A session on the signed
+              workflow (the default in every shipped config) ends in a
+              receipt; a session on the unsigned workflow ends in an ATIF
+              trajectory file compatible with the Harbor validator, and can
+              be promoted to a receipt later. Every artifact is just a file
+              on disk.
             </p>
             <p>
               Ship the files to S3, feed them into Vector, hand them to
               a customer&rsquo;s evidence locker, or archive them for the seven
-              years your industry demands. ProofVisor does not phone home.
+              years your industry demands. The daemon does not phone home;
+              uploading evidence to the hosted console is a separate,
+              opt-in <code>pvctl console-sync</code> step.
             </p>
           </div>
           <div class="feature-visual">
@@ -261,7 +280,7 @@ data/bridge/
               <span class="dot red"></span>
               <span class="dot yellow"></span>
               <span class="dot green"></span>
-              <span class="mock-url">agent&#8209;bridge.internal / dashboard</span>
+              <span class="mock-url">proofvisor.internal / dashboard</span>
             </header>
             <div class="mock-body">
               <div class="mock-stats">
@@ -344,7 +363,7 @@ data/bridge/
             <p>
               A customer wants to know whether the agent you built for
               them called any model or tool other than the ones you
-              promised. You give them a session receipt and 20 lines
+              promised. You give them a session receipt and about 30 lines
               of verification code.
             </p>
           </article>
@@ -358,12 +377,13 @@ data/bridge/
           <p class="section-kicker">Get started</p>
           <h2>60 seconds, one prompt at a time.</h2>
           <p>
-            Requires <a href="https://rustup.rs/">Rust</a>. Clone the
-            <a href="https://github.com/ProofVisorAI/proofvisor">repo</a> and
-            install both binaries with <code>cargo install --path</code>
-            (two commands, shown in the README).
-            The wizard asks one thing at a time and writes the config
-            file for you. When it finishes, ProofVisor is running on
+            One command installs both binaries. The installer downloads
+            prebuilt releases for Linux and macOS, checks their SHA&#8209;256
+            checksums, and falls back to <code>cargo install --git</code>
+            (which needs <a href="https://rustup.rs/">Rust</a>) on any
+            other platform. Then run <code>pvctl</code>: the wizard asks
+            one thing at a time and writes the config file for you. When
+            it finishes, ProofVisor is running on
             <code>http://127.0.0.1:8484</code>.
           </p>
           <p>
@@ -372,8 +392,7 @@ data/bridge/
           </p>
         </div>
         <div>
-<pre class="code-shell" tabindex="0" role="region" aria-label="Shell output example"><code><span class="prompt">$</span> git clone https://github.com/ProofVisorAI/proofvisor &amp;&amp; cd proofvisor
-<span class="prompt">$</span> cargo install --path crates/pv-harness &amp;&amp; cargo install --path crates/pv-cli
+<pre class="code-shell" tabindex="0" role="region" aria-label="Shell output example"><code><span class="prompt">$</span> curl -fsSL https://proofvisor.com/install.sh | sh
 <span class="prompt">$</span> pvctl
 
   Welcome to ProofVisor! A couple of quick questions and you're done.
@@ -410,9 +429,10 @@ data/bridge/
         <p class="section-kicker">Under the hood</p>
         <h2>Boring, on purpose.</h2>
         <p class="lede lede-secondary">
-          ProofVisor is a Rust workspace of twelve crates. No hosted
-          service, no phone-home telemetry, no vendored dashboard. It
-          writes files. You keep the signing key.
+          ProofVisor is a Rust workspace of thirteen crates. The daemon
+          never phones home and needs no hosted service: it writes files,
+          and you keep the signing key. The hosted console is opt-in; your
+          daemon only talks to it if you run <code>pvctl console-sync</code>.
         </p>
         <div class="tech-grid">
           <div>

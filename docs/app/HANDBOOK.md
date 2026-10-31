@@ -184,7 +184,7 @@ catalog at the bottom.
     top level if `window.dataSource` is undefined (datasource.js
     aborted by a proxy / 404 mid-deploy), so the crash guard's card
     takes over. Without it, boot() succeeded, the login render cleared
-    `#app` and died on `state.ds.*` — but `__avBooted` had already
+    `#app` and died on `state.ds.*` — but `__pvBooted` had already
     pacified the guard AND the empty-`#app` watchdog, leaving a
     permanent blank page. The guard's three nets: pre-boot
     window.error → card; unhandledrejection → card; 6s watchdog for
@@ -262,12 +262,37 @@ fixtures mirror the REAL taxonomy in `server/src/lib/audit.ts`
 `audit.exported_csv`, `deployment.pubkey_first_set` for the fresh
 "daemon connected" moment). Webhook pause/resume records
 `webhook.updated` with a paused/resumed NOTE — the real PATCH writes no
-dedicated slug. Documented demo-forward exceptions (no server
-equivalent yet): `policy.created/updated/enabled/disabled` and
-`policies.defaults_seeded` (server has no policy CRUD routes).
+dedicated slug. The server does have policy CRUD routes
+(`server/src/routes/policies.ts`, slugs `policy.create` /
+`policy.update` / `policy.delete`, plus enable/disable variants); the
+mock's `policy.created/updated/enabled/disabled` spellings and
+`policies.defaults_seeded` predate them and are the remaining
+demo-forward exceptions to reconcile. Note that policy *push* from the
+console to daemons is not built: daemons enforce their local policy
+files, and the console only stores definitions.
 Never invent a slug — check audit.ts first; the audit chips
 self-generate from the category prefix, so a renamed slug silently
 re-files its rows.
+
+**Webhook events are a separate vocabulary** from audit slugs
+(`server/src/lib/webhooks.ts`, dispatched from the routes). The server
+emits exactly: `test`, `member.invited`, `policy.block` (every ingest
+batch containing a blocked tool call), `session.blocked` (once per
+session — its first blocked tool call, or a `status: "blocked"` upsert;
+the payload carries `reason`), and `apikey.created` (display hint and
+role only, never the plaintext). `policy.block` is NOT an audit slug.
+The mock's webhook test-delivery and event pickers must list exactly
+these names and no others.
+
+**Daemon hookup copy** (deployment page "Connect your daemon" card):
+the card prints `PV_CONSOLE_URL=<API origin>`,
+`PV_CONSOLE_DEPLOYMENT=<deployment id>`,
+`PV_CONSOLE_TOKEN=<token shown once>` and tells the operator to run
+`pvctl console-sync --watch`. These are the exact variables
+`crates/pv-cli/src/console_sync.rs` reads; the URL is the bare origin
+(pvctl appends `/api/v1/ingest`). Never reintroduce the old
+`PV_INGEST_URL` / `PV_DEPLOYMENT` / `PV_INGEST_TOKEN` names or the
+`ingest.proofvisor.com` host — none of them ever existed on the CLI.
 
 **Receipts exist only at seal**: the real API 404s a running session's
 receipt (the daemon posts it AT seal) and the console renders "No
@@ -284,7 +309,7 @@ drill check 2 pins the whole unsealed→sealed transition.
 | `live-site-smoke.mjs` | 11 checks: link/media crawl, captions, alias stubs, 404, OG/Twitter link previews, video-metadata truth (durations + zero MediaErrors), install-promise (the exact URL app.js prints serves the real installer; live runs also assert the public README leads with working commands) |
 | `a11y-audit.mjs` | 46 axe scans: 11 routes + 9 modal states × 2 themes, 3 static pages × 2 schemes |
 | `mobile-smoke.mjs` | phone/tablet: tab bar, taps, modals fit + hittable + stacking, static pages |
-| `verify-page-drill.mjs` | 12 checks incl. download→drop→green / tamper→red |
+| `verify-page-drill.mjs` | 15 checks incl. download→drop→green / tamper→red |
 | `receipt-verify-drill.mjs` | download → CLI verifier + tamper matrix |
 | `full-flow-rehearsal.mjs` | ONE continuous session in narrative order: landing CTA → tour → verify finale → attack → receipt → fresh signup → reset. `PROFILE=phone` reruns it as the QR-code path on an iPhone profile; `SLOW=1` adds 300–700ms venue-wifi jitter to every datasource call |
 | `engine-matrix.mjs` | nightly: 11 features × chromium/webkit/firefox (incl. sticky headers, dirty-guard, theme-state) |
@@ -318,7 +343,7 @@ everything):
   (legacy branch build off `main`, `.nojekyll` in the artifact).
 - `ProofVisorAI/proofvisor` — the public binary tool: the Rust
   workspace + every compile-time-included path + the offline
-  verifier at `tools/verify-receipt.mjs`. `publish-tool.yml` exports
+  verifier at `server/scripts/verify-receipt.mjs`. `publish-tool.yml` exports
   an explicit INCLUDE list via `TOOL_DEPLOY_KEY`. If a crate gains a
   new `include_str!` outside the list, the public build breaks —
   extend the list AND the workflow's `paths:` trigger.
@@ -330,8 +355,10 @@ PROMISES (URLs/commands the product tells users to run elsewhere)
 must be guarded: the onboarding install command shipped for weeks
 pointing at get.proofvisor.com, a host that never existed in DNS —
 the installer now lives at proofvisor.com/install.sh (same Pages
-artifact, no DNS dependency), installs proofvisord + pvctl via
-`cargo install --git` from the public repo, and smoke check 11
+artifact, no DNS dependency), installs proofvisord + pvctl from the
+prebuilt GitHub release binaries (SHA-256 checked; pinned to
+v0.1.0-rc.5) and falls back to `cargo install --git` from the public
+repo on other platforms, and smoke check 11
 fetches the EXACT URL the deployed app.js prints. Public-consumer
 chain certified BY EXECUTION (R270–R272): fresh clone compiles; real
 `cargo install --locked --git` produced both binaries; the printed
@@ -340,7 +367,7 @@ to `pvctl setup`); `pvctl setup` exits gracefully on non-TTY EOF;
 `doctor --offline` fails loudly on exactly the unset provider key and
 passes with it; `pvctl start` served /health and PROXIED a live
 chat/completions request (upstream's own 401 for a dummy key proves
-the pipe); tools/verify-receipt.mjs accepts a production receipt.
+the pipe); server/scripts/verify-receipt.mjs accepts a production receipt.
 The public README's `cargo install pv-harness pv-cli` pointed at
 crates.io entries that were NEVER published — quickstart now leads
 with the installer one-liner + --git form (crates.io note stays for

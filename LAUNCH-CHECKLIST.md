@@ -6,7 +6,7 @@ The [current validation record](docs/PRODUCTION-VALIDATION.md) documents the
 2026-09-24 checks, remaining findings, and external services still to validate.
 Links identify the implementation or the associated runbook entry.
 
-Legend: **✅ verified** · **🟢 configured** · **📋 documented**
+Legend: **✅ verified** · **🟢 configured** · **📋 documented** · **⚠️ not met** (the item is measured and currently fails its own target)
 
 ---
 
@@ -54,7 +54,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 | 2.11 | Cursor pagination on `/sessions` (O(log N)) | ✅ | [server/src/routes/read.ts](server/src/routes/read.ts) |
 | 2.12 | Streaming NDJSON export (bounded memory on huge orgs) | ✅ | [server/src/routes/auth.ts](server/src/routes/auth.ts) |
 | 2.13 | Session.orgId denormalized + compound indexes | ✅ | [server/prisma/schema.prisma](server/prisma/schema.prisma) |
-| 2.14 | Fly.io + Render + Koyeb deploy manifests keyed off `/readyz` | ✅ | [server/fly.toml](server/fly.toml) · [render.yaml](render.yaml) |
+| 2.14 | Render + Fly.io + Koyeb deploy manifests keyed off `/readyz` (only Render is in use; the live service is `agentvisor-api`, and `fly.toml` is an unused template) | ✅ | [render.yaml](render.yaml) · [server/fly.toml](server/fly.toml) |
 | 2.15 | Console image validation, main-only GHCR promotion, and deployment by digest | 🟢 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) · [Validation scope](docs/PRODUCTION-VALIDATION.md#container-security-review) |
 | 2.16 | Runbook covers 7 pre-launch drills | ✅ | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 
@@ -97,7 +97,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 | # | Item | Status | Reference |
 |---|---|---|---|
 | 5.1 | Top-level README explains the product | 📋 | [README.md](README.md) |
-| 5.2 | Server DEPLOY guide (Fly, Render, Koyeb, Docker) | 📋 | [server/DEPLOY.md](server/DEPLOY.md) |
+| 5.2 | Server DEPLOY guide (Render in production; Fly, Koyeb, Docker as templates) | 📋 | [server/DEPLOY.md](server/DEPLOY.md) |
 | 5.3 | CI/CD reference | 📋 | [CI-CD.md](CI-CD.md) |
 | 5.4 | Runbook of pre-launch drills | 📋 | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 | 5.5 | STATUS.md summarizing readiness | 📋 | [docs/STATUS.md](docs/STATUS.md) |

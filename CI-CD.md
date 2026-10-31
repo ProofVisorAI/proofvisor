@@ -22,10 +22,10 @@ how updates land, how backups escape any single provider.
               ┌──────────────────────────────────────────────┤
               ▼                                              ▼
      ┌────────────────────┐                       ┌────────────────────┐
-     │ On PR: read-only   │                       │ On main: Fly.io    │
-     │ API/runtime checks │                       │ rolling deploy     │
-     │ and downloadable   │                       │ (opt-in via        │
-     │ image + evidence   │                       │ FLY_API_TOKEN)     │
+     │ On PR: read-only   │                       │ On main: optional  │
+     │ API/runtime checks │                       │ deploy-fly job     │
+     │ and downloadable   │                       │ (unused; the live  │
+     │ image + evidence   │                       │ API is on Render)  │
      └────────────────────┘                       └────────────────────┘
 
 Nightly (04:17 UTC)         Weekly (Mon 06:00 UTC)
@@ -40,7 +40,7 @@ Nightly (04:17 UTC)         Weekly (Mon 06:00 UTC)
 |---|---|---|
 | `.github/workflows/ci.yml` | push to main, all PRs | Rust workspace checks, tests, and live contract services |
 | `.github/workflows/console-api.yml` | push to main, all PRs | Console syntax and TypeScript checks, API and browser tests, two-instance recovery, daemon crash synchronization, container runtime checks, and encrypted backup/restore tests |
-| `.github/workflows/deploy.yml` | main pushes and PRs matching console/release-tool paths; manual runs | Build local OCI archives, test and scan each platform, promote verified bytes on main, then optionally deploy the exact digest to Fly |
+| `.github/workflows/deploy.yml` | main pushes and PRs matching console/release-tool paths; manual runs | Build local OCI archives, test and scan each platform, promote verified bytes on main, then optionally deploy the exact digest to Fly (this last job is unused: `FLY_API_TOKEN` is not set and the live API runs on Render) |
 | `.github/workflows/pages.yml` | main pushes matching its source/docs path filters; manual runs | Rustdoc and the docs SPA to GitHub Pages |
 | `.github/workflows/deny.yml` | push to main, all PRs | cargo-deny advisory, license, and duplicate checks |
 | `.github/workflows/publish-crates.yml` | tag `pv-*-vX.Y.Z` | Publish crates to crates.io |
@@ -135,13 +135,18 @@ reproducible builds or an independently certified SLSA level.
 
 ## Deploying
 
-The workflow supports an optional Fly.io deployment. Other container hosts
-can use the same OCI image. Configure the database, HTTPS origins, mailer,
-application secrets, and host networking before the first deployment; see
-[the deployment guide](server/DEPLOY.md). Local tests do not establish
-availability or capacity on a selected production host.
+The live hosted API runs on Render as the web service `agentvisor-api`
+(`https://agentvisor-api.onrender.com`; the custom domain
+`api.proofvisor.com` is pending DNS). Render builds from `server/Dockerfile`
+on its own; the promoted GHCR digest is not what it runs today. The
+workflow's optional Fly.io deployment job is unused because nothing runs on
+Fly.io. Other container hosts can use the same OCI image. Configure the
+database, HTTPS origins, mailer, application secrets, and host networking
+before the first deployment; see [the deployment guide](server/DEPLOY.md).
+Local tests do not establish availability or capacity on a selected
+production host.
 
-### Automated (Fly.io on a matching push to main)
+### Automated (optional Fly.io job on a matching push to main — currently unused)
 
 With `FLY_API_TOKEN` configured as a repository secret:
 
@@ -152,7 +157,8 @@ With `FLY_API_TOKEN` configured as a repository secret:
 Availability during replacement depends on healthy replicas, spare capacity,
 readiness checks, and the deployment configuration. No downtime or cutover
 latency guarantee has been measured here. Without `FLY_API_TOKEN`, the Fly
-step skips deployment; the image remains available in GHCR.
+step skips deployment; the image remains available in GHCR. That is the
+current state: the secret is not configured, so the job always skips.
 
 ### Manual (an already configured host)
 
@@ -163,7 +169,7 @@ that the target application and its required configuration already exist.
 # Set IMAGE_DIGEST to the reviewed sha256:... digest.
 image_ref="ghcr.io/proofvisorai/proofvisor-api@${IMAGE_DIGEST:?}"
 
-# Fly; run from server/ so fly.toml is available.
+# Fly (template; not used in production); run from server/ so fly.toml is available.
 (cd server && fly deploy --image "$image_ref")
 
 # Cloud Run
@@ -185,7 +191,10 @@ separate validation. An image update command alone does not establish them.
 
 ## Rollback
 
-Record the previous successful image digest before deploying. From `server/`:
+Record the previous successful image digest before deploying. On Render
+(production), roll back from the service's Deploys page or redeploy the
+previous commit. The Fly form, for a host that runs the GHCR image, from
+`server/`:
 
 ```bash
 fly deploy --image "ghcr.io/proofvisorai/proofvisor-api@${PREVIOUS_IMAGE_DIGEST:?}"

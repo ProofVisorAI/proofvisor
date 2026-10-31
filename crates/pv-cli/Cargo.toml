@@ -67,6 +67,9 @@ jsonwebtoken = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 pv-identity = { workspace = true }
+# `generated_config_enables_redaction` builds the same engine the
+# daemon builds at boot from the config `pvctl init` writes.
+pv-redact = { workspace = true }
 parking_lot = { workspace = true }
 serde_urlencoded = "0.7"
 

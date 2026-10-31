@@ -13,7 +13,26 @@ pass, and the required console regression workflow must succeed. Pull requests
 publish no registry tags and receive no deployment credentials. The job copies the tested bytes without rebuilding, preserves
 BuildKit SBOM/provenance descriptors, and verifies the final multiarch digest.
 Deploy `ghcr.io/proofvisorai/proofvisor-api@sha256:...` from a successful
-promotion. The optional Fly job uses that exact digest automatically.
+promotion. The workflow's optional `deploy-fly` job would use that exact
+digest automatically, but it is unused: `FLY_API_TOKEN` is not configured
+and nothing runs on Fly.io. The live hosted API is a Render web service
+(see [Current production deployment](#current-production-deployment)).
+
+## Current production deployment
+
+As of 2026-10-30 the hosted API runs on Render as the web service
+`agentvisor-api` (created under the product's previous name; the
+`render.yaml` blueprint in this repository would create a fresh service
+called `proofvisor-api`). It is built from `server/Dockerfile` in the Ohio
+region and is reachable at `https://agentvisor-api.onrender.com`. The custom
+domain `api.proofvisor.com` is pending DNS (a CNAME to
+`agentvisor-api.onrender.com`); until it resolves, point clients and
+monitors at the Render hostname. The database is Neon Postgres (us-east-2,
+direct/unpooled URL so LISTEN/NOTIFY works) and the mailer is Resend. The
+static site and console are GitHub Pages from
+`ProofVisorAI/proofvisorai.github.io` with `proofvisor.com` as the custom
+domain; the Cloudflare Pages files (`docs/_headers`, `docs/_redirects`) are
+not in effect there. `server/fly.toml` is an unused template.
 
 The `validated-*` tags are internal staging references, not production release
 outputs. Do not select one because it exists in GHCR. Convenience tags
@@ -32,8 +51,8 @@ restore and application behavior before directing traffic to a new host.
 | Provider | Component | Config file | Setup entry point |
 |---|---|---|---|
 | **Cloudflare Pages** | Frontend | `docs/_headers`, `docs/_redirects` | [Deploy](https://dash.cloudflare.com/?to=/:account/pages/new/provider/github) |
-| **Fly.io** | API | `server/fly.toml` | `fly launch --copy-config` |
-| **Render** | API + Postgres | `render.yaml` | [Deploy](https://render.com/deploy?repo=https://github.com/ProofVisorAI/proofvisor) |
+| **Render** (in production) | API + Postgres | `render.yaml` | [Deploy](https://render.com/deploy?repo=https://github.com/ProofVisorAI/proofvisor) |
+| **Fly.io** (template only, not in use) | API | `server/fly.toml` | `fly launch --copy-config` |
 | **Railway** | API + Postgres | `railway.json` | [Deploy](https://railway.app/new/template?template=https://github.com/ProofVisorAI/proofvisor) |
 | **Koyeb** | API | `koyeb.yaml` | [Deploy](https://app.koyeb.com/deploy?type=git&repository=github.com/ProofVisorAI/proofvisor&branch=main&name=proofvisor-api&dockerfile=server/Dockerfile) |
 | **Google Cloud Run** | API | `server/Dockerfile` | [Deploy](https://deploy.cloud.run/?git_repo=https://github.com/ProofVisorAI/proofvisor&dir=server) |
@@ -124,7 +143,14 @@ The API auto-detects several PG env-var names — no code tweak needed:
 `NEON_DATABASE_URL`, `PGURL`, `DATABASE_URL_POOLED`. Variable-name detection
 does not establish that the endpoint supports the required connection behavior.
 
-### 3. Backend — Fly.io (recommended)
+### 3. Backend — container host (Render in production; Fly.io template below)
+
+The production instance is on Render (see
+[Current production deployment](#current-production-deployment)); the
+`render.yaml` blueprint plus the environment variables listed in this
+guide are what it needs. The `fly` commands below are kept as a worked
+template for a Fly.io deployment. They have not been exercised against a
+production instance, because nothing runs on Fly.io.
 
 Configure a Resend API key or an SMTP URL before the first deployment.
 Production refuses to boot without a mailer; see the provider setup in
@@ -259,14 +285,14 @@ a mixture of old and new replicas does not share pending ceremonies. Once all
 replicas are updated, a login can complete on another replica or after a
 process restart without sticky routing.
 
-### Alternative backend: Render, Railway, Koyeb, Cloud Run
+### Other container hosts: Railway, Koyeb, Cloud Run, Fly.io
 
 Each provider has a first-class config file already committed:
 
-- `render.yaml` — Render blueprint (web + Postgres; review the selected plans).
+- `render.yaml` — Render blueprint (web + Postgres; review the selected plans). This is the provider in production.
 - `railway.json` — Railway spec (attach a Postgres plugin in the dashboard).
 - `koyeb.yaml` — Koyeb app spec.
-- `server/fly.toml` — Fly.io machines config.
+- `server/fly.toml` — Fly.io machines config (unused template).
 
 All four consume the same `server/Dockerfile`. Environment variables
 follow the same names (`DATABASE_URL`, `JWT_SECRET`, `ALLOWED_ORIGINS`).
@@ -317,7 +343,7 @@ workload for a sustained period and measure CPU, memory, latency, and cost.
 Every piece has a one-command way off it. This is deliberate — nothing
 in the stack requires a proprietary service.
 
-**Move off Fly.io** → Cloud Run / Render / Railway / Koyeb / Kubernetes / VPS
+**Move off Render** (or any other container host) → Cloud Run / Railway / Koyeb / Fly.io / Kubernetes / VPS
 
 ```bash
 docker build -t "$REG/proofvisor-api" server/

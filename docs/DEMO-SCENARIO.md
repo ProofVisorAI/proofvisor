@@ -83,7 +83,7 @@ signed receipts. [ask]."
 | "Signed, offline-verifiable receipts" | Ed25519 over a canonical frame; re-verified against the anchored key on the hosted console this week |
 | "One base-URL integration" | OpenAI-compatible proxy + MCP passthrough |
 | "~140 requests/sec of fully signed pipeline on a laptop" | Local loadgen, zero daemon-side drops at burst sizes the OS could deliver |
-| "1,200+ engine tests, 89-check API e2e, 12 security drill suites, 3-browser matrix" | CI + this cycle's verification sweeps |
+| "About 1,800 Rust tests (1,170 in `src` + 632 in `tests/`), 66 console-server unit tests, 128-check API e2e, 15-drill security battery, 3-browser matrix" | CI + the 2026-10-30 verification run (all green) |
 | "Disaster recovery proven" | Encrypted nightly backup → restore → receipts still cryptographically verify |
 
 ## Things NOT to claim

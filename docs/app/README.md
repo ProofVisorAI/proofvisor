@@ -27,9 +27,10 @@ fixtures baked into [`datasource.js`](./datasource.js). Anyone landing on the
 URL sees a fully populated workspace: 2 deployments, 7 sessions with events
 and receipts, headline KPIs. Any email + password combination signs you in.
 
-This is what powers the investor pitch until the backend is deployed to
-production. Mock mode also ships two investor-facing extras (both inert in
-live mode):
+This is what powers the investor pitch and the public demo. The backend is
+deployed (see [Live mode](#live-mode)), but mock mode stays the default so a
+visitor needs no account. Mock mode also ships three investor-facing extras
+(all inert in live mode):
 
 - **Guided tour** ([`tour.js`](./tour.js)) — a six-step spotlight walkthrough
   of the money story: prevented losses → the blocked session → the exact
@@ -75,12 +76,36 @@ See [`server/README.md`](../../server/README.md) for the full deploy runbook.
 
 ## Views
 
-- `#/login`, `#/signup` — unauth
+- `#/login`, `#/signup`, `#/reset`, `#/confirm-email` — unauth
 - `#/overview` — 24h fleet KPIs + recent sessions
 - `#/sessions` — full list
-- `#/sessions/:id` — event stream + signed receipt for one session
-- `#/deployments` — create, rotate token, delete
-- `#/settings` — org/user metadata + mock-mode escape hatch
+- `#/sessions/:id` — event stream + signed receipt for one session. The
+  event drawer shows the event body exactly as the daemon journaled it;
+  the waterfall places bars by timestamp (ingested events carry no
+  measured duration); the header shows the model recorded on the
+  session's LLM events, or nothing — never a default model. Each session
+  also lists the names of the policies that fired (`policiesFired`).
+- `#/deployments` — create, rotate token, delete; each row shows the
+  last 24 hours' sessions and spend (spend is hidden from members). The
+  deployment page's "Connect your daemon" card prints exactly
+  `PV_CONSOLE_URL=<API origin>`, `PV_CONSOLE_DEPLOYMENT=<deployment id>`,
+  `PV_CONSOLE_TOKEN=<token shown once>` and the command
+  `pvctl console-sync --watch`. The URL is the bare API origin; `pvctl`
+  appends `/api/v1/ingest` itself. Ingest tokens look like `pv_live_`
+  plus 32 characters, and the table shows only the first 16.
+- `#/policies` — policy definitions (create, edit, enable/disable).
+  The console stores and edits definitions only; it does not push them
+  to daemons. Daemons enforce their local policy files.
+- `#/settings` — tabbed: `general` (org/user metadata + mock-mode escape
+  hatch), `members` (roles and invites; the table columns are Person,
+  Role, Joined), `keys` (API keys with prefix `pv_srv_`; the table has a
+  Role column and the create dialog has a role selector — owner, admin
+  or member, never above your own role), `sso` (SAML / OIDC / passkeys),
+  `webhooks` (endpoints and deliveries; the server emits `test`,
+  `member.invited`, `policy.block`, `session.blocked` and
+  `apikey.created`), `audit` (trail + CSV export), `billing` (free
+  preview; the Team and Enterprise plans shown there are not purchasable
+  yet, and SCIM provisioning does not exist on the server)
 
 ## The scripted pitch demo
 

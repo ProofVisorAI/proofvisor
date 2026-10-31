@@ -7,8 +7,26 @@ import { requireSession } from "../lib/session-middleware.js";
 
 const envSchema = z.enum(["production", "staging", "development"]);
 
+// Ingest tokens carry a recognisable prefix so secret scanners (and
+// humans grepping a leaked Dockerfile) can tell them apart from other
+// base64url blobs. The daemon-side uploader (`pvctl console-sync`)
+// sends the token verbatim as `Authorization: Bearer <token>` and the
+// server verifies the whole string against the argon2 hash, so the
+// prefix is part of the secret and tokens minted before the prefix
+// existed keep working unchanged.
+export const INGEST_TOKEN_PREFIX = "pv_live_";
+
+function mintIngestToken(): string {
+  return INGEST_TOKEN_PREFIX + randomToken(24);
+}
+
+// Display hint: the prefix plus the first 8 characters of the random
+// part ("pv_live_9HpDk2Qm"). Stored verbatim and returned verbatim —
+// the console appends an ellipsis and never invents a prefix, so rows
+// minted before the prefix existed (hint = 8 raw characters) still
+// display exactly what their token starts with.
 function tokenHint(token: string): string {
-  return token.slice(0, 8);
+  return token.slice(0, INGEST_TOKEN_PREFIX.length + 8);
 }
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
@@ -30,12 +48,12 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         // disclosure to a hostile member — same recon posture as
         // ingestTokenHint/lastIngestAt below.
         daemonVersion: !isMember,
-        // R92 F2: `ingestTokenHint` is the first 8 chars of the
-        // plaintext ingest token — 48 bits of the auth material.
-        // R90 F2's rationale for hiding API-key hints from members
-        // applies verbatim: ingest tokens routinely leak via
+        // R92 F2: `ingestTokenHint` is the prefix plus the first 8
+        // chars of the plaintext ingest token — 48 bits of the auth
+        // material. R90 F2's rationale for hiding API-key hints from
+        // members applies verbatim: ingest tokens routinely leak via
         // Dockerfiles, k8s manifests, CI logs; a hostile member
-        // who greps a public gist for `PV_INGEST_TOKEN=` and
+        // who greps a public gist for `PV_CONSOLE_TOKEN=` and
         // matches against the org's hint inventory can bind a
         // leaked token to a specific deployment. Similarly
         // `lastIngestAt` reveals "which deployment is currently
@@ -49,7 +67,29 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         createdAt: true,
       },
     });
-    return reply.send({ deployments });
+    // Real 24-hour activity per deployment, aggregated in Postgres over
+    // the sessions opened in the window. The console used to leave these
+    // two cells blank in live mode; a session count and the LLM spend
+    // are both plain rollups the database already holds. Spend follows
+    // the same member redaction as every other money field (R114 F3).
+    const since = new Date(Date.now() - 24 * 3_600_000);
+    const activity = await db.session.groupBy({
+      by: ["deploymentId"],
+      where: { orgId: claims.orgId, openedAt: { gte: since } },
+      _count: { _all: true },
+      _sum: { costUsdMicros: true },
+    });
+    const byDeployment = new Map(activity.map((a) => [a.deploymentId, a]));
+    return reply.send({
+      deployments: deployments.map((d) => {
+        const a = byDeployment.get(d.id);
+        return {
+          ...d,
+          sessions24h: a ? a._count._all : 0,
+          spend24hUsdMicros: isMember ? null : (a?._sum.costUsdMicros ?? 0n).toString(),
+        };
+      }),
+    });
   });
 
   // Create a new deployment. The plaintext ingest token is returned once and
@@ -74,7 +114,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (!body.success) {
       return reply.code(400).send({ error: "invalid_input" });
     }
-    const plaintextToken = randomToken(24);
+    const plaintextToken = mintIngestToken();
     const ingestTokenHash = await hashPassword(plaintextToken);
     let deployment;
     try {
@@ -146,7 +186,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       select: { id: true, name: true },
     });
     if (!owned) return reply.code(404).send({ error: "not_found" });
-    const plaintextToken = randomToken(24);
+    const plaintextToken = mintIngestToken();
     const ingestTokenHash = await hashPassword(plaintextToken);
     await db.deployment.update({
       where: { id: owned.id },

@@ -66,7 +66,7 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
     const el = document.elementFromPoint(r.left + 4, r.top + 4);
     return el ? (el.id || el.className || el.tagName).toString() : "none";
   });
-  if (topmost !== "no-link" && !/avTour/.test(topmost)) fail("tour overlay does not absorb background clicks; topmost=" + topmost);
+  if (topmost !== "no-link" && !/pvTour/.test(topmost)) fail("tour overlay does not absorb background clicks; topmost=" + topmost);
   if ((await page.evaluate(() => location.hash)) !== hashBefore) fail("hash moved under the tour");
   console.log("✅ tour overlay absorbs background clicks");
 
@@ -253,7 +253,7 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
 {
   // Check 6's reload kept ?tour=1 in the query string, so the tour
   // auto-restarted and its overlay would swallow our clicks.
-  await page.evaluate(() => window.AVTour && window.AVTour.stop());
+  await page.evaluate(() => window.PVTour && window.PVTour.stop());
   await page.evaluate(() => { location.hash = "#/policies"; });
   await page.waitForSelector("#addPol", { timeout: 10000 });
   await page.click("#addPol");
@@ -1561,10 +1561,20 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
     location.hash = "#/deployments/" + dep.id;
     await new Promise((r) => setTimeout(r, 1200));
     const view = document.getElementById("view");
-    const envBtn = view.querySelector('[data-copy*="PV_INGEST_URL"]');
+    // The "Connect your daemon" block is the pvctl console-sync env
+    // contract: PV_CONSOLE_URL / PV_CONSOLE_DEPLOYMENT / PV_CONSOLE_TOKEN,
+    // and the clipboard payload must equal the displayed text.
+    const envBtn = view.querySelector('[data-copy*="PV_CONSOLE_URL"]');
+    const envPre = envBtn && envBtn.parentElement.querySelector("pre");
+    const payload = envBtn ? envBtn.getAttribute("data-copy") : "";
     const rows = [...view.querySelectorAll("tbody tr[data-clickable]")].map((r) => r.getAttribute("data-id"));
     return {
-      envOk: envBtn && envBtn.getAttribute("data-copy").includes("PV_DEPLOYMENT=" + dep.id),
+      envOk: !!envBtn
+        && payload.includes("PV_CONSOLE_DEPLOYMENT=" + dep.id)
+        && /^PV_CONSOLE_URL=https?:\/\//m.test(payload)
+        && payload.includes("PV_CONSOLE_TOKEN=")
+        && !payload.includes("pv_live_")
+        && !!envPre && envPre.textContent.trim() === payload.trim(),
       statusOk: view.textContent.includes(dep.status),
       rowsOk: rows.length === Math.min(sess.length, 8) && rows.every((id) => sess.some((s) => s.id === id)),
       viewAllOk: (view.querySelector('a[href*="dep="]')?.getAttribute("href") || "").includes("dep=" + dep.id),
@@ -2499,7 +2509,7 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
 // (b) A script that never executes: app.js dead → the crash guard's
 // 6s blank-page watchdog cards it. datasource.js dead is SNEAKIER:
 // app.js boots fine, the login render clears #app then dies on
-// state.ds.* AFTER __avBooted pacified the guard — a permanent blank
+// state.ds.* AFTER __pvBooted pacified the guard — a permanent blank
 // page. app.js now fails the boot explicitly when the data layer is
 // missing, so the card (with a working Reload) takes over.
 {
@@ -2585,7 +2595,7 @@ await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
   await pp.click("#next-session button");
   await pp.waitForTimeout(1200);
   if (!(await pp.$("#panel-dashboard:not([hidden])"))) fail("pitch walk did not reach the dashboard");
-  await pp.evaluate(() => window.avConsole.goTo("receipt"));
+  await pp.evaluate(() => window.pvConsole.goTo("receipt"));
   await pp.waitForTimeout(600);
   await pp.click("#btn-verify");
   await pp.waitForFunction(() => !document.querySelector("#verify-verdict")?.hidden, { timeout: 10000 })

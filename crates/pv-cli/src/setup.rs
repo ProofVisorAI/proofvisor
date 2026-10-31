@@ -260,6 +260,21 @@ fn render_config(plan: &ConfigPlan) -> String {
             out.push_str("bridge_data_dir = \"data/bridge\"\n");
         }
     }
+    out.push_str("\n# Sensitive-data redaction, applied to event payloads and trajectory\n");
+    out.push_str("# steps before anything is written to disk or exported. Redaction runs\n");
+    out.push_str("# only when this list (or `redaction_paths`) is non-empty; whenever it\n");
+    out.push_str("# runs, the built-in patterns are always included: Bearer tokens,\n");
+    out.push_str("# sk-/key- API keys, email addresses, Luhn-valid card numbers, US\n");
+    out.push_str("# Social Security numbers, and public IPv4 addresses. The entries below\n");
+    out.push_str("# add AWS, GitHub, Google, Slack, and bare JWT credentials.\n");
+    out.push_str("# To turn redaction OFF, set `redaction_patterns = []`.\n");
+    out.push_str("redaction_patterns = [\n");
+    for pattern in pv_harness::config::RECOMMENDED_REDACTION_PATTERNS {
+        // TOML literal strings take the regex verbatim (no escaping);
+        // the harness test suite checks that no pattern contains `'`.
+        out.push_str(&format!("  '{pattern}',\n"));
+    }
+    out.push_str("]\n");
     // LAST in the template: a TOML table header captures every key
     // after it, so [budget] must follow all top-level keys.
     out.push_str("\n# Module-B action budget: without a [budget] block NOTHING binds —\n");
@@ -2646,10 +2661,68 @@ mod tests {
                 Some(50_000_000),
                 "{preset:?}: generated config must bind a payout cap"
             );
+            assert_eq!(
+                config.redaction_patterns,
+                pv_harness::config::RECOMMENDED_REDACTION_PATTERNS,
+                "{preset:?}: generated config must turn redaction on"
+            );
         }
         // Custom with an explicit URL also validates.
         let rendered = render_config(&plan_for(Preset::Custom, "http://10.0.0.5:9000", Some("MY_KEY")));
         pv_harness::HarnessConfig::from_toml(&rendered).unwrap();
+    }
+
+    /// The product documentation promises that API keys, emails, card
+    /// numbers, SSNs, and IPs are redacted before anything is persisted.
+    /// The harness only builds its redaction engine when
+    /// `redaction_patterns` or `redaction_paths` is non-empty, so the
+    /// generated config must set the list — and the engine it implies
+    /// must actually strip those values.
+    #[test]
+    fn generated_config_enables_redaction() {
+        let s = spec(Preset::Openai);
+        let rendered = render_config(&plan_for(Preset::Openai, s.upstream_url, s.key_env));
+        assert!(
+            rendered.contains("redaction_patterns = [\n"),
+            "generated config must carry a redaction_patterns list:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("To turn redaction OFF"),
+            "generated config must tell the operator how to disable redaction"
+        );
+        let config = pv_harness::HarnessConfig::from_toml(&rendered).unwrap();
+        assert!(
+            !config.redaction_patterns.is_empty() || !config.redaction_paths.is_empty(),
+            "the harness builds no redaction engine when both lists are empty"
+        );
+        // Same construction the pipeline uses at boot.
+        let engine = pv_redact::RedactionEngine::new(pv_redact::RedactionConfig {
+            regex_patterns: config.redaction_patterns.clone(),
+            pointer_paths: config.redaction_paths.clone(),
+            include_builtin_patterns: true,
+            ..pv_redact::RedactionConfig::default()
+        })
+        .unwrap();
+        let mut value = serde_json::json!({
+            "key": "sk-abcdefghijklmnopqrstuvwxyz0123",
+            "email": "alice@example.org",
+            "card": "4111 1111 1111 1111",
+            "ssn": "123-45-6789",
+            "ip": "203.0.113.5",
+            "aws": "AKIAIOSFODNN7EXAMPLE",
+        });
+        engine.redact_value(&mut value);
+        for (field, raw) in [
+            ("key", "sk-"),
+            ("email", "alice@"),
+            ("card", "4111"),
+            ("ssn", "123-45"),
+            ("ip", "203.0"),
+            ("aws", "AKIA"),
+        ] {
+            let redacted = value.get(field).and_then(serde_json::Value::as_str).unwrap();
+            assert!(!redacted.contains(raw), "{field} survived redaction: {redacted}");
+        }
     }
 
     #[test]

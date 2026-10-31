@@ -49,6 +49,22 @@ strict_stage_budget = false
 compression_enabled = true
 reconcile_tick_s = 5
 
+# Sensitive-data redaction before anything is persisted or exported.
+# Redaction runs only when this list (or `redaction_paths`) is
+# non-empty; whenever it runs, the built-in patterns (Bearer tokens,
+# sk-/key- API keys, email addresses, Luhn-valid card numbers, US Social
+# Security numbers, public IPv4 addresses) are always included. These
+# entries add AWS, GitHub, Google, Slack, and bare JWT credentials and
+# mirror `pv_harness::config::RECOMMENDED_REDACTION_PATTERNS`.
+# To turn redaction OFF, set `redaction_patterns = []`.
+redaction_patterns = [
+  '(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)',
+  '(?-u:\b)gh[opsur]_[A-Za-z0-9]{36,255}(?-u:\b)',
+  '(?-u:\b)AIza[0-9A-Za-z_-]{35}(?-u:\b)',
+  '(?-u:\b)xox[abeprs]-[A-Za-z0-9-]{10,255}',
+  '(?-u:\b)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}',
+]
+
 [breaker]
 delta_epsilon = 0.30
 window = 3

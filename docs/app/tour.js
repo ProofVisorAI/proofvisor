@@ -7,7 +7,7 @@
  *
  * Self-contained on purpose: it drives the app only through
  * location.hash and DOM selectors, so app.js stays untouched except
- * for the palette entries that call window.AVTour.start().
+ * for the palette entries that call window.PVTour.start().
  */
 (function () {
   "use strict";
@@ -92,18 +92,18 @@
   /* ── Launcher pill ─────────────────────────────────────────── */
 
   function ensureLauncher() {
-    var existing = document.getElementById("avTourLauncher");
+    var existing = document.getElementById("pvTourLauncher");
     var want = inShell() && state.i < 0 && !dismissed() && !freshMode();
     if (want && !existing) {
       var pill = el(
-        '<div id="avTourLauncher" role="complementary" aria-label="Guided tour">' +
-          '<button type="button" id="avTourStart">▶&nbsp; See the full flow</button>' +
-          '<button type="button" id="avTourDismiss" aria-label="Dismiss guided tour">✕</button>' +
+        '<div id="pvTourLauncher" role="complementary" aria-label="Guided tour">' +
+          '<button type="button" id="pvTourStart">▶&nbsp; See the full flow</button>' +
+          '<button type="button" id="pvTourDismiss" aria-label="Dismiss guided tour">✕</button>' +
         "</div>"
       );
       document.body.appendChild(pill);
-      pill.querySelector("#avTourStart").addEventListener("click", function () { start(); });
-      pill.querySelector("#avTourDismiss").addEventListener("click", function () {
+      pill.querySelector("#pvTourStart").addEventListener("click", function () { start(); });
+      pill.querySelector("#pvTourDismiss").addEventListener("click", function () {
         try { localStorage.setItem(DISMISS_KEY, "1"); } catch (e) {}
         pill.remove();
       });
@@ -119,7 +119,7 @@
 
   function buildOverlay() {
     var o = el(
-      '<div id="avTour" aria-live="polite">' +
+      '<div id="pvTour" aria-live="polite">' +
         '<div class="pv-tour-hole" aria-hidden="true"></div>' +
         '<div class="pv-tour-card" role="dialog" aria-modal="false">' +
           '<div class="pv-tour-step"></div>' +
@@ -289,7 +289,7 @@
     ensureLauncher();
   }
 
-  window.AVTour = { start: start, stop: stop };
+  window.PVTour = { start: start, stop: stop };
 
   /* ── Boot ──────────────────────────────────────────────────── */
 

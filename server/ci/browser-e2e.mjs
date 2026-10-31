@@ -80,9 +80,11 @@ await page.waitForTimeout(1500);
 const tokenModal = await page
   .$eval(".modal", (el) => el.innerText)
   .catch(() => "");
+// The server mints ingest tokens with the pv_live_ prefix and the modal
+// names the console-sync variable the operator puts it in.
 ok(
   "ingest token revealed once",
-  /pv_ingest_|ingest token/i.test(tokenModal),
+  /pv_live_[A-Za-z0-9_-]{8,}/.test(tokenModal) && /PV_CONSOLE_TOKEN/.test(tokenModal),
   tokenModal.slice(0, 60).replace(/\n/g, " ")
 );
 await page.keyboard.press("Escape");

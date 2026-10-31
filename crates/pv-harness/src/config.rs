@@ -564,6 +564,15 @@ pub struct HarnessConfig {
 
     /// Sensitive-data redaction patterns (regex). Applied to event
     /// payloads and ATIF step fields before journal write.
+    ///
+    /// Redaction runs only when this list or `redaction_paths` is
+    /// non-empty; both empty (the serde default) means nothing is
+    /// redacted. Whenever it runs, the `pv-redact` built-in patterns
+    /// (Bearer tokens, `sk-*`/`key-*` API keys, email addresses,
+    /// Luhn-valid card numbers, US Social Security numbers, public IPv4
+    /// addresses) are always included on top of the patterns listed
+    /// here. Every shipped config and `pvctl init` set this to
+    /// [`RECOMMENDED_REDACTION_PATTERNS`].
     #[serde(default)]
     pub redaction_patterns: Vec<String>,
 
@@ -572,6 +581,35 @@ pub struct HarnessConfig {
     #[serde(default)]
     pub redaction_paths: Vec<String>,
 }
+
+/// The `redaction_patterns` value every shipped config and `pvctl init`
+/// write, so that redaction is on out of the box.
+///
+/// The engine only runs when `redaction_patterns` or `redaction_paths`
+/// is non-empty, and it always adds the `pv-redact` built-in patterns
+/// once it runs. This list therefore does two jobs: it turns the
+/// built-in set on, and it extends it with well-known credential
+/// formats the built-ins do not cover. Setting `redaction_patterns = []`
+/// (with no `redaction_paths`) turns redaction off entirely.
+///
+/// Patterns use `[0-9]`/`[A-Za-z]` and `(?-u:\b)` for the same reason
+/// the built-ins do: `\d` and `\b` are Unicode-aware in the regex crate.
+/// None contains a single quote, so they can be written as TOML literal
+/// strings (`'...'`) without escaping.
+pub const RECOMMENDED_REDACTION_PATTERNS: &[&str] = &[
+    // AWS access key IDs (long-lived `AKIA...`, temporary `ASIA...`).
+    r"(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)",
+    // GitHub personal, OAuth, server-to-server, user-to-server, and
+    // refresh tokens (`ghp_`, `gho_`, `ghs_`, `ghu_`, `ghr_`).
+    r"(?-u:\b)gh[opsur]_[A-Za-z0-9]{36,255}(?-u:\b)",
+    // Google API keys.
+    r"(?-u:\b)AIza[0-9A-Za-z_-]{35}(?-u:\b)",
+    // Slack bot, user, app, refresh, and legacy tokens.
+    r"(?-u:\b)xox[abeprs]-[A-Za-z0-9-]{10,255}",
+    // JSON Web Tokens that appear without a `Bearer ` prefix (the
+    // built-in Bearer rule only catches the prefixed form).
+    r"(?-u:\b)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+];
 
 /// Operator credential for administrative revocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1054,7 +1092,6 @@ pub fn user_config_path_from(home: &std::path::Path) -> std::path::PathBuf {
 /// Per-user config file (`~/.proofvisor/proofvisor.toml`), if the home
 /// directory is known.
 pub fn user_config_path() -> Option<std::path::PathBuf> {
-    #[allow(deprecated)] // undeprecated in Rust 1.86; MSRV is 1.88
     std::env::home_dir().map(|home| user_config_path_from(&home))
 }
 
@@ -1912,7 +1949,7 @@ impl HarnessConfig {
         }
         if crate::provider::adapter_for(&self.provider).is_none() {
             errors.push(format!(
-                "provider must be one of {:?}, got {:?} (Anthropic/Gemini adapters are planned)",
+                "provider must be one of {:?}, got {:?}",
                 crate::provider::SUPPORTED_PROVIDERS,
                 self.provider
             ));
@@ -3671,6 +3708,10 @@ mod tests {
             "example must bind a token budget"
         );
         assert_eq!(config.default_workflow, "signed");
+        assert_eq!(
+            config.redaction_patterns, RECOMMENDED_REDACTION_PATTERNS,
+            "example config must turn redaction on with the recommended patterns"
+        );
         for (name, raw) in [
             (
                 "container",
@@ -3684,6 +3725,70 @@ mod tests {
                 config.default_workflow, "signed",
                 "{name} config must opt into the signed workflow"
             );
+            // The product documentation promises that secrets are redacted
+            // before anything is persisted. The pipeline only builds the
+            // redaction engine when a pattern or path list is non-empty, so
+            // a shipped config that omits the key silently persists raw
+            // API keys, emails, and card numbers.
+            assert_eq!(
+                config.redaction_patterns, RECOMMENDED_REDACTION_PATTERNS,
+                "{name} config must turn redaction on with the recommended patterns"
+            );
+        }
+    }
+
+    /// The recommended pattern list must compile together with the
+    /// built-ins, must not match the replacement marker, must catch the
+    /// credential formats it names, and must leave look-alike prose
+    /// alone.
+    #[test]
+    fn recommended_redaction_patterns_compile_and_match_their_targets() {
+        for pattern in RECOMMENDED_REDACTION_PATTERNS {
+            assert!(
+                !pattern.contains('\''),
+                "{pattern:?} cannot be written as a TOML literal string"
+            );
+        }
+        let engine = pv_redact::RedactionEngine::new(pv_redact::RedactionConfig {
+            regex_patterns: RECOMMENDED_REDACTION_PATTERNS
+                .iter()
+                .map(|pattern| (*pattern).to_owned())
+                .collect(),
+            ..pv_redact::RedactionConfig::default()
+        })
+        .unwrap();
+        for (input, expected) in [
+            ("aws AKIAIOSFODNN7EXAMPLE here", "aws [REDACTED] here"),
+            (
+                "gh ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij done",
+                "gh [REDACTED] done",
+            ),
+            (
+                "g AIzaSyA-1234567890abcdefghijklmnopqrstu end",
+                "g [REDACTED] end",
+            ),
+            ("slack xoxb-1234567890-abcdef end", "slack [REDACTED] end"),
+            (
+                "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefghijklmnop end",
+                "jwt [REDACTED] end",
+            ),
+            // Built-ins still apply once the list is non-empty.
+            ("mail alice@example.org", "mail [REDACTED]"),
+        ] {
+            let mut value = serde_json::Value::String(input.to_owned());
+            engine.redact_value(&mut value);
+            assert_eq!(value, serde_json::Value::String(expected.to_owned()), "{input}");
+        }
+        for benign in [
+            "ghost_stories are fun",
+            "xoxo",
+            "AKIA is a prefix",
+            "eyJ is how base64 JSON starts",
+            "the AIza prefix",
+        ] {
+            let mut value = serde_json::Value::String(benign.to_owned());
+            engine.redact_value(&mut value);
+            assert_eq!(value, serde_json::Value::String(benign.to_owned()));
         }
     }
 

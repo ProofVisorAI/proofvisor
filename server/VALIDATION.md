@@ -57,6 +57,8 @@ API_BASE=http://127.0.0.1:8985 SPA_ORIGIN=http://127.0.0.1:44126/app \
 API_BASE=http://127.0.0.1:8985 SPA_ORIGIN=http://127.0.0.1:44126/app \
   node scripts/quarantine-drill.mjs
 API_BASE=http://127.0.0.1:8985 node scripts/spa-smoke.mjs
+# spa-smoke serves the SPA itself on http://127.0.0.1:44119; the API's
+# ALLOWED_ORIGINS must include that origin or every fetch is refused.
 SITE=http://127.0.0.1:44125/app/ node scripts/interactive-drill.mjs
 SITE=http://127.0.0.1:44125/app/ node scripts/engine-matrix.mjs
 ```

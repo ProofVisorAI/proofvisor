@@ -270,16 +270,21 @@ async function me(sessionCookie) {
 
 // writeAudit is fire-and-forget server-side; poll briefly so a read
 // issued right after the audited action doesn't race the insert.
-async function auditEvents(sessionCookie, limit, wantedEvent) {
+async function auditEvents(sessionCookie, limit, wantedEvents) {
+  // Audit rows are written fire-and-forget after the response, so two
+  // rows issued back to back can land in either order. Wait until every
+  // wanted event is visible (or the budget runs out) instead of stopping
+  // at the first one, otherwise a loaded machine produces a false FAIL.
+  const wanted = Array.isArray(wantedEvents) ? wantedEvents : [wantedEvents];
   let events = [];
   let entries = [];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 40; i++) {
     const audit = await fetch(`${API}/api/v1/audit?limit=${limit}`, {
       headers: { cookie: sessionCookie },
     }).then((r) => r.json());
     entries = audit.entries || audit.items || [];
     events = entries.map((e) => e.event);
-    if (events.includes(wantedEvent)) break;
+    if (wanted.every((w) => events.includes(w))) break;
     await new Promise((r) => setTimeout(r, 150));
   }
   return { events, entries };
@@ -334,7 +339,7 @@ async function main() {
   const { events, entries: auditEntries } = await auditEvents(
     flow1.sessionCookie,
     50,
-    "auth.oauth_signin",
+    ["org.created", "auth.oauth_signin"],
   );
   check("org.created audited", events.includes("org.created"), events);
   check("auth.oauth_signin audited", events.includes("auth.oauth_signin"), events);

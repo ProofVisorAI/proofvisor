@@ -15,7 +15,7 @@ exercised against release binaries in CI on every push
 ### Breaking changes
 
 - **Rebrand: AgentBridge → ProofVisor.** The daemon is `proofvisord`
-  (was `agentbridged`), the CLI is `pvctl` (was `abctl`), and all twelve
+  (was `agentbridged`), the CLI is `pvctl` (was `abctl`), and all thirteen
   workspace crates are renamed `ab-*` → `pv-*`. Wire and persisted
   surfaces changed with the brand: HTTP headers `X-AB-*` → `X-PV-*`,
   environment variables `AB_*` → `PV_*`, Prometheus metrics `ab_*` →
@@ -47,6 +47,25 @@ exercised against release binaries in CI on every push
   inbound identities.
 
 ### Security
+
+- **Redaction is on by default in every shipped configuration.** The
+  three `config/` files, the Cloud Foundry and Kubernetes manifests, and
+  the configs written by `pvctl init` and `pvctl setup` now set
+  `redaction_patterns` to `pv_harness::config::RECOMMENDED_REDACTION_PATTERNS`
+  (AWS, GitHub, Google and Slack credentials and bare JWTs), which also
+  switches on the built-in patterns (bearer tokens, `sk-`/`key-` API keys,
+  emails, card numbers, US SSNs, public IPv4). Redaction applies to the
+  persisted audit copies, not to the traffic sent to the model. Set
+  `redaction_patterns = []` to turn it off.
+- **Console ingest tokens carry a `pv_live_` prefix** so secret scanners
+  recognise them; the stored hint is the prefix plus eight characters.
+  Tokens minted before this change keep working.
+- Dependency advisories closed (2026-10-31): `rustls` 0.23.46,
+  `rustls-webpki` 0.103.16, `webpki-roots` 1.0.11, `tokio` 1.54.1,
+  `ctutils` 0.4.7, `wasmtime` 48.0.8 (Rust); `fastify` 5.12.7, `undici`
+  8.12.3, `nodemailer` 10.3.1, `fast-uri` 4.2.3 and `zod` 4.6.7 (console
+  API). `cargo deny` and `npm audit` report nothing; see
+  `SECURITY-AUDIT.md` for the one advisory ignored as unreachable.
 
 - Console notification connections now have query deadlines, a listener
   heartbeat, and a bounded publication queue. Recovery resets client streams
@@ -210,6 +229,19 @@ exercised against release binaries in CI on every push
   including error paths.
 
 ### Added
+
+- `docs/FEATURES.md`: the verified list of what ships today, what is
+  planned, and the verification record behind it.
+- Console API: `session.blocked` and `apikey.created` webhooks are now
+  emitted (the first once per session, on the first blocked tool call or a
+  `status: blocked` upsert; the second never includes the plaintext key).
+  `GET /api/v1/deployments` returns `sessions24h` and `spend24hUsdMicros`,
+  `GET /api/v1/sessions` and `/sessions/:id` return `policiesFired`, the
+  overview stats include `events`, and `POST /api/v1/keys` accepts a
+  `role` (owner, admin or member, never above the caller's own).
+- Console: role selector and Role column for API keys; the webhook picker
+  offers every emitted event; the session drawer shows the daemon's
+  journaled event body; `npm test` runs the API unit tests.
 
 - **MCP protocol on `/mcp`.** The gateway is a Streamable HTTP MCP server
   (protocol versions 2024-11-05 to 2025-11-25): `initialize` with version
@@ -382,6 +414,23 @@ exercised against release binaries in CI on every push
 
 ### Fixed
 
+- Console in live mode no longer invents data: sessions showed a default
+  model name and user, deployments showed a fabricated token prefix, the
+  overview event count was hard-coded to zero, the members table labelled
+  the join date "Last active", and the policy page never listed the
+  sessions that fired a policy. The "Connect your daemon" card now prints
+  the variables `pvctl console-sync` actually reads (`PV_CONSOLE_URL`,
+  `PV_CONSOLE_DEPLOYMENT`, `PV_CONSOLE_TOKEN`) and the clipboard copy
+  matches the displayed text.
+- Leftover pre-rename identifiers (`__avActiveOrgId`, `AVTour`,
+  `avVerifyReceipt`, `AV_*` env names, `AVURL`) renamed to their `pv`
+  forms across the console, drills and styles; two drill scripts still
+  pointed at a non-existent `proofvisorai.me` host.
+- Documentation drift: the receipt v2 signing prefix in
+  `CONFORMANCE-STATUS.md`, the crate count, the provider-support wording,
+  the install path, the hosting facts (Render, GitHub Pages; Fly is an
+  unused template), stale status values, and the policy-route claims.
+
 - Loop detection no longer produces false trips: tool-call-only turns
   (request and response side) synthesize text from the tool name and
   arguments instead of feeding an empty string to the embedder,
@@ -489,11 +538,12 @@ exercised against release binaries in CI on every push
 ### Documentation
 
 - Added an interactive product console (`docs/app/`, published at
-  `/app/` on the site): a self-contained client-side simulation of the
-  full operator flow — setup wizard, one-line integration, a live
-  session with budget refusals and a loop-breaker trip, the fleet
-  dashboard, offline receipt verification, and the on-disk evidence
-  layout. Content is display-only and mirrors the shipped surfaces
+  `/app/` on the site): a client-side app whose mock mode runs the
+  full operator flow against built-in fixtures — setup wizard, one-line
+  integration, a live session with budget refusals and a loop-breaker
+  trip, the fleet dashboard, offline receipt verification, and the
+  on-disk evidence layout. (The same app later gained a live mode
+  against the hosted API.) Mock content mirrors the shipped surfaces
   (config keys, `pvctl` commands, HTTP status semantics, and the
   receipt v2 schema). A captioned guided tour is available behind
   `?tour=1`.
@@ -553,7 +603,7 @@ exercised against release binaries in CI on every push
 - In-memory and Redis atomic state backends.
 - Hash and ONNX embedding backends plus optional Qdrant persistence.
 - Ed25519 JWKS refresh and HS256 development identity support.
-- `abctl` operations, load generation, schemas, Docker Compose, and Vector configuration.
+- `pvctl` (then named `abctl`) operations, load generation, schemas, Docker Compose, and Vector configuration.
 - Bounded byte-oriented SSE/non-SSE capture with fragmented UTF-8 and tool-call reassembly.
 - Authenticated, torn-tail-tolerant signed and unsigned crash journals with exact receipt reuse.
 - Durable lifecycle and cold-export outboxes with persisted acknowledgments.

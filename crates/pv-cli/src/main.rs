@@ -449,7 +449,6 @@ async fn run(cli: Cli) -> Result<()> {
 async fn wizard_then_maybe_start() -> Result<()> {
     let outcome = {
         use std::io::IsTerminal as _;
-        #[allow(deprecated)] // undeprecated in Rust 1.86; MSRV is 1.88
         let home = std::env::home_dir().context("could not find your home folder")?;
         let stdin = std::io::stdin();
         let secrets = if stdin.is_terminal() {

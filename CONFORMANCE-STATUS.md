@@ -4,7 +4,7 @@ How to verify a receipt yourself lives in
 [`docs/reference/VERIFYING-A-RECEIPT.md`](docs/reference/VERIFYING-A-RECEIPT.md);
 this document is the compliance / MVP **verdict record** against the brief.
 
-Verified against `AgentBridge.docx` v2.0 on 2026-08-11 with Rust 1.97.1 on Apple Silicon macOS.
+Verified on 2026-08-11 against the original product brief (`AgentBridge.docx` v2.0, written under the project's former name; the brief is not part of this repository) with Rust 1.97.1 on Apple Silicon macOS.
 
 For the subsequent daemon, console, identity, and packaging changes, see the
 [2026-09-24 validation record](docs/PRODUCTION-VALIDATION.md). Historical figures
@@ -79,8 +79,11 @@ are in the repository and can be rerun.
 
 ## Receipt Verification Protocol (independent implementation)
 
-README and the project site link here for "verifying a receipt from
-scratch". The following is the complete, normative recipe an
+The README and the project site link to
+[`docs/reference/VERIFYING-A-RECEIPT.md`](docs/reference/VERIFYING-A-RECEIPT.md)
+for "verifying a receipt from scratch"; this section is the same
+protocol stated as a verdict-record recipe, and the two must agree. The
+following is the complete, normative recipe an
 independent verifier must implement — no ProofVisor code required. A
 receipt is a single JSON object; the reference implementation is
 `crates/pv-receipts/src/receipt.rs` (`Receipt::verify`) and the CLI
@@ -140,11 +143,15 @@ wrapper is `pvctl receipt-verify <file> --public-key-hex <64-hex>`.
    signed *message* is version-dispatched:
    * **v1** (legacy): the raw JCS canonical bytes from step 4.
    * **v2** (current, what daemons emit): the concatenation
-     `"PV-RECEIPT-v2\n"` (14-byte ASCII domain tag) ‖
+     `b"proofvisor-receipt-v2\0"` (22-byte domain tag: the ASCII bytes
+     of `proofvisor-receipt-v2` followed by one NUL byte; hex
+     `70726f6f667669736f722d726563656970742d763200`) ‖
      `u64_be(len(canonical_bytes))` (8-byte big-endian length prefix) ‖
-     `canonical_bytes`. Rejecting the framing is what stops a v1
-     signature over `body` from being replayed as a v2 signature over
-     `PV-RECEIPT-v2\n || len || body` and vice versa.
+     `canonical_bytes`. The reference constant is
+     `RECEIPT_DOMAIN_TAG_V2` in `crates/pv-receipts/src/receipt.rs`.
+     Rejecting the framing is what stops a v1 signature over `body`
+     from being replayed as a v2 signature over
+     `proofvisor-receipt-v2\0 || len || body` and vice versa.
 
 Any step failing means the receipt does not attest anything. For
 `subject.kind == "atif_trajectory"`, additionally compare

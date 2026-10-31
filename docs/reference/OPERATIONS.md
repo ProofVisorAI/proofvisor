@@ -148,6 +148,12 @@ pvctl console-sync --spool-dir /var/lib/proofvisor/spool/atif \
   --token-file /run/secrets/pv-console-token
 ```
 
+The console URL is the API's bare origin (`https://api.proofvisor.com`
+for the hosted console once its DNS resolves; a self-hosted API's origin
+otherwise). `pvctl` appends `/api/v1/ingest` itself, so do not include a
+path. The console's deployment page prints these three values ready to
+paste, together with `pvctl console-sync --watch`.
+
 Configuration precedence is CLI flags, then `PV_CONSOLE_URL`,
 `PV_CONSOLE_DEPLOYMENT`, `PV_CONSOLE_TOKEN`,
 `PV_CONSOLE_BRIDGE_DIR`, then an optional `~/.proofvisor/console.toml`

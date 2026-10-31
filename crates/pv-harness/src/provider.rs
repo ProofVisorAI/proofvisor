@@ -1,15 +1,20 @@
 //! Provider adapter seam.
 //!
-//! The upstream was treated as OpenAI-shaped throughout the response
-//! path, which made "a second provider" the most painful change for
-//! this design to absorb. This module
-//! introduces the `ProviderAdapter` trait with the OpenAI
-//! adapter as its only implementation — a pure refactor. The SSE
-//! parser keeps its battle-tested implementation in `routes.rs`
-//! verbatim (BOM handling, `[DONE]`, `usage: null`, named-event
-//! refusal, metric-regression rejection); the adapter owns
-//! *selection*, so `AnthropicAdapter` / `GoogleGeminiAdapter`
-//! become additive.
+//! The `ProviderAdapter` trait has three implementations, selected by
+//! the `provider` config value: `OpenAiAdapter` (`"openai"`, the
+//! default), `AnthropicAdapter` (`"anthropic"`), and
+//! `GoogleGeminiAdapter` (`"gemini"`). An adapter parses the upstream
+//! RESPONSE only: SSE frames and buffered non-streaming bodies become
+//! the provider-neutral `ParsedProviderChunk`. The OpenAI SSE parser
+//! itself lives in `routes.rs` (BOM handling, `[DONE]`, `usage: null`,
+//! named-event refusal, metric-regression rejection); this module owns
+//! *selection*.
+//!
+//! The adapter does not touch the request. The proxy accepts an
+//! OpenAI chat-completions body on `/v1/chat/completions` and forwards
+//! it to `upstream_url` + `upstream_chat_path` as is, so a non-OpenAI
+//! adapter only fits an upstream that accepts that request shape and
+//! answers in its own dialect.
 
 use std::sync::Arc;
 

@@ -140,7 +140,7 @@ const eventPayload = z.object({
   // sentinel; every other error re-throws as 500 → daemon
   // retries → same error → **session livelock**, the exact
   // class R95 F1 closed for the tx-timeout case. Threat model:
-  // leaked PV_INGEST_TOKEN or a runaway daemon, same as R119
+  // leaked PV_CONSOLE_TOKEN or a runaway daemon, same as R119
   // F2 / R144 F1 / R151 F1 / R152 F1.
   //
   // Caps sized so a full 500-event batch fits comfortably
@@ -471,7 +471,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // audit-trail defacement (e.g. mutating workflow to
     // "unsigned" makes a legitimately signed session appear
     // unsigned in the list). Same threat model as R92 F2 / R93
-    // F4 / R118 F2 (leaked PV_INGEST_TOKEN). First-write-wins
+    // F4 / R118 F2 (leaked PV_CONSOLE_TOKEN). First-write-wins
     // matches the sealed-receipt posture across the file.
     // R141 F3: refuse pre-sealed CREATE. The R119 F2 update-branch
     // freeze covered rewrites of already-sealed rows, but the
@@ -484,7 +484,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // /read/sessions/:id then renders a "sealed but no receipt"
     // row (Receipt was cascade-purged), producing plausible-
     // deniability defacement of forensic history. Same threat
-    // model as R118 F2 / R119 F2 (leaked PV_INGEST_TOKEN). The
+    // model as R118 F2 / R119 F2 (leaked PV_CONSOLE_TOKEN). The
     // seal transition is by design the receipt row's job
     // (/ingest/receipts sets status:"sealed" atomically with
     // the receipt) — an ingest client should never POST a new
@@ -497,7 +497,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // /ingest/receipts. Result: session.status="sealed" with NO
     // Receipt row, stopReason/stopReasonId null, /events guard at
     // ingest.ts:362 silently drops all further events for that
-    // session — a compromised PV_INGEST_TOKEN holder can race an
+    // session — a compromised PV_CONSOLE_TOKEN holder can race an
     // in-flight session, force-seal it, and censor the rest of
     // the trail. Same threat model as R141 F3; the invariant
     // needs to hold on UPDATE too.
@@ -632,6 +632,30 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       externalId: session.externalId,
       agent: session.agent,
     });
+    // session.blocked fan-out, status edge: the daemon marked the whole
+    // session blocked and it was not blocked before. The other edge
+    // (first blocked tool call inside an otherwise live session) fires
+    // from /events below. The row was written by the guarded updateMany
+    // or the create branch above, so upd.count === 0 on an existing row
+    // means a frozen (sealed / quarantined) session, which never flips.
+    const becameBlocked =
+      s.status === "blocked" &&
+      existing?.status !== "blocked" &&
+      (upd.count > 0 || !existing);
+    if (becameBlocked) {
+      dispatchEvent({
+        orgId: daemon.orgId,
+        event: "session.blocked",
+        data: {
+          deploymentId: daemon.deploymentId,
+          sessionId: session.id,
+          sessionExternalId: session.externalId,
+          agent: session.agent,
+          reason: "status_blocked",
+        },
+        logger: req.log,
+      });
+    }
     return reply.send({ session });
   });
 
@@ -674,7 +698,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
             externalId,
           },
         },
-        select: { id: true, status: true },
+        select: { id: true, status: true, agent: true, toolsBlocked: true },
       });
       if (!session) continue; // ignore events for a session the daemon didn't upsert first
 
@@ -792,7 +816,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       // `session.events` / session totals, breaking the
       // compliance story from the OTHER direction R144 F1 /
       // R151 F1 closed for POST /ingest/sessions. Same
-      // threat model (leaked PV_INGEST_TOKEN or benign daemon
+      // threat model (leaked PV_CONSOLE_TOKEN or benign daemon
       // racing its own seal). Fix: convert the rollup to
       // updateMany with `status: { not: "sealed" }`, throw
       // inside the tx when the guard fails so the whole batch
@@ -976,6 +1000,27 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
             },
             logger: req.log,
           });
+          // session.blocked, first-block edge: this batch carried the
+          // session's first blocked tool call (the pre-tx rollup read
+          // zero). policy.block fires on every batch with a block;
+          // session.blocked fires once per session so a pager can page
+          // on "an agent just got stopped" without a flood.
+          if (session.toolsBlocked === 0) {
+            dispatchEvent({
+              orgId: daemon.orgId,
+              event: "session.blocked",
+              data: {
+                deploymentId: daemon.deploymentId,
+                sessionId: session.id,
+                sessionExternalId: externalId,
+                agent: session.agent,
+                blockedCount: clampedBlockedCount,
+                blockedPayoutUsdMicros: clampedBlockedPayout,
+                reason: "first_blocked_event",
+              },
+              logger: req.log,
+            });
+          }
         }
       }
     }

@@ -1,6 +1,7 @@
 //! Dependency-free metrics registry rendering Prometheus text exposition
-//! format. Counters and histograms only (what the SLA criteria need), all
-//! lock-free on the hot path (atomics; registration takes a short mutex).
+//! format. Counters, gauges, and histograms (what the SLA criteria need),
+//! all lock-free on the hot path (atomics; registration takes a short
+//! mutex).
 
 use parking_lot::Mutex;
 use std::collections::BTreeMap;

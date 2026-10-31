@@ -38,7 +38,8 @@ Receipt signing and ATIF serialization remain off the request path. Worker overl
 - `pv-identity`: EdDSA/HS256 NHI validation, delegation, JWKS refresh.
 - `pv-compress`: auditable, idempotent context reduction.
 - `pv-loopdetect`: hash or ONNX embeddings, circuit breaker, Qdrant sink.
-- `pv-sandbox`: JSON-RPC parsing, JSON Schema, native and WASM policy.
+- `pv-sandbox`: JSON-RPC parsing, JSON Schema, WASM policy. The crate also exports a native allow/deny tool-list type (`NativePolicy`) that is library-only; the daemon enforces JSON Schema and WASM policies, not native lists.
+- `pv-redact`: sensitive-data redaction for persisted audit payloads (built-in and custom regex patterns, JSON pointer paths); it never touches the traffic forwarded to the model.
 - `pv-harness`: proxy, routes, workers, sessions, reconciliation.
 - `pv-cli`: operational commands and load generation.
 

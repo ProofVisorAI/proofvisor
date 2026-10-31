@@ -103,7 +103,7 @@ const staticSrv = createServer(async (req, res) => {
         // Same rewrite console-api.yml applies.
         const before = s;
         s = s.replace(
-          /connect-src 'self' https:\/\/api\.proofvisorai\.me/,
+          /connect-src 'self' https:\/\/api\.proofvisor\.com/,
           `connect-src 'self' ${API_BASE}`,
         );
         if (s === before) {

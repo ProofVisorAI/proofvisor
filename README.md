@@ -11,16 +11,20 @@
 [![Docs](https://github.com/ProofVisorAI/proofvisor/actions/workflows/pages.yml/badge.svg)](https://proofvisor.com/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+**What exists today:** [docs/FEATURES.md](docs/FEATURES.md) lists every shipped feature, what is still planned, and the verification record behind the list.
+
 **AI agents you can hand to an auditor.**
 
 ProofVisor is a small Rust server you drop in front of your agent's
 LLM and tool calls. Every request is recorded, every limit you set is
 enforced before the call goes out, and every session can end with a
-signed receipt anyone can verify offline with just a public key
-(out of the box sessions record unsigned trajectories; set
-`default_workflow = "signed"` or promote a session via `/promote` to
-mint the receipt). Change one line in your OpenAI client. Nothing else
-in your app moves.
+signed receipt that anyone holding the deployment's public key can
+verify offline. The built-in default workflow is unsigned (sessions
+record ATIF trajectories), but every shipped config file, including the
+one the `pvctl` setup wizard writes, sets `default_workflow = "signed"`;
+an unsigned session can also be promoted to a receipt later via
+`/promote`. Change one line in your OpenAI client. Nothing else in your
+app moves.
 
 ```python
 client = OpenAI(
@@ -34,7 +38,9 @@ client = OpenAI(
 - **[Console](https://proofvisor.com/app/)** — the
   product, clickable in your browser: setup, one-line integration, a live
   capped session, the fleet overview, and offline receipt verification.
-  Client-side simulation with representative data; nothing leaves the page.
+  It is a real multi-tenant app. By default it runs in mock mode against
+  built-in fixtures (nothing leaves the page); append `?live=1` to use the
+  hosted API instead.
 - **[Releases](https://github.com/ProofVisorAI/proofvisor/releases)** —
   pre-built binaries with SHA-256 checksums.
 - **[Security model](SECURITY.md)** — trust boundaries, controls, and how
@@ -81,9 +87,10 @@ pvctl
 > config selects a backend the build cannot run.
 
 > Plain `cargo install pv-harness pv-cli` (crates.io, no `--git`)
-> starts working when the first tagged release is published; until
-> then the registry does not know these crates — use the `--git`
-> lines above or [Install from source](#install-from-source).
+> does not work yet: the crates are not published to crates.io. The
+> latest GitHub release is the `v0.1.0-rc.5` pre-release, which is the
+> version the installer pins; there is no final `v0.1.0` release yet.
+> Use the `--git` lines above or [Install from source](#install-from-source).
 
 Bare `pvctl` launches a guided setup: pick your AI provider from a
 numbered list, paste your API key once (typed hidden, stored
@@ -116,6 +123,13 @@ Point any OpenAI-compatible SDK at `http://127.0.0.1:8484/v1` and use it as norm
 > record the pruned token count and content hash in the audit trail.
 > Set `compression_enabled = false` to forward payloads verbatim —
 > details in [docs/reference/OPENAI-COMPATIBILITY.md](docs/reference/OPENAI-COMPATIBILITY.md).
+
+> **Note:** the shipped configs turn on sensitive-data redaction with
+> the built-in patterns (API keys, bearer tokens, email addresses, card
+> numbers, SSNs, public IPv4 addresses). Redaction applies to the
+> persisted audit copies — events, ATIF steps, and exports — not to the
+> traffic forwarded to the model. Keys are described in
+> [docs/reference/CONFIGURATION.md](docs/reference/CONFIGURATION.md#tenant-observability-and-redaction).
 
 No config file at all also works — built-in defaults plus one env var:
 
@@ -154,6 +168,11 @@ cargo install --path crates/pv-cli       # installs `pvctl`
 | `llamacpp` | 127.0.0.1:8080 | none |
 | `litellm` | 127.0.0.1:4000 | `LITELLM_MASTER_KEY` |
 | `custom` | `--upstream-url ...` | `--key-env NAME` |
+
+Requests are forwarded to the upstream unchanged. The `provider` setting
+(`openai`, `anthropic`, or `gemini`) only selects how the upstream
+response frames are parsed; the `anthropic` and `gemini` presets point at
+those vendors' OpenAI-compatible endpoints, not at their native APIs.
 
 `pvctl doctor` diagnoses the environment (config resolution, key presence, upstream reachability, data dirs, backends, budget posture) without printing secrets. `pvctl health` probes a running instance. `pvctl start` launches the server for you (logs to `~/.proofvisor/proofvisor.log`) and waits until it answers.
 
@@ -300,7 +319,7 @@ single-instance:
 | Subsystem | Single-instance default | Multi-instance requirement |
 | --- | --- | --- |
 | Signer seed | file on disk | same seed mounted at each replica (or a rotation you accept per replica) |
-| State store (budgets, ratelimits) | `state_backend = "memory"` | `state_backend = "redis"` with `state_endpoint = "redis://..."` and identical `PV_STATE_ENDPOINT` at each replica |
+| State store (session and principal budgets; the daemon has no per-caller rate limiter) | `state_backend = "memory"` | `state_backend = "redis"` with `state_endpoint = "redis://..."` and identical `PV_STATE_ENDPOINT` at each replica |
 | Bridge (event bus) | `bridge_backend = "embedded"` (per-pod data-dir) | `bridge_backend = "kafka"` or `"nats"` with shared endpoints |
 | ATIF spool | pod-local `atif_spool_dir` (enforced: the daemon holds an exclusive lock on `.proofvisord.lock` in the spool and a second instance refuses to boot) | one replica per spool volume — sharing a spool is refused at startup because the reconciler's per-file lifecycle lock is process-local and two replicas would race on close |
 | Session registry | in-memory only | client stickiness (LB session affinity on `X-PV-Session`) OR accept that a session's audit chain lives on one pod for its lifetime and doesn't survive that pod's eviction |

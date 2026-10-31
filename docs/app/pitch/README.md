@@ -19,6 +19,6 @@ layout).
   (~80 seconds). Without the parameter the page shows pure product chrome.
 - **Reset:** the ↻ button in the top bar returns everything to a first-run
   state (useful between viewers).
-- **Scripted recordings:** the page exposes `window.avConsole`
+- **Scripted recordings:** the page exposes `window.pvConsole`
   (`play(speed)`, `setSpeed(s)`, `goTo(step)`, `reset()`, `isPlaying()`),
   which is how the walkthrough video is captured with Playwright.

@@ -2,11 +2,15 @@
 
 One page. Grep for the failure, do the fix, move on. Kept short on purpose.
 
-> **Scope note:** sections referencing `api.proofvisor.com` / Fly.io
-> apply to the hosted API, which launches with the beta (no public
-> instance or DNS today — `docs/STATUS.md` tracks that). The live
-> surfaces before then are the static site + mock-mode console on
-> GitHub Pages; their failure modes are the Pages/CDN sections below.
+> **Scope note:** the hosted API is live on Render as the web service
+> `agentvisor-api` (`https://agentvisor-api.onrender.com`); the custom
+> domain `api.proofvisor.com` is pending DNS, so use the Render hostname
+> until it resolves (`docs/STATUS.md` tracks that). Nothing runs on
+> Fly.io. The `fly …` commands below were written for a Fly deployment
+> and are kept as a template: on Render, do the equivalent step from the
+> service dashboard (logs, environment variables, redeploy of a previous
+> commit) or with the Render CLI. The static site and mock-mode console
+> are GitHub Pages; their failure modes are the Pages/CDN sections below.
 
 ## Contact + escalation
 

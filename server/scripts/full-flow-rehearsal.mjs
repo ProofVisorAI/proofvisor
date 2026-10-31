@@ -109,7 +109,7 @@ await verifyPage.close();
 beat("finale CTA → verifier tab → sample verifies green");
 
 // ── 4. Back in the console: attack demo → story banner
-await page.evaluate(() => { window.AVTour && window.AVTour.stop(); location.hash = "#/overview"; });
+await page.evaluate(() => { window.PVTour && window.PVTour.stop(); location.hash = "#/overview"; });
 await page.waitForSelector("#simAttack", { timeout: 15000 });
 await page.click("#simAttack");
 await page.waitForFunction(() => [...document.querySelectorAll(".toast")].some((t) => /BLOCKED/i.test(t.textContent)), { timeout: 15000 });

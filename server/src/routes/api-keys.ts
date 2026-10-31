@@ -24,6 +24,7 @@ import { db } from "../db.js";
 import { canGrantRole, hashPassword, randomToken, type SessionClaims } from "../lib/auth.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
 import { requireSession } from "../lib/session-middleware.js";
+import { dispatchEvent } from "../lib/webhooks.js";
 
 const roleSchema = z.enum(["owner", "admin", "member"]);
 
@@ -228,6 +229,22 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       },
       req.log,
     );
+    // Webhook fan-out so a SIEM can alert on new org credentials. The
+    // payload carries the display hint only — the plaintext is shown
+    // once to the operator below and must never travel to a third-party
+    // endpoint.
+    dispatchEvent({
+      orgId: claims.orgId,
+      event: "apikey.created",
+      data: {
+        apiKeyId: key.id,
+        name: key.name,
+        role: key.role,
+        hint: "pv_srv_" + key.tokenHint + "…",
+        createdByEmail: creatorUser?.email ?? null,
+      },
+      logger: req.log,
+    });
     return reply.code(201).send({
       key: {
         id: key.id,

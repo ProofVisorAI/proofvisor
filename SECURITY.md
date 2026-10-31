@@ -8,7 +8,7 @@ ProofVisor treats request bodies, JWTs, MCP arguments, upstream responses, manif
 
 - NHI JWT verification binds algorithms to key types and rejects `alg=none`, confusion attacks, future timestamps, expired tokens, TTLs above 15 minutes, unknown keys, scope escalation, and delegation depth above four.
 - Corporate Ed25519 JWKS keys load at boot and refresh periodically. The last valid set remains available during endpoint failures; a successful refresh retires keys no longer advertised by the IdP.
-- MCP calls pass parse, JSON Schema, WASM/native policy, and atomic budget gates. Any failure blocks the call.
+- MCP calls pass parse, JSON Schema, WASM policy, and atomic budget gates. Any failure blocks the call. (The `pv-sandbox` crate also contains a native allow/deny tool-list type, but the daemon does not wire it; only JSON Schema and WASM policies are enforced.)
 - Multi-dimensional action budgets commit through one in-memory transaction or one Redis Lua script.
 - WASM policies have fuel and memory limits and fail closed on traps or ABI errors.
 - Receipt signatures cover RFC 8785 canonical JSON. `pvctl receipt-verify` requires an independently trusted public key; embedded receipt keys are not trust anchors.

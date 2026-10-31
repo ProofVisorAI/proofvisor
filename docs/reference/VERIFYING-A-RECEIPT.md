@@ -1,6 +1,6 @@
-# Verifying an ProofVisor Receipt Offline
+# Verifying a ProofVisor Receipt Offline
 
-An ProofVisor receipt is a JSON document containing an audit chain
+A ProofVisor receipt is a JSON document containing an audit chain
 subject and an Ed25519 signature over a canonical (RFC 8785 JCS) form
 of the receipt body (framed per `receipt_version` — see §5a). Anyone
 with the harness's public key can verify a receipt without contacting
@@ -38,6 +38,30 @@ Never derive the trusted public key from the receipt itself. A
 tampered receipt could carry a public key it forged a signature
 against; the whole point of an out-of-band key exchange is to break
 that loop.
+
+A third channel exists for deployments that upload evidence to the
+hosted console: the deployment page in the console shows the public
+key the daemon anchored on its first upload (`POST /ingest/pubkey`;
+rotation is refused, so the anchor is stable). Compare its fingerprint
+with the key you were handed. There is no published key list at
+`https://proofvisor.com/.well-known/receipt-keys.json` today; that
+file is planned but does not exist, so do not build tooling that
+fetches it yet.
+
+### The browser verifier at proofvisor.com/verify/
+
+The page at [`/verify/`](https://proofvisor.com/verify/) runs the same
+JCS + Ed25519 check described below, entirely in your browser. Be clear
+about what it proves. It checks that the signature verifies under the
+public key embedded in the receipt and that the receipt is internally
+consistent (`key_id` matches the embedded key, the framing matches
+`receipt_version`). Its list of trusted keys contains only the sample
+receipt's key and the mock console's demo key. A receipt from a real
+deployment therefore gets the verdict "internally consistent, trust
+anchor not verified" — not "authentic" — until you, the auditor,
+compare the receipt's key fingerprint with the key shown on the
+deployment page in the console (or the key the operator gave you). The
+browser page cannot do that comparison for you.
 
 ## 2. Locate the receipt for a session
 

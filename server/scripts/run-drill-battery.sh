@@ -19,7 +19,7 @@ export ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://127.0.0.1:8988}
 export PG_CONTAINER=${PG_CONTAINER:-server-db-1}
 export PG_USER=${PG_USER:-pv}
 export PG_DB=${PG_DB:-pvdb}
-AVURL=${DATABASE_URL:-postgresql://pv:pv@localhost:5433/pvdb}
+PVURL=${DATABASE_URL:-postgresql://pv:pv@localhost:5433/pvdb}
 
 PASS=0
 FAIL=0
@@ -29,7 +29,7 @@ run_drill() {
   local name=$1 port=$2; shift 2
   local pidfile
   pidfile=$(mktemp) || return 1
-  ( env PORT="$port" API_PUBLIC_URL="http://127.0.0.1:$port" DATABASE_URL="$AVURL" "$@" \
+  ( env PORT="$port" API_PUBLIC_URL="http://127.0.0.1:$port" DATABASE_URL="$PVURL" "$@" \
     node node_modules/.bin/tsx src/index.ts > "/tmp/drill-$name.log" 2>&1 & echo $! > "$pidfile" )
   local up=0
   for _ in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$port/healthz" && { up=1; break; }; sleep 1; done

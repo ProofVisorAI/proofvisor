@@ -149,7 +149,7 @@ console.log("✅ Environment pill present: " + pillText);
         // verify deliverability after the crawl; the check self-heals
         // the day MX lands.
         const m = l.href.match(/^mailto:([^?]+)/);
-        if (m && /@proofvisorai\.me$/i.test(m[1])) mailtos.push(`/${p}: ${m[1]}`);
+        if (m && /@proofvisor\.com$/i.test(m[1])) mailtos.push(`/${p}: ${m[1]}`);
         continue;
       }
       if (l.href.startsWith("#")) {
@@ -364,7 +364,7 @@ console.log("✅ Environment pill present: " + pillText);
   // export (publish-tool.yml) lands with the same push being smoked.
   if (!local) {
     const readme = await (await fetch("https://raw.githubusercontent.com/ProofVisorAI/proofvisor/main/README.md?cb=" + Date.now())).text();
-    if (!/curl -fsSL https:\/\/proofvisorai\.me\/install\.sh \| sh/.test(readme))
+    if (!/curl -fsSL https:\/\/proofvisor\.com\/install\.sh \| sh/.test(readme))
       fail("public README quickstart lost the installer one-liner");
     if (!/cargo install --locked --git https:\/\/github\.com\/ProofVisorAI\/proofvisor/.test(readme))
       fail("public README quickstart lost the working --git install form");

@@ -182,7 +182,7 @@
       return errResult;
     }
   }
-  window.avVerifyReceipt = verifyReceiptSignature;
+  window.pvVerifyReceipt = verifyReceiptSignature;
 
 
   /* ============================================================
@@ -205,11 +205,11 @@
   };
 
   var MOCK_MEMBERS = [
-    { id: "usr_olivia", userId: "usr_olivia", email: "olivia.tan@northwind.com", displayName: "Olivia Tan", role: "owner", lastActive: iso(2 * MIN), mfaEnrolled: true },
-    { id: "usr_raj", userId: "usr_raj", email: "raj.patel@northwind.com", displayName: "Raj Patel", role: "admin", lastActive: iso(18 * MIN), mfaEnrolled: true },
-    { id: "usr_sam", userId: "usr_sam", email: "sam.lee@northwind.com", displayName: "Sam Lee", role: "member", lastActive: iso(4 * HOUR), mfaEnrolled: true },
-    { id: "usr_priya", userId: "usr_priya", email: "priya.iyer@northwind.com", displayName: "Priya Iyer", role: "member", lastActive: iso(2 * 24 * HOUR) },
-    { id: "usr_marc", userId: "usr_marc", email: "marc.dubois@northwind.com", displayName: "Marc Dubois", role: "member", lastActive: iso(6 * 24 * HOUR) },
+    { id: "usr_olivia", userId: "usr_olivia", email: "olivia.tan@northwind.com", displayName: "Olivia Tan", role: "owner", joinedAt: iso(38 * 24 * HOUR), mfaEnrolled: true },
+    { id: "usr_raj", userId: "usr_raj", email: "raj.patel@northwind.com", displayName: "Raj Patel", role: "admin", joinedAt: iso(37 * 24 * HOUR), mfaEnrolled: true },
+    { id: "usr_sam", userId: "usr_sam", email: "sam.lee@northwind.com", displayName: "Sam Lee", role: "member", joinedAt: iso(30 * 24 * HOUR), mfaEnrolled: true },
+    { id: "usr_priya", userId: "usr_priya", email: "priya.iyer@northwind.com", displayName: "Priya Iyer", role: "member", joinedAt: iso(21 * 24 * HOUR) },
+    { id: "usr_marc", userId: "usr_marc", email: "marc.dubois@northwind.com", displayName: "Marc Dubois", role: "member", joinedAt: iso(9 * 24 * HOUR) },
   ];
 
   var MOCK_INVITES = [
@@ -217,8 +217,8 @@
   ];
 
   var MOCK_API_KEYS = [
-    { id: "key_ci", name: "CI runner", createdAt: iso(14 * 24 * HOUR), lastUsedAt: iso(28 * MIN), hint: "pv_srv_a091…" },
-    { id: "key_ops", name: "Ops dashboard", createdAt: iso(3 * 24 * HOUR), lastUsedAt: iso(6 * HOUR), hint: "pv_srv_c412…" },
+    { id: "key_ci", name: "CI runner", role: "member", createdAt: iso(14 * 24 * HOUR), lastUsedAt: iso(28 * MIN), hint: "pv_srv_a091…" },
+    { id: "key_ops", name: "Ops dashboard", role: "admin", createdAt: iso(3 * 24 * HOUR), lastUsedAt: iso(6 * HOUR), hint: "pv_srv_c412…" },
   ];
 
   var MOCK_WEBHOOKS = [
@@ -266,7 +266,7 @@
       version: "0.4.2",
       lastSeenAt: iso(1 * MIN),
       createdAt: iso(38 * 24 * HOUR),
-      ingestTokenHint: "pv_live_9HpD…",
+      ingestTokenHint: "pv_live_9HpDk2Qm…",
       publicKeyHex: "573c8f249012fbb08b3d79973411bb93141f32719c86ada25306fde5e59e8d57",
       keyFingerprint: "kf_573c8f24",
       sessions24h: 18,
@@ -282,7 +282,7 @@
       version: "0.4.2",
       lastSeenAt: iso(4 * MIN),
       createdAt: iso(38 * 24 * HOUR),
-      ingestTokenHint: "pv_live_7bK2…",
+      ingestTokenHint: "pv_live_7bK2nR4t…",
       publicKeyHex: "8c9b0a1e2f3d4c5b6a7e8f9d0c1b2a3e3a5f7e2d1b8c9a4e6f1d2c3b4a5e6f7d",
       keyFingerprint: "kf_8c9b0a1e",
       sessions24h: 9,
@@ -298,7 +298,7 @@
       version: "0.4.1",
       lastSeenAt: iso(38 * MIN),
       createdAt: iso(11 * 24 * HOUR),
-      ingestTokenHint: "pv_live_3xF9…",
+      ingestTokenHint: "pv_live_3xF9wL8c…",
       publicKeyHex: "1e2f3d4c5b6a7e8f9d0c1b2a3e3a5f7e2d1b8c9a4e6f1d2c3b4a5e6f7d8c9b0a1",
       keyFingerprint: "kf_1e2f3d4c",
       sessions24h: 3,
@@ -1373,7 +1373,7 @@
         version: null,
         lastSeenAt: null,
         createdAt: new Date().toISOString(),
-        ingestTokenHint: "pv_live_" + token.slice(8, 12) + "…",
+        ingestTokenHint: token.slice(0, 16) + "…",
         publicKeyHex: null,
         keyFingerprint: null,
         sessions24h: 0, spend24h: "$0.00",
@@ -1391,7 +1391,7 @@
       var token = "pv_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
       var pool = freshElapsed() != null ? (freshDeployments() || []) : MOCK_DEPLOYMENTS;
       var d = pool.find(function (x) { return x.id === id; });
-      if (d) d.ingestTokenHint = "pv_live_" + token.slice(8, 12) + "…";
+      if (d) d.ingestTokenHint = token.slice(0, 16) + "…";
       recordAudit("deployment.token_rotated", d ? d.name : id);
       return { ingestToken: token };
     },
@@ -1776,7 +1776,7 @@
           email: (fid && fid.user.email) || "you@yourco.dev",
           displayName: (fid && (fid.user.displayName || fid.user.email)) || "You",
           role: (fid && fid.org && fid.org.role) || "owner",
-          lastActive: new Date().toISOString(),
+          joinedAt: new Date().toISOString(),
         }];
       }
       return MOCK_MEMBERS.slice();
@@ -1851,7 +1851,7 @@
       }
       var uid = "usr_" + email.split("@")[0].toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 20);
       if (!MOCK_MEMBERS.some(function (m) { return m.email === email; })) {
-        MOCK_MEMBERS.push({ id: uid, userId: uid, email: email, displayName: name, role: role, lastActive: new Date().toISOString() });
+        MOCK_MEMBERS.push({ id: uid, userId: uid, email: email, displayName: name, role: role, joinedAt: new Date().toISOString() });
       }
       mockState.session = {
         user: { id: uid, email: email, displayName: name },
@@ -1878,11 +1878,11 @@
       if (freshElapsed() != null) return freshRuntime().apiKeys.slice();
       return MOCK_API_KEYS.slice();
     },
-    async createApiKey(name) {
+    async createApiKey(name, role) {
       await delay(120);
       var hint = "pv_srv_" + Math.random().toString(36).slice(2, 10) + "…";
       var plaintext = "pv_srv_" + Math.random().toString(36).slice(2, 10).padEnd(28, "0");
-      var row = { id: "key_" + Math.random().toString(36).slice(2, 8), name: name, createdAt: new Date().toISOString(), lastUsedAt: null, hint: hint };
+      var row = { id: "key_" + Math.random().toString(36).slice(2, 8), name: name, role: role || "admin", createdAt: new Date().toISOString(), lastUsedAt: null, hint: hint };
       if (freshElapsed() != null) freshRuntime().apiKeys.unshift(row);
       else MOCK_API_KEYS.unshift(row);
       recordAudit("apikey.created", name);
@@ -2229,10 +2229,10 @@
     // browser-wide cookie; the server refuses mutations whose pin
     // disagrees with the cookie's org (409 org_context_changed) so a
     // stale tab's dialog can't retarget its side effects. app.js
-    // updates window.__avActiveOrgId on login/session-load/org-switch.
+    // updates window.__pvActiveOrgId on login/session-load/org-switch.
     try {
-      if (typeof window !== "undefined" && window.__avActiveOrgId) {
-        headers["X-PV-Org"] = window.__avActiveOrgId;
+      if (typeof window !== "undefined" && window.__pvActiveOrgId) {
+        headers["X-PV-Org"] = window.__pvActiveOrgId;
       }
     } catch (e) {}
     var res = await fetch(apiUrl(path), {
@@ -2479,10 +2479,18 @@
           version: d.daemonVersion || null,
           lastSeenAt: d.lastIngestAt || null,
           createdAt: d.createdAt,
-          ingestTokenHint: d.ingestTokenHint ? "pv_live_" + d.ingestTokenHint.slice(0, 4) + "…" : "—",
+          // The server stores and returns the token's real leading
+          // characters ("pv_live_" + 8 chars for tokens minted with the
+          // prefix; 8 raw chars for older rows). Display it verbatim —
+          // never prepend a prefix the token may not have.
+          ingestTokenHint: d.ingestTokenHint ? d.ingestTokenHint + "…" : "—",
           publicKeyHex: d.publicKeyHex || null,
           keyFingerprint: d.publicKeyHex ? "kf_" + d.publicKeyHex.slice(0, 8) : null,
-          sessions24h: null, spend24h: null,
+          // Real 24h rollups from /api/v1/deployments (sessions opened
+          // in the last 24h and their LLM spend). Spend is null for the
+          // member role, which the server redacts.
+          sessions24h: typeof d.sessions24h === "number" ? d.sessions24h : null,
+          spend24h: d.spend24hUsdMicros != null ? "$" + (parseInt(d.spend24hUsdMicros, 10) / 1e6).toFixed(2) : null,
         };
       });
     },
@@ -2500,7 +2508,7 @@
         environment: dep.environment || input.environment || "production",
         status: "pending", version: null,
         lastSeenAt: null, createdAt: dep.createdAt || new Date().toISOString(),
-        ingestTokenHint: "pv_live_" + (r.ingestToken || "").slice(8, 12) + "…",
+        ingestTokenHint: dep.ingestTokenHint ? dep.ingestTokenHint + "…" : (r.ingestToken || "").slice(0, 16) + "…",
         publicKeyHex: null, keyFingerprint: null, sessions24h: 0, spend24h: "$0.00",
       }, ingestToken: r.ingestToken };
     },
@@ -2538,7 +2546,7 @@
       return {
         period: "last_" + (r.range || "24h"),
         sessions: stats.sessions || sessions.length,
-        events: 0,
+        events: stats.events || 0,
         toolsAllowed: stats.toolsAllowed || 0,
         toolsBlocked: stats.toolsBlocked || 0,
         llmSpendUsd: llmCents.toFixed(2),
@@ -2577,6 +2585,10 @@
       }
       var r = await apiFetch("/api/v1/sessions/" + id + qs);
       var s = normalizeSession(r.session);
+      if (!s.model) {
+        var models = modelsFromEvents(r.session.events);
+        s.model = models.length ? models.join(", ") : null;
+      }
       var events = (r.session.events || []).map(normalizeEvent);
       // R208 F1: `?? null` preserves a legitimate 0 cursor. Prior
       // `|| null` coerced any falsy value (including numeric 0)
@@ -2672,7 +2684,10 @@
       try {
         var r = await apiFetch("/api/v1/members");
         return (r.members || []).map(function (m) {
-          return { userId: m.userId, email: m.email, displayName: m.displayName, role: m.role, lastActive: m.joinedAt, mfaEnrolled: !!m.mfaEnrolled };
+          // The server records when a membership was created; it has no
+          // last-activity timestamp, so the console shows "Joined" and
+          // never relabels one as the other.
+          return { userId: m.userId, email: m.email, displayName: m.displayName, role: m.role, joinedAt: m.joinedAt, mfaEnrolled: !!m.mfaEnrolled };
         });
       } catch (e) { return []; }
     },
@@ -2720,8 +2735,12 @@
           };
       });
     },
-    async createApiKey(name) {
-      var res = await apiFetch("/api/v1/keys", { method: "POST", body: { name: name } });
+    async createApiKey(name, role) {
+      // role is one of owner|admin|member (server default: admin). The
+      // server refuses a role above the caller's own.
+      var body = { name: name };
+      if (role) body.role = role;
+      var res = await apiFetch("/api/v1/keys", { method: "POST", body: body });
       return { key: res.key, plaintextToken: res.plaintextToken };
     },
     async revokeApiKey(id) {
@@ -2953,8 +2972,13 @@
       deploymentId: (s.deployment && s.deployment.id) || s.deploymentId,
       deploymentName: (s.deployment && s.deployment.name) || null,
       agent: s.agent,
-      user: s.user || "—",
-      model: s.model || "gpt-4o",
+      // The ingest payload carries no end-user identity and no
+      // session-level model name. Leave both empty rather than inventing
+      // a value; the renderer prints "—" for an empty actor and
+      // getSessionById fills `model` from the model names the daemon
+      // recorded on the session's LLM events.
+      user: s.user || null,
+      model: s.model || null,
       status: s.status === "sealed" ? "completed" : (s.status === "live" ? "in_progress" : s.status),
       startedAt: s.openedAt || s.startedAt,
       endedAt: s.closedAt || s.endedAt,
@@ -2967,8 +2991,26 @@
       payoutUsdMicros: (s.payoutUsdMicros != null) ? String(s.payoutUsdMicros) : "0",
       blockedPayoutUsdMicros: (s.blockedPayoutUsdMicros != null) ? String(s.blockedPayoutUsdMicros) : "0",
       receiptHash: s.receiptHash || null,
-      policiesFired: s.policiesFired || [],
+      // Policy names the daemon attributed to this session's events
+      // (server: Event.policyName grouped per session).
+      policiesFired: Array.isArray(s.policiesFired) ? s.policiesFired : [],
     };
+  }
+  // Distinct model names the daemon recorded on a session's LLM events.
+  // Event bodies are the JSON the uploader builds per ATIF step
+  // ({ modelName, message, toolCalls, … }); member-redacted bodies are a
+  // sentinel string and simply parse to nothing.
+  function modelsFromEvents(events) {
+    var seen = {};
+    var out = [];
+    (events || []).forEach(function (e) {
+      if (e.kind !== "llm" || typeof e.body !== "string") return;
+      var name = null;
+      try { var b = JSON.parse(e.body); name = b && typeof b.modelName === "string" ? b.modelName : null; } catch (err) { name = null; }
+      if (!name && typeof e.sub === "string" && e.sub && e.sub.indexOf("[") !== 0) name = e.sub;
+      if (name && !seen[name]) { seen[name] = true; out.push(name); }
+    });
+    return out;
   }
   function normalizeEvent(e) {
     var sev = "info";

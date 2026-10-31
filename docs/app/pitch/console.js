@@ -885,7 +885,7 @@ window.API_BASE = "";  // e.g. "https://api.proofvisor.com" once deployed (origi
   }
 
   // Kiosk-mode automation hooks.
-  window.avConsole = {
+  window.pvConsole = {
     play: function (speed) { state.speed = speed || 1; startAutoplay(); },
     setSpeed: function (s) { state.speed = s; },
     goTo: goTo,

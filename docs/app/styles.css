@@ -1835,8 +1835,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .evt { grid-template-columns: 32px auto minmax(0, 1fr) auto; }
   .evt .waterfall { display: none; }
   /* Keep the tour launcher compact so it covers less content. */
-  #avTourLauncher button { padding: 9px 6px 9px 14px; font-size: 13px; }
-  #avTourLauncher #avTourDismiss { padding: 9px 12px 9px 4px; }
+  #pvTourLauncher button { padding: 9px 6px 9px 14px; font-size: 13px; }
+  #pvTourLauncher #pvTourDismiss { padding: 9px 12px 9px 4px; }
 }
 
 /* ============================================================
@@ -1860,8 +1860,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
  * heights it sat exactly on a long form's Save/Cancel row (z 900 vs
  * the backdrop's 100). While anything locks the body, the user's
  * intent is the dialog. */
-body.locked #avTourLauncher { display: none; }
-#avTourLauncher {
+body.locked #pvTourLauncher { display: none; }
+#pvTourLauncher {
   position: fixed;
   right: 20px;
   bottom: 20px;
@@ -1877,7 +1877,7 @@ body.locked #avTourLauncher { display: none; }
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
   animation: toastIn 200ms cubic-bezier(.22,1,.36,1);
 }
-#avTourLauncher button {
+#pvTourLauncher button {
   background: none;
   border: 0;
   color: inherit;
@@ -1887,18 +1887,18 @@ body.locked #avTourLauncher { display: none; }
   font-weight: 600;
   font-size: var(--t-body, 14px);
 }
-#avTourLauncher #avTourDismiss {
+#pvTourLauncher #pvTourDismiss {
   padding: 11px 14px 11px 6px;
   opacity: 0.75;
   font-weight: 400;
 }
-#avTourLauncher #avTourDismiss:hover { opacity: 1; }
-#avTourLauncher #avTourStart:hover { text-decoration: underline; }
+#pvTourLauncher #pvTourDismiss:hover { opacity: 1; }
+#pvTourLauncher #pvTourStart:hover { text-decoration: underline; }
 
 /* The overlay absorbs every click outside the card so a stray click
    can't navigate the app underneath a tour step (audit D1). Tour
    advancement is via the card buttons / arrow keys. */
-#avTour { position: fixed; inset: 0; z-index: 950; pointer-events: auto; }
+#pvTour { position: fixed; inset: 0; z-index: 950; pointer-events: auto; }
 .pv-tour-hole {
   position: fixed;
   border-radius: 10px;
@@ -1963,13 +1963,13 @@ body.locked #avTourLauncher { display: none; }
 .pv-tour-actions .pv-tour-skip:hover { color: var(--fg-1); }
 
 /* Simulated-attack: the savings stat pulses when new money is kept. */
-@keyframes avStatPulse {
+@keyframes pvStatPulse {
   0% { box-shadow: 0 0 0 0 var(--success-bg); }
   50% { box-shadow: 0 0 0 10px transparent; background: var(--success-bg); }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
-.stat.pv-pulse { animation: avStatPulse 1.2s ease 2; }
-tr.pv-new-row td { animation: avStatPulse 1.2s ease 2; }
+.stat.pv-pulse { animation: pvStatPulse 1.2s ease 2; }
+tr.pv-new-row td { animation: pvStatPulse 1.2s ease 2; }
 
 @media (prefers-reduced-motion: reduce) {
   /* Global kill-switch (WCAG 2.3.3): 18 animation/transition sites and
@@ -1985,7 +1985,7 @@ tr.pv-new-row td { animation: avStatPulse 1.2s ease 2; }
   }
   .pv-tour-hole, .pv-tour-card { transition: none; }
   .stat.pv-pulse, tr.pv-new-row td { animation: none; }
-  .toast, #avTourLauncher { animation: none; }
+  .toast, #pvTourLauncher { animation: none; }
 }
 
 /* ============================================================
@@ -2149,7 +2149,7 @@ a.ob-step:hover { border-color: var(--accent); }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   html, body { background: #fff; }
   /* Chrome + every interactive control off the page. */
-  .topbar, .sidebar, .preview-banner, #toastStack, #avTour, #avTourLauncher,
+  .topbar, .sidebar, .preview-banner, #toastStack, #pvTour, #pvTourLauncher,
   .filter-bar, .evt-filters, .page-header .actions, button, .modal-backdrop,
   .onboard-card, .range-group { display: none !important; }
   .app-shell { display: block; min-height: 0; }
@@ -2235,7 +2235,7 @@ a.ob-step:hover { border-color: var(--accent); }
      overrides live here, after the tour/toast base rules — putting
      them in the main responsive block (earlier in the file) silently
      lost to source order at equal specificity. */
-  #avTourLauncher { bottom: 68px; }
+  #pvTourLauncher { bottom: 68px; }
   #toastStack { bottom: 120px; }
 }
 @media print { .tabbar { display: none !important; } }

@@ -212,7 +212,7 @@ answers `503` with `temporarily_unavailable` and `Retry-After`.
 ## Platform workload identity (Cloud Foundry)
 
 With `[workload_identity]`, an application instance on Cloud Foundry can
-obtain an ProofVisor agent token without any stored secret, by proving the
+obtain a ProofVisor agent token without any stored secret, by proving the
 instance identity certificate the platform gives every container
 (`CF_INSTANCE_CERT` / `CF_INSTANCE_KEY`, rotated before expiry). The
 `pvctl sidecar` that the buildpack starts beside the application does this
@@ -529,8 +529,24 @@ out of debug output and HTTP/2 header compression tables.
 | `otel_tenant_endpoint` | none | Tenant OTLP/HTTP trace endpoint (including `/v1/traces`), exported alongside any operational collector. Requires the `otel` build feature. Operational authentication headers are not forwarded to this endpoint. |
 | `otel_tenant_auth_file` | none | Bearer token file for the tenant OTEL endpoint (owner-only permissions enforced). |
 | `otel_tenant_content` | `redacted` | What the tenant endpoint receives beyond request metadata spans. `redacted` also exports every audited step as an OpenTelemetry GenAI span with its content, after redaction (see below). `off` exports metadata spans only. |
-| `redaction_patterns` | `[]` | Regex patterns for sensitive-data stripping. Applied to event payloads and ATIF step fields before journal write. Setting either patterns or pointer paths also enables the builtin patterns (API keys, email, SSN, cards, and IPv4 addresses). |
-| `redaction_paths` | `[]` | JSON pointer paths to always redact in event payloads and their ATIF observation copies. Configuring paths also enables builtins. |
+| `redaction_patterns` | `[]` (compiled-in default: no redaction); every shipped config, and the config `pvctl init` / `pvctl setup` write, set the recommended list | A list of raw regular expressions (not pattern names) for sensitive-data stripping, applied to event payloads and ATIF step fields before the journal write. Whenever this list or `redaction_paths` is non-empty, the built-in set is always included as well: `Bearer` tokens, `sk-`/`key-` style API keys, email addresses, Luhn-valid card numbers, US SSNs, and public IPv4 addresses. The shipped list adds AWS access key IDs, GitHub tokens, Google API keys, Slack tokens, and bare JWTs; it is the constant `pv_harness::config::RECOMMENDED_REDACTION_PATTERNS`. |
+| `redaction_paths` | `[]` | JSON pointer paths to always redact in event payloads and their ATIF observation copies. Configuring paths also enables the built-in patterns. |
+
+Redaction changes only the copies ProofVisor persists for audit — the
+journal, the ATIF trajectory, the OCSF events, the exports, and what
+`pvctl console-sync` uploads. The request forwarded to the model and the
+response returned to the client are never altered by redaction.
+
+The compiled-in default is no redaction: a config file that simply omits
+`redaction_patterns` has no redaction at all. Every shipped configuration
+file (`config/harness.example.toml`, `harness.docker.toml`,
+`harness.container.toml`), the config written by `pvctl init` and `pvctl
+setup`, and the Cloud Foundry and Kubernetes manifests under `deploy/`
+carry the same `redaction_patterns` block, so a deployment that starts
+from any of them redacts out of the box with the built-in set plus the
+recommended additions. To disable redaction deliberately, set
+`redaction_patterns = []` and leave `redaction_paths` unset; either one
+being non-empty turns the engine (and the built-in set) back on.
 
 ### Full-content tenant telemetry
 
