@@ -173,6 +173,53 @@ await page.click('button[type="submit"]');
 await page.waitForSelector(".app-shell", { timeout: 15000 });
 ok("re-login restores the shell", true);
 
+// 7. Live onboarding checklist: derived from real state. The workspace
+// and the deployment above are done; no session, policy or teammate yet.
+await page.goto(SPA + "/#/overview", { waitUntil: "networkidle" });
+await page.waitForSelector('.onboard-card[data-live="1"]', { timeout: 15000 });
+ok("live checklist counts real progress", (await page.textContent(".onboard-card .ob-count")) === "2 of 5",
+  await page.textContent(".onboard-card .ob-count"));
+
+// 8. Simulate an attack in live mode: the server stages a demo session,
+// every table labels it, and it does not count as a real first session.
+await page.click("#simAttack");
+await page.waitForSelector(".demo-notice", { timeout: 20000 });
+ok("demo banner appears after the simulated attack", true);
+await page.goto(SPA + "/#/sessions", { waitUntil: "networkidle" });
+await page.waitForSelector(".demo-pill", { timeout: 15000 });
+ok("the staged session is labelled demo in the sessions table", true);
+await page.goto(SPA + "/#/deployments", { waitUntil: "networkidle" });
+const demoDep = await page.waitForSelector("tr:has-text('demo-attack') .demo-pill", { timeout: 15000 }).catch(() => null);
+ok("the demo deployment is labelled", !!demoDep, (await page.locator("#view").innerText()).replace(/\s+/g, " ").slice(0, 300));
+// Wait for the staged seal (9 s on the server), then reload the overview.
+await page.waitForTimeout(9500);
+await page.goto(SPA + "/#/overview", { waitUntil: "networkidle" });
+await page.waitForSelector('.onboard-card[data-live="1"]', { timeout: 15000 });
+ok("a demo session does not tick 'first session'", (await page.textContent(".onboard-card .ob-count")) === "2 of 5",
+  await page.textContent(".onboard-card .ob-count"));
+await page.click("#removeDemo");
+await page.click('.modal button:has-text("Remove demo data")');
+await page.waitForSelector(".demo-notice", { state: "detached", timeout: 15000 });
+await page.goto(SPA + "/#/sessions", { waitUntil: "networkidle" });
+await page.waitForTimeout(800);
+ok("Remove demo data clears every demo row", (await page.locator(".demo-pill").count()) === 0);
+
+// 9. The guided tour runs against live data too.
+await page.goto(SPA + "/#/overview", { waitUntil: "networkidle" });
+await page.evaluate(() => window.PVTour.start());
+await page.waitForSelector("#pvTour .pv-tour-step", { state: "visible", timeout: 10000 });
+const tourStep = (await page.textContent("#pvTour .pv-tour-step")) || "";
+ok("the guided tour starts in live mode", tourStep.trim().length > 0, tourStep.slice(0, 40));
+await page.evaluate(() => window.PVTour.stop());
+
+// 10. The checklist can be dismissed, and stays dismissed on reload.
+await page.waitForSelector("#obDismiss", { timeout: 10000 });
+await page.click("#obDismiss");
+await page.waitForSelector(".onboard-card", { state: "detached", timeout: 5000 });
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(1500);
+ok("a dismissed checklist stays dismissed", (await page.locator(".onboard-card").count()) === 0);
+
 ok("no unexpected console errors", consoleErrors.length === 0, consoleErrors.join(" | "));
 
 await browser.close();
