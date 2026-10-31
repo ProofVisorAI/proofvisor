@@ -391,10 +391,19 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
           if (orgId) await tx.billingEvent.update({ where: { id: event.id }, data: { orgId } });
         });
       } catch (err) {
-        if ((err as { code?: string }).code === "P2002") {
+        // Only a repeated event id is a duplicate delivery. Any other
+        // uniqueness conflict (say, a Stripe customer already linked to
+        // another workspace) is a real failure: answering 200 would make
+        // Stripe stop retrying and silently drop the plan change.
+        const e = err as { code?: string; meta?: { modelName?: string; target?: unknown } };
+        const target = Array.isArray(e.meta?.target) ? e.meta.target.join(",") : String(e.meta?.target ?? "");
+        const duplicateEvent =
+          e.code === "P2002" && (e.meta?.modelName === "BillingEvent" || /billing_events/.test(target));
+        if (duplicateEvent) {
           return reply.send({ received: true, duplicate: true });
         }
-        throw err;
+        req.log.error({ err, eventId: event.id, type: event.type }, "billing_webhook_apply_failed");
+        return reply.code(500).send({ error: "webhook_apply_failed" });
       }
       return reply.send({ received: true });
     });

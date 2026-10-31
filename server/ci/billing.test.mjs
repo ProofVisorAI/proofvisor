@@ -123,9 +123,13 @@ test("checkout is owner-only and sends the right price and metadata", async () =
 
 test("webhooks: bad signatures are refused, upgrades apply once, unpaid checkouts wait", async () => {
   const o = await owner("webhook");
+  // Stripe ids are unique; the database keeps rows from earlier runs.
+  const run = Date.now().toString(36);
+  const cus = "cus_hook_" + run;
+  const sub = "sub_hook_" + run;
   const completed = stripeEvent("checkout.session.completed", {
     id: "cs_x", object: "checkout.session", mode: "subscription", payment_status: "paid",
-    customer: "cus_hook", subscription: "sub_hook", client_reference_id: o.org.id,
+    customer: cus, subscription: sub, client_reference_id: o.org.id,
     metadata: { orgId: o.org.id, plan: "team" },
   });
   assert.equal((await webhook(completed, { secret: "whsec_wrong" })).status, 400);
@@ -134,7 +138,7 @@ test("webhooks: bad signatures are refused, upgrades apply once, unpaid checkout
 
   const unpaid = stripeEvent("checkout.session.completed", {
     id: "cs_y", object: "checkout.session", mode: "subscription", payment_status: "unpaid",
-    customer: "cus_hook", subscription: "sub_hook", metadata: { orgId: o.org.id, plan: "team" },
+    customer: cus, subscription: sub, metadata: { orgId: o.org.id, plan: "team" },
   });
   assert.equal((await webhook(unpaid)).status, 200);
   assert.equal((await orgRow(o.org.id)).plan, "free", "an unpaid checkout grants nothing yet");
@@ -144,8 +148,8 @@ test("webhooks: bad signatures are refused, upgrades apply once, unpaid checkout
   let row = await orgRow(o.org.id);
   assert.equal(row.plan, "team");
   assert.equal(row.planStatus, "active");
-  assert.equal(row.stripeCustomerId, "cus_hook");
-  assert.equal(row.stripeSubscriptionId, "sub_hook");
+  assert.equal(row.stripeCustomerId, cus);
+  assert.equal(row.stripeSubscriptionId, sub);
   const again = await webhook(completed);
   assert.equal(again.status, 200);
   assert.equal(again.data.duplicate, true, "a redelivered event id is ignored");
@@ -157,14 +161,14 @@ test("webhooks: bad signatures are refused, upgrades apply once, unpaid checkout
   }
 
   const failed = stripeEvent("invoice.payment_failed", {
-    id: "in_1", object: "invoice", customer: "cus_hook", subscription: "sub_hook", amount_due: 9900,
+    id: "in_1", object: "invoice", customer: cus, subscription: sub, amount_due: 9900,
   });
   assert.equal((await webhook(failed)).status, 200);
   row = await orgRow(o.org.id);
   assert.equal(row.planStatus, "past_due");
 
   const canceled = stripeEvent("customer.subscription.deleted", {
-    id: "sub_hook", object: "subscription", customer: "cus_hook", status: "canceled", metadata: { orgId: o.org.id },
+    id: sub, object: "subscription", customer: cus, status: "canceled", metadata: { orgId: o.org.id },
     items: { object: "list", data: [{ id: "si", object: "subscription_item", price: { id: PRICE_TEAM } }] },
   });
   assert.equal((await webhook(canceled)).status, 200);
@@ -186,4 +190,24 @@ test("a member cannot read or change billing beyond the plan summary", async () 
   assert.equal(portal.status, 403);
   const anonymous = makeClient(api.base);
   assert.equal((await anonymous.json("GET", "/api/v1/billing")).status, 401);
+});
+
+test("a conflicting customer id is a failure Stripe retries, not a silent duplicate", async () => {
+  const a = await owner("conflict-a");
+  const b = await owner("conflict-b");
+  const cus = "cus_shared_" + Date.now().toString(36);
+  await db.query('UPDATE orgs SET "stripeCustomerId" = $1 WHERE id = $2', [cus, a.org.id]);
+  const event = stripeEvent("checkout.session.completed", {
+    id: "cs_conflict", object: "checkout.session", mode: "subscription", payment_status: "paid",
+    customer: cus, subscription: null, metadata: { orgId: b.org.id, plan: "team" },
+  });
+  const res = await webhook(event);
+  assert.equal(res.status, 500, JSON.stringify(res.data));
+  assert.equal((await orgRow(b.org.id)).plan, "free");
+  // Nothing was recorded, so Stripe's retry is processed, not skipped.
+  await db.query('UPDATE orgs SET "stripeCustomerId" = NULL WHERE id = $1', [a.org.id]);
+  const retry = await webhook(event);
+  assert.equal(retry.status, 200, JSON.stringify(retry.data));
+  assert.notEqual(retry.data.duplicate, true);
+  assert.equal((await orgRow(b.org.id)).plan, "team");
 });
