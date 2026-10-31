@@ -552,6 +552,19 @@ function scimActor(req: FastifyRequest) {
 // Role + deprovision helpers
 // -------------------------------------------------------------------
 
+/**
+ * True when the account also belongs to another organisation. SCIM is
+ * one tenant's identity provider, so for such an account it may change
+ * only this organisation's membership (role, active, removal), never
+ * account-wide state: not the name, not the external id, and not the
+ * session fence, which would sign the person out of every workspace.
+ * Per-org access needs no fence: the session middleware checks the
+ * membership's `active` flag and live role on every request.
+ */
+async function sharedWithOtherOrgs(userId: string, orgId: string): Promise<boolean> {
+  return (await db.membership.count({ where: { userId, orgId: { not: orgId } } })) > 0;
+}
+
 async function activeOwnerCount(orgId: string): Promise<number> {
   return db.membership.count({ where: { orgId, role: "owner", active: true } });
 }
@@ -564,6 +577,7 @@ async function deprovision(req: FastifyRequest, m: MembershipRow, action: "deact
   if (m.role === "owner" && m.active && (await activeOwnerCount(m.orgId)) <= 1) {
     throw new ScimError(400, "This user is the last active owner of the organisation and cannot be deprovisioned.", "mutability");
   }
+  const shared = await sharedWithOtherOrgs(m.userId, m.orgId);
   await db.$transaction(async (tx) => {
     if (action === "remove") {
       await tx.membership.delete({ where: { id: m.id } });
@@ -572,8 +586,10 @@ async function deprovision(req: FastifyRequest, m: MembershipRow, action: "deact
       await tx.membership.update({ where: { id: m.id }, data: { active: false } });
     }
     // Fence every outstanding cookie of this user (session-middleware
-    // compares the JWT mint instant against this timestamp) …
-    await tx.user.update({ where: { id: m.userId }, data: { sessionRevokedAt: new Date() } });
+    // compares the JWT mint instant against this timestamp) — only when
+    // the account is this org's alone; otherwise the inactive or
+    // deleted membership already refuses this org's cookies …
+    if (!shared) await tx.user.update({ where: { id: m.userId }, data: { sessionRevokedAt: new Date() } });
     // … and revoke API keys they minted in this org.
     await tx.apiKey.updateMany({
       where: { orgId: m.orgId, createdById: m.userId, revokedAt: null },
@@ -602,9 +618,12 @@ async function applyRole(req: FastifyRequest, m: { id: string; orgId: string; us
   if (m.role === "owner" && m.active && (await activeOwnerCount(m.orgId)) <= 1) {
     throw new ScimError(400, `${m.email} is the last active owner of the organisation and cannot be demoted.`, "mutability");
   }
+  const shared = await sharedWithOtherOrgs(m.userId, m.orgId);
   await db.$transaction(async (tx) => {
     await tx.membership.update({ where: { id: m.id }, data: { role: newRole } });
-    await tx.user.update({ where: { id: m.userId }, data: { sessionRevokedAt: new Date() } });
+    // The middleware serves the live role, so a shared account keeps
+    // its other workspaces' sessions.
+    if (!shared) await tx.user.update({ where: { id: m.userId }, data: { sessionRevokedAt: new Date() } });
     await tx.apiKey.updateMany({
       where: {
         orgId: m.orgId,
@@ -707,9 +726,12 @@ async function applyUserChanges(req: FastifyRequest, m: MembershipRow, c: UserCh
     if (taken && taken.id !== m.userId) throw new ScimError(409, `userName ${c.email} is already in use.`, "uniqueness");
     userData.email = c.email;
   }
-  if (c.externalId !== undefined && c.externalId !== m.user.scimExternalId) userData.scimExternalId = c.externalId;
+  // Name and external id are account-wide: only this org's own
+  // accounts take them from this org's IdP.
+  const shared = await sharedWithOtherOrgs(m.userId, m.orgId);
+  if (!shared && c.externalId !== undefined && c.externalId !== m.user.scimExternalId) userData.scimExternalId = c.externalId;
   const dn = resolveDisplayName(m.user.displayName, c);
-  if (dn !== undefined && dn !== m.user.displayName) userData.displayName = dn;
+  if (!shared && dn !== undefined && dn !== m.user.displayName) userData.displayName = dn;
 
   if (Object.keys(userData).length > 0) {
     await db.user.update({ where: { id: m.userId }, data: userData });
@@ -924,10 +946,20 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
 
     const existing = await db.user.findUnique({
       where: { email },
-      select: { id: true, displayName: true, scimExternalId: true, memberships: { where: { orgId }, select: { id: true } } },
+      select: { id: true, displayName: true, scimExternalId: true, memberships: { select: { orgId: true } } },
     });
-    if (existing && existing.memberships.length > 0) {
+    if (existing && existing.memberships.some((m) => m.orgId === orgId)) {
       throw new ScimError(409, `A user with userName ${email} already exists in this organisation.`, "uniqueness");
+    }
+    // An account that belongs to another workspace is that person's
+    // own: one tenant's IdP may not attach it here without their
+    // consent. The console's invite flow asks them.
+    if (existing && existing.memberships.length > 0) {
+      throw new ScimError(
+        409,
+        `${email} already has a ProofVisor account in another workspace. Invite them from Settings → Members instead.`,
+        "uniqueness",
+      );
     }
 
     // Seat limit (members + pending invites) — same count the console

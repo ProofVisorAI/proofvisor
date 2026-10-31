@@ -511,17 +511,12 @@ test("tenants are isolated: ids, filters and groups of one org are invisible to 
   const nameB = await b.idp.json("GET", `/scim/v2/Users?filter=${encodeURIComponent(`userName eq "${userA.data.userName}"`)}`);
   assert.equal(nameB.data.totalResults, 0);
 
-  // The same person provisioned by both tenants gets two independent resources.
+  // B's IdP may not attach the account A provisioned: it belongs to
+  // another workspace, and only an invite (which the person accepts)
+  // may add it here. A's resource is untouched.
   const sameInB = await b.idp.json("POST", "/scim/v2/Users", { userName: userA.data.userName, externalId: "b-ext" }, { headers: scimHeaders });
-  assert.equal(sameInB.status, 201, JSON.stringify(sameInB.data));
-  assert.notEqual(sameInB.data.id, userA.data.id);
-  // … and now that the account spans two orgs, neither IdP may rename its login email.
-  const rename = await b.idp.json("PATCH", `/scim/v2/Users/${sameInB.data.id}`, patch([{ op: "replace", path: "userName", value: `hijack.${Date.now().toString(36)}@example.test` }]), { headers: scimHeaders });
-  assert.equal(rename.status, 400);
-  assert.equal(rename.data.scimType, "mutability");
-  // Deactivating in B does not touch A's membership.
-  const offB = await b.idp.json("PATCH", `/scim/v2/Users/${sameInB.data.id}`, patch([{ op: "replace", path: "active", value: false }]), { headers: scimHeaders });
-  assert.equal(offB.status, 200);
+  assert.equal(sameInB.status, 409, JSON.stringify(sameInB.data));
+  assert.equal(sameInB.data.scimType, "uniqueness");
   assert.equal((await a.idp.json("GET", `/scim/v2/Users/${userA.data.id}`)).data.active, true);
 });
 
@@ -533,6 +528,38 @@ test("a SCIM-created account never carries mailbox verification (OAuth pre-hijac
   assert.equal(created.status, 201, JSON.stringify(created.data));
   const row = await pg.query('SELECT "emailVerifiedAt" FROM users WHERE email = $1', [email]);
   assert.equal(row.rows[0].emailVerifiedAt, null);
+});
+
+test("one workspace's IdP cannot attach, rename or sign out an account of another workspace", async () => {
+  const t = await tenant("cross-a");
+  const other = await signupOwner(api.base, "cross-b");
+  const me = async () => (await other.client.json("GET", "/api/v1/auth/me"));
+  const before = await me();
+  assert.equal(before.status, 200);
+  // Attaching an account that lives in another workspace is refused.
+  const attach = await t.idp.json("POST", "/scim/v2/Users",
+    { schemas: ["urn:ietf:params:scim:schemas:core:2.0:User"], userName: other.email, active: true }, { headers: scimHeaders });
+  assert.equal(attach.status, 409, JSON.stringify(attach.data));
+  assert.equal(attach.data.scimType, "uniqueness");
+  // A shared account (joined through an invite, simulated here) can only
+  // have its membership in this org changed.
+  const role = await pg.query("SELECT gen_random_uuid()::text AS id");
+  await pg.query('INSERT INTO memberships (id, "userId", "orgId", role, active, "createdAt") VALUES ($1, $2, $3, $4, true, NOW())',
+    [role.rows[0].id, other.user.id, t.owner.org.id, "member"]);
+  const listed = await t.idp.json("GET", `/scim/v2/Users?filter=${encodeURIComponent(`userName eq "${other.email}"`)}`);
+  const id = listed.data.Resources[0].id;
+  const renamed = await t.idp.json("PATCH", `/scim/v2/Users/${id}`,
+    patch([{ op: "replace", path: "displayName", value: "Renamed By Another Tenant" }, { op: "replace", path: "emails", value: [{ value: "hijack@attacker.example", primary: true }] }]),
+    { headers: scimHeaders });
+  assert.ok(renamed.status === 200 || renamed.status === 400, JSON.stringify(renamed.data));
+  const deactivated = await t.idp.json("PATCH", `/scim/v2/Users/${id}`, patch([{ op: "replace", path: "active", value: false }]), { headers: scimHeaders });
+  assert.equal(deactivated.status, 200, JSON.stringify(deactivated.data));
+  const after = await me();
+  assert.equal(after.status, 200, "the other workspace's session still works");
+  assert.equal(after.data.user.email, other.email, "the login email is unchanged");
+  assert.equal(after.data.user.displayName ?? null, before.data.user.displayName ?? null, "the name is unchanged");
+  const row = await pg.query('SELECT active FROM memberships WHERE id = $1', [role.rows[0].id]);
+  assert.equal(row.rows[0].active, false, "only this org's membership was deactivated");
 });
 
 test("SCIM creates count against the same seat usage the billing endpoint reports", async () => {

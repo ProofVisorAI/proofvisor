@@ -233,6 +233,14 @@ eq`), `startIndex`/`count` paging, `POST`, `PUT`, `PATCH`
   `member` gives its members that role; removing someone from a role
   group falls back to the default role; other groups have no effect.
 - The last active owner can never be deactivated, removed or demoted.
+- SCIM never attaches an account that already belongs to another
+  workspace (409 `uniqueness`; invite that person instead). For an
+  account shared with another workspace through an invite, SCIM changes
+  only this workspace's membership: never the login email, the name, or
+  the sessions the person has in other workspaces. SCIM-created
+  accounts are not marked as having a verified mailbox, like SAML
+  just-in-time accounts, so they can never capture a later Google or
+  Microsoft sign-in.
 
 ### Billing and plan limits
 
