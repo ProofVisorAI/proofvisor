@@ -333,6 +333,25 @@ const Env = z.object({
   // first reset request weeks later).
   RESEND_API_KEY: z.string().optional(),
   SMTP_URL: z.string().optional(),
+  // Stripe billing. All optional: without STRIPE_SECRET_KEY the API
+  // reports `configured: false` on GET /api/v1/billing and answers
+  // checkout/portal with 503 billing_not_configured. The webhook secret
+  // is required to accept POST /api/v1/billing/webhook (events are
+  // rejected otherwise — never processed unsigned). Price ids are the
+  // recurring Stripe Price objects for each paid plan. STRIPE_API_BASE
+  // points the SDK at a stand-in server (the ci/billing.test.mjs fake)
+  // and is refused in production.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_PRICE_TEAM_MONTHLY: z.string().optional(),
+  STRIPE_PRICE_ENTERPRISE_MONTHLY: z.string().optional(),
+  STRIPE_API_BASE: z
+    .string()
+    .optional()
+    .refine(
+      (v) => !v || (/^https?:\/\//.test(v) && process.env.NODE_ENV !== "production"),
+      "STRIPE_API_BASE must be an http(s) URL and is only allowed outside production.",
+    ),
   EMAIL_FROM: z.string().default("ProofVisor <no-reply@proofvisor.com>"),
 });
 

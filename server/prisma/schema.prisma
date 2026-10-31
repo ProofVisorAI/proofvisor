@@ -46,11 +46,17 @@ model User {
   // a captured cookie stops working immediately even though the JWT itself
   // is still cryptographically valid until its 7-day exp.
   sessionRevokedAt DateTime?
+  // SCIM `externalId` the organisation's identity provider assigned to
+  // this user when it provisioned them over /scim/v2. Null for users
+  // created by signup, invite, OAuth or SAML JIT. Looked up by the
+  // `externalId eq "…"` filter IdPs issue before every create.
+  scimExternalId   String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
   memberships         Membership[]
   webauthnCredentials WebauthnCredential[]
+  scimGroupMembers    ScimGroupMember[]
 
   @@map("users")
 }
@@ -130,7 +136,27 @@ model Org {
   // that would exclude the caller's own current IP.
   ipAllowlist String[] @default([])
 
+  // Billing. `plan` decides the entitlements in lib/entitlements.ts;
+  // `planStatus` mirrors the Stripe subscription state. The Stripe ids
+  // let the webhook handler find the org a Stripe event belongs to
+  // without trusting anything in the event body beyond the signature.
+  plan                 String    @default("free") // free | team | enterprise
+  planStatus           String    @default("active") // active | past_due | canceled | trialing
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  planRenewsAt         DateTime?
+
+  // SCIM 2.0 provisioning settings (RFC 7643/7644). The IdP calls
+  // /scim/v2 with a bearer token from ScimToken; these fields decide
+  // what a provisioned user becomes and what `active: false` does.
+  scimEnabled           Boolean @default(false)
+  scimDefaultRole       String  @default("member") // member | admin
+  scimDeprovisionAction String  @default("deactivate") // deactivate | remove
+
   members           Membership[]
+  scimTokens        ScimToken[]
+  scimGroups        ScimGroup[]
+  billingEvents     BillingEvent[]
   deployments       Deployment[]
   samlConfigs       SamlConfig[]
   samlReplayRecords SamlReplayRecord[]
@@ -336,11 +362,18 @@ model Membership {
   userId String
   orgId  String
   role   String @default("owner") // "owner" | "admin" | "member" (checked in code)
+  // SCIM deprovisioning with `deprovisionAction = deactivate` flips this
+  // to false instead of deleting the row: the IdP can re-activate the
+  // user later and the audit history stays attached. Every session
+  // path (cookie middleware, login, switch-org, SAML ACS, SSE stream)
+  // refuses an inactive membership.
+  active Boolean @default(true)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([userId, orgId])
   @@index([orgId])
@@ -538,4 +571,76 @@ model WebhookDelivery {
   @@index([endpointId, createdAt])
   @@index([status, nextRetryAt])
   @@map("webhook_deliveries")
+}
+
+// Bearer token an identity provider presents on /scim/v2. Same storage
+// discipline as ApiKey: argon2 hash at rest, plaintext shown once,
+// `pv_scim_` prefix plus an 8-char hint so the console can label rows.
+model ScimToken {
+  id             String    @id @default(cuid())
+  orgId          String
+  name           String
+  tokenHash      String
+  tokenHint      String // first 8 chars of the random part
+  createdById    String?
+  createdByEmail String?
+  lastUsedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  revokedAt      DateTime?
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([tokenHint])
+  @@map("scim_tokens")
+}
+
+// SCIM Group resource. Groups map to roles: a group whose displayName
+// is "owner", "admin" or "member" (case-insensitive) grants that role
+// to its members (see routes/scim.ts roleForGroupName). Members of no
+// mapped group fall back to the org's scimDefaultRole when they leave
+// a mapped group.
+model ScimGroup {
+  id          String   @id @default(cuid())
+  orgId       String
+  displayName String
+  externalId  String?
+  role        String? // owner | admin | member | null (unmapped)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org     Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members ScimGroupMember[]
+
+  @@unique([orgId, displayName])
+  @@index([orgId])
+  @@map("scim_groups")
+}
+
+model ScimGroupMember {
+  groupId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  group ScimGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  @@index([userId])
+  @@map("scim_group_members")
+}
+
+// One row per Stripe webhook event the API has processed. The primary
+// key is Stripe's event id, so a redelivered event hits the unique
+// constraint and is acknowledged without being applied twice.
+model BillingEvent {
+  id          String   @id // Stripe event id (evt_…)
+  type        String
+  orgId       String?
+  processedAt DateTime @default(now())
+
+  org Org? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, processedAt])
+  @@map("billing_events")
 }

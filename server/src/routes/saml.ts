@@ -26,6 +26,7 @@ import { generateKeyPairSync, createHash } from "node:crypto";
 import { db } from "../db.js";
 import { env } from "../env.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
+import { orgPlan, refuseIfFeatureMissing } from "../lib/entitlements.js";
 import {
   SESSION_COOKIE_OPTS,
   mintSession,
@@ -361,6 +362,12 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
 
       // Membership check: is this user already in this org?
       let membership = user?.memberships.find((m) => m.orgId === cfg.orgId);
+      // SCIM deactivated this member: the IdP must re-activate them
+      // over /scim/v2 before SSO may mint a session again. Not a JIT
+      // case — the row exists — so refuse rather than re-provision.
+      if (membership && !membership.active) {
+        return errRedirect("membership_deactivated");
+      }
       if (!membership) {
         if (!cfg.jitEnabled) {
           return errRedirect("saml_jit_disabled");
@@ -723,6 +730,9 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
     if (!body.success) {
       return reply.code(400).send({ error: "invalid_input" });
     }
+    // Plan entitlement: SAML is a paid feature. Existing configs keep
+    // working on any plan; only creating a new one is gated.
+    if (refuseIfFeatureMissing(req, reply, await orgPlan(claims.orgId), "saml")) return;
     // R76 review Q6 (landed R77): reject `jitEnabled=true` with
     // an empty `allowedDomains` at CONFIG WRITE TIME. The R76
     // ACS-time guard fails-closed at login time with 403

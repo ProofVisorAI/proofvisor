@@ -406,7 +406,8 @@ export async function oauthRoutes(app: FastifyInstance): Promise<void> {
     let user = await db.user.findUnique({
       where: { email },
       // R105 F4: deterministic membership ordering (see auth.ts).
-      include: { memberships: { include: { org: true }, orderBy: { createdAt: "asc" } } },
+      // SCIM-deactivated memberships are not login targets.
+      include: { memberships: { where: { active: true }, include: { org: true }, orderBy: { createdAt: "asc" } } },
     });
     if (!user) {
       const domain = email.split("@")[1] ?? "personal";

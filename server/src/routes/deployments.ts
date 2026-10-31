@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { hashPassword, randomToken } from "../lib/auth.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
+import { orgPlan, refuseIfOverLimit } from "../lib/entitlements.js";
 import { requireSession } from "../lib/session-middleware.js";
 
 const envSchema = z.enum(["production", "staging", "development"]);
@@ -114,6 +115,13 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (!body.success) {
       return reply.code(400).send({ error: "invalid_input" });
     }
+    // Plan entitlement: 402 plan_limit_reached names the cap and the
+    // plan that lifts it. Existing deployments are never affected.
+    const [plan, existingCount] = await Promise.all([
+      orgPlan(claims.orgId),
+      db.deployment.count({ where: { orgId: claims.orgId } }),
+    ]);
+    if (refuseIfOverLimit(req, reply, plan, "deployments", existingCount)) return;
     const plaintextToken = mintIngestToken();
     const ingestTokenHash = await hashPassword(plaintextToken);
     let deployment;

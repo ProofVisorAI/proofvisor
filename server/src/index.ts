@@ -28,6 +28,8 @@ import { samlRoutes } from "./routes/saml.js";
 import { streamRoutes } from "./routes/stream.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
 import { webhookRoutes } from "./routes/webhooks.js";
+import { billingRoutes } from "./routes/billing.js";
+import { scimAdminRoutes, scimRoutes } from "./routes/scim.js";
 import { startWebhookSweeper, stopWebhookSweeper } from "./lib/webhooks.js";
 import { startRetentionSweeper, stopRetentionSweeper } from "./lib/retention.js";
 
@@ -502,6 +504,10 @@ const PROBLEM_DETAIL_COPY: Record<string, string> = {
   invalid_token: "That link is invalid or has expired.",
   unknown_session: "That session doesn't exist.",
   session_evidence_incomplete: "This session contains incomplete crash evidence and cannot receive a signed receipt.",
+  billing_not_configured: "Billing is not enabled on this instance.",
+  already_on_plan: "This workspace is already on that plan.",
+  no_billing_customer: "This workspace has no billing account yet — upgrade first.",
+  membership_deactivated: "Your access to this workspace has been deactivated by its identity provider.",
 };
 
 function problemDetail(slug: string): string {
@@ -769,6 +775,18 @@ function problemDetail(slug: string): string {
   });
   await app.register(async (r) => r.register(deploymentRoutes), {
     prefix: "/api/v1/deployments",
+  });
+  await app.register(async (r) => r.register(billingRoutes), {
+    prefix: "/api/v1/billing",
+  });
+  // Owner-only SCIM management (tokens + settings) rides the normal
+  // session auth; the SCIM protocol surface the IdP talks to lives
+  // outside /api/v1 and authenticates with its own bearer token.
+  await app.register(async (r) => r.register(scimAdminRoutes), {
+    prefix: "/api/v1/scim",
+  });
+  await app.register(async (r) => r.register(scimRoutes), {
+    prefix: "/scim/v2",
   });
   await app.register(async (r) => r.register(ingestRoutes), {
     prefix: "/api/v1/ingest",
