@@ -3991,7 +3991,7 @@
     var info = POLICY_KIND_INFO[kind];
     if (!info) return "";
     return info.enforceable
-      ? "Daemons that pull policies (pvctl console-sync --watch --pull-policies) enforce this spec exactly as shown."
+      ? "Daemons that pull policies (pvctl console-sync --watch --pull-policies) enforce this spec on top of their local config. A pushed policy can only tighten the host's own limits, never loosen them."
       : "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
   }
 
