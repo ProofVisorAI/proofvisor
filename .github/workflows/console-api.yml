@@ -399,6 +399,90 @@ jobs:
             ${{ runner.temp }}/pv-console-recovery-*/report.json
           if-no-files-found: ignore
 
+  # ────────────────────────────────────────────────────────────────────
+  # Real identity provider — Keycloak (quay.io/keycloak/keycloak, pinned
+  # below) as both the OIDC provider and the SAML IdP, driven through a
+  # real browser. The mock-IdP drills (oidc-drill.mjs, saml-drill.mjs)
+  # prove the console's own pipeline; this job proves it against a
+  # third-party IdP's discovery document, login page, token endpoint
+  # and signed SAMLResponse. Keycloak runs with `docker run` rather than
+  # `services:` because its image needs the `start-dev` command, which
+  # service containers cannot pass.
+  # ────────────────────────────────────────────────────────────────────
+  keycloak-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pv
+          POSTGRES_PASSWORD: pv
+          POSTGRES_DB: pvdb_c
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pv"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      KEYCLOAK_IMAGE: quay.io/keycloak/keycloak:26.8.1
+      KEYCLOAK_URL: http://127.0.0.1:8180
+      KEYCLOAK_ADMIN_USER: admin
+      KEYCLOAK_ADMIN_PASSWORD: ci-only-keycloak-admin-password
+      DATABASE_URL: postgresql://pv:pv@localhost:5433/pvdb_c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Start Keycloak
+        run: |
+          docker run -d --name pv-keycloak -p 8180:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME="$KEYCLOAK_ADMIN_USER" \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" \
+            "$KEYCLOAK_IMAGE" start-dev
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install (with devDependencies)
+        working-directory: server
+        env:
+          NODE_ENV: development
+        run: npm ci --no-audit --no-fund
+      - name: Prisma generate
+        working-directory: server
+        run: npx prisma generate
+      - name: Install Playwright Chromium
+        working-directory: server
+        run: npx playwright install --with-deps chromium
+      - name: OIDC and SAML logins through Keycloak in Chromium
+        working-directory: server
+        timeout-minutes: 15
+        env:
+          KEYCLOAK_DRILL_OUTPUT: ${{ runner.temp }}/keycloak-drill
+        # The drill waits for Keycloak, applies the migrations, boots the
+        # API on 8994, configures the realm, and cleans up its users,
+        # orgs and the realm.
+        run: node scripts/keycloak-drill.mjs
+      - name: Keycloak logs on failure
+        if: failure()
+        run: docker logs pv-keycloak 2>&1 | tail -200
+      - name: Preserve Keycloak drill evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: keycloak-drill-evidence
+          path: |
+            ${{ runner.temp }}/keycloak-drill/report.json
+            ${{ runner.temp }}/keycloak-drill/api.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Stop Keycloak
+        if: always()
+        run: docker rm -f pv-keycloak >/dev/null 2>&1 || true
+
   encrypted-backup:
     runs-on: ubuntu-latest
     timeout-minutes: 15
