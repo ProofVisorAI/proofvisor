@@ -62,6 +62,17 @@ window.API_BASE = "https://api.proofvisor.com";
 Signup / login create real users and orgs. Deployments mint real ingest
 tokens. Session data is streamed by real `proofvisord` daemons.
 
+Live mode also has the guided tour (steps whose target is missing
+are skipped), a "Getting started" checklist built from real state (a
+deployment exists, a real session arrived, a policy exists, a second
+member or a pending invite), which disappears when everything is done
+and can be dismissed, and "⚡ Simulate an attack" for owners and
+admins. The attack stages one blocked-payment session under a
+`demo-attack` deployment; every table labels its rows "demo", its
+receipt is signed with the public demo key (so `/verify` calls it a
+demo receipt), and "Remove demo data" on the Overview or the
+deployment page deletes it.
+
 See [`server/README.md`](../../server/README.md) for the full deploy runbook.
 
 ## Structure
@@ -94,8 +105,18 @@ See [`server/README.md`](../../server/README.md) for the full deploy runbook.
   appends `/api/v1/ingest` itself. Ingest tokens look like `pv_live_`
   plus 32 characters, and the table shows only the first 16.
 - `#/policies` — policy definitions (create, edit, enable/disable).
-  The console stores and edits definitions only; it does not push them
-  to daemons. Daemons enforce their local policy files.
+  The create dialog starts from a template (spend cap, vendor
+  allowlist, tool allowlist, token rate limit, PII guard) and writes
+  the JSON spec for the daemon-enforceable kinds (`budget`,
+  `allowlist`, `rate`, `schema`), validated before saving exactly as
+  the server validates it. Daemons that run
+  `pvctl console-sync --watch --pull-policies` pull every enabled
+  policy as one bundle; each policy shows an enforcement badge such as
+  "Enforced by 2 of 3 daemons", names a daemon that still has an older
+  bundle, or says "Not enforceable by daemons" for `guardrail` and
+  `transform` policies, which document a rule and attribute the
+  daemon's own guard hits to its name. A deployment's page shows the
+  bundle etag and time its daemon last applied.
 - `#/settings` — tabbed: `general` (org/user metadata + mock-mode escape
   hatch), `members` (roles and invites; the table columns are Person,
   Role, Joined), `keys` (API keys with prefix `pv_srv_`; the table has a

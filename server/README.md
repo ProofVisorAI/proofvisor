@@ -149,10 +149,11 @@ All routes are prefixed `/api/v1`.
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET`/`POST` | `/deployments` | Token returned **once** on create. Each row carries `sessions24h` and `spend24hUsdMicros` (the spend is `null` for members) |
+| `GET`/`POST` | `/deployments` | Token returned **once** on create. Each row carries `sessions24h` and `spend24hUsdMicros` (the spend is `null` for members), `isDemo`, and `policyBundle: {etag, appliedAt, daemonVersion, stale, applied, unsupported}` (or `null` before the daemon first reports) |
 | `PATCH`/`DELETE` | `/deployments/:id` (+ `POST /:id/rotate-token`) | Rename/env edit (labels only), delete (409 if sealed receipts unless forced), rotate |
 | `GET`/`POST`/`PATCH`/`DELETE` | `/keys[/:id]` | API keys: list / mint (shown once) / rename / revoke — rank-guarded. `POST` accepts `role` (`owner`, `admin`, or `member`; default `admin`; never above the caller's own role, else 403 `cannot_grant_role_above_own`). The console sends the role chosen in its create dialog |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/policies[/:id]` | Policy CRUD (name/description/body/enabled). Definitions only: nothing is pushed to daemons, which enforce their local policy files |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/policies[/:id]` | Policy CRUD (name/kind/scope/description/body/enabled). For the daemon-enforceable kinds (`budget`, `allowlist`, `rate`, `schema`) the body must be a JSON spec of that kind's shape (see `src/lib/policy-bundle.ts`); an invalid spec is refused with 400 `invalid_input` and a `specError` explanation. `guardrail` and `transform` bodies are free text that documents a rule and attributes the daemon's own guard hits. Reads add `enforceable`, the parsed `spec`, and `enforcement: {deployments, applied, stale, unsupported}`, which counts daemons against the org's current policy bundle. Members may read but not write |
+| `GET`/`POST`/`DELETE` | `/demo`, `/demo/attack` | Live-mode "Simulate an attack" (owner/admin): `POST /demo/attack {pace: "staged"\|"instant"}` stages a blocked-payment session under a `demo-attack` deployment flagged `isDemo`, sealed with a receipt signed by the public demo key; `GET /demo` reports whether demo rows exist; `DELETE /demo` removes them. Demo deployments are never counted as daemons, and a real deployment named `demo-attack` makes the attack answer 409 |
 | `GET`/`POST`/`PATCH`/`DELETE` | `/webhooks[/:id]` (+ `POST /:id/test`, `GET /:id/deliveries`) | Endpoints (SSRF-guarded), HMAC-signed deliveries with retries, cursor-paginated delivery log. Emitted events: `test`; `member.invited`; `policy.block` (every ingest batch that contains a blocked tool call); `session.blocked` (once per session, on its first blocked tool call or on a `status: "blocked"` upsert, with a `reason` of `first_blocked_event` or `status_blocked`); `apikey.created` (carries the key's display hint and role only, never the plaintext) |
 
 ### Ingest (daemon → API)
@@ -188,6 +189,14 @@ uploader is this separate, opt-in command.
 | `POST` | `/ingest/sessions` | Upsert a session (idempotent on `externalId`); `quarantined_crash_evidence` permanently marks incomplete recovered evidence |
 | `POST` | `/ingest/events` | Array of events, deduped on `(session, seq)` |
 | `POST` | `/ingest/receipts` | Signed receipt at seal (key-id must match the anchor) |
+| `GET` | `/ingest/policies` | The org's enabled policies as one bundle: `{version: 1, orgId, deploymentId, generatedAt, etag, policies: [{id, name, kind, scope, enabled, updatedAt, spec, body}]}`, sorted by name. `etag` is the SHA-256 hex of the canonical JSON of `policies` and is also sent as the `ETag` header; `If-None-Match` with the current etag (bare, quoted, weak or in a list) answers 304. Pulled by `pvctl console-sync --watch --pull-policies` |
+| `POST` | `/ingest/policy-status` | `{etag, appliedAt, daemonVersion?, applied: [policy ids], unsupported: [{id, reason}]}` — what the daemon now enforces. One row per deployment; an etag change writes a `policy.applied` audit entry. Answers `{ok, etag, currentEtag, stale}` |
+
+### Public (no auth)
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/public/receipt-keys/:deploymentId` | The Ed25519 key a deployment's daemon pinned, for the `/verify` page: `{deploymentId, deploymentName, publicKeyHex, publicKeyB64, keyId, pinnedAt, orgName}`, or 404 before a key is pinned. CORS `*` without credentials, rate limited to 60 per minute per IP, cacheable for 5 minutes. A verify link shared from the console carries `&deployment=<id>&api=<origin>`, and the page compares the receipt's key with this pinned key |
 
 ### Read (authed user)
 
@@ -209,12 +218,13 @@ prod target) wired into CI:
   datasource recovery, multi-instance, external auth). No database or
   running server is needed. On 2026-10-30 this was 66 tests across
   8 files, all passing.
-- **`ci/e2e.mjs`** — API contract suite (128 checks as of 2026-10-30).
+- **`ci/e2e.mjs`** — API contract suite (141 checks as of 2026-10-31).
   Boot the server, then `API_BASE=http://127.0.0.1:<port> node ci/e2e.mjs`.
   Runs in the Console + API workflow.
-- **`scripts/run-drill-battery.sh`** — the 15 DB-backed attack drills
+- **`scripts/run-drill-battery.sh`** — the 17 DB-backed drills
   (apikey ×2, invite ×2, ip-allowlist, retention, saml ×2, webauthn ×2,
-  webhook ×3, oidc, crash-evidence quarantine). Boots a fresh server per drill
+  webhook ×3, oidc, crash-evidence quarantine, policy push, and the
+  public receipt key with the live demo). Boots a fresh server per drill
   on 204xx and 207xx ports. Needs a Postgres the drills can `docker exec psql` into:
   `PG_CONTAINER=<container> PG_USER=pv PG_DB=pvdb bash scripts/run-drill-battery.sh [drill…]`.
   Runs in CI on every `server/**` change (api-drills workflow).
