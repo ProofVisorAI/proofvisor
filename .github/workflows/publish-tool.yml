@@ -1,10 +1,19 @@
 name: Publish public tool
 
-# The monorepo is private; the Rust runtime + CLI ("the binary tool")
-# stays public. This workflow exports the public surface — an explicit
-# INCLUDE list, so nothing private can leak by default — and force-
-# pushes a content snapshot (no monorepo history) to
-# ProofVisorAI/proofvisor.
+# Exports the public surface of the Rust runtime + CLI ("the binary
+# tool") — an explicit INCLUDE list, so nothing private can leak by
+# default — and force-pushes a content snapshot (no monorepo history)
+# to a SEPARATE public repository.
+#
+# DISABLED on push since 2026-11-01. The rename pointed this at
+# ProofVisorAI/proofvisor, which is this monorepo itself: had the deploy
+# key been registered there, the first push to main would have replaced
+# the monorepo's main with the pruned snapshot and dropped its history
+# (it failed only because the key was not authorised). The monorepo is
+# public now, so the snapshot has no audience until a separate tool
+# repository exists. To publish again: create that repository, register
+# TOOL_DEPLOY_KEY on it as a write deploy key, set TOOL_REPO below to
+# its name, and run this workflow by hand.
 #
 # The include list mirrors every path the crates reference at compile
 # time (include_str!/include_bytes!/rerun-if-changed audit):
@@ -14,36 +23,11 @@ name: Publish public tool
 # plus tools/verify-receipt.mjs (the offline receipt verifier).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "crates/**"
-      - "config/**"
-      - "deploy/**"
-      - "docker/**"
-      - "manifests/**"
-      - "schemas/**"
-      - "fuzz/**"
-      - "docs/reference/**"
-      - "docs/app/pitch/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "deny.toml"
-      - "README.md"
-      - "CHANGELOG.md"
-      - "CONTRIBUTING.md"
-      - "SECURITY.md"
-      - "BENCHMARKS.md"
-      - "ARCHITECTURE.md"
-      - "CONFORMANCE-STATUS.md"
-      - "EVOLUTION.md"
-      - "LICENSE"
-      - "assets/**"
-      - "scripts/**"
-      - "server/scripts/verify-receipt.mjs"
-      - ".github/workflows/publish-tool.yml"
   workflow_dispatch:
+
+env:
+  # The separate public tool repository. Must never be this monorepo.
+  TOOL_REPO: ProofVisorAI/proofvisor-tool
 
 permissions:
   contents: read
@@ -87,6 +71,10 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.TOOL_DEPLOY_KEY }}
         run: |
+          if [ "$TOOL_REPO" = "$GITHUB_REPOSITORY" ]; then
+            echo "refusing to force-push the snapshot over the monorepo itself ($TOOL_REPO)" >&2
+            exit 1
+          fi
           umask 077
           printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/tool_key"
           export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tool_key -o StrictHostKeyChecking=accept-new"
@@ -96,5 +84,5 @@ jobs:
           git config user.email "deploy@proofvisor.com"
           git add -A
           git commit -qm "Publish public tool from proofvisor@${GITHUB_SHA}"
-          git push -f git@github.com:ProofVisorAI/proofvisor.git main
+          git push -f "git@github.com:${TOOL_REPO}.git" main
           rm -f "$RUNNER_TEMP/tool_key"
