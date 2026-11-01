@@ -59,7 +59,7 @@ Sync measured at **2 s**. Refresh the console: the session is
 **sealed, blocked 1 / allowed 2**, and the receipt shows
 **Signature verified** against the deployment's anchored key
 (re-verified cryptographically on 2026-09-07: ed25519 over the
-`proofvisor-receipt-v2` frame → `true`).
+`agentvisor-receipt-v2` frame → `true`).
 
 > ⚠️ **Always pass `--spool-dir` AND `--bridge-dir` in ONE sync.**
 > A receipt-only sync seals the console session first, and sealed

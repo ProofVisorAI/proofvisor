@@ -160,22 +160,22 @@ wrapper is `pvctl receipt-verify <file> --public-key-hex <64-hex>`.
    signed *message* is version-dispatched:
    * **v1** (legacy): the raw JCS canonical bytes from step 4.
    * **v2** (current, what daemons emit): the concatenation
-     `b"proofvisor-receipt-v2\0"` (22-byte domain tag: the ASCII bytes
-     of `proofvisor-receipt-v2` followed by one NUL byte; hex
-     `70726f6f667669736f722d726563656970742d763200`) ‖
+     `b"agentvisor-receipt-v2\0"` (22-byte domain tag: the ASCII bytes
+     of `agentvisor-receipt-v2` followed by one NUL byte; hex
+     `6167656e747669736f722d726563656970742d763200`) ‖
      `u64_be(len(canonical_bytes))` (8-byte big-endian length prefix) ‖
      `canonical_bytes`. The reference constant is
      `RECEIPT_DOMAIN_TAG_V2` in `crates/pv-receipts/src/receipt.rs`.
      Rejecting the framing is what stops a v1 signature over `body`
      from being replayed as a v2 signature over
-     `proofvisor-receipt-v2\0 || len || body` and vice versa.
+     `agentvisor-receipt-v2\0 || len || body` and vice versa.
 
 Any step failing means the receipt does not attest anything. For
 `subject.kind == "atif_trajectory"`, additionally compare
 `subject.trajectory_digest` against `SHA-256(file bytes)` of the ATIF
 artifact you hold; for `subject.kind == "event_chain"`, the
 `chain_head`/`event_count` bind the OCSF event-chain replay. The chain
-construction is: `h0 = SHA-256("pv-genesis" || session_id)`,
+construction is: `h0 = SHA-256("av-genesis" || session_id)`,
 `h(i) = SHA-256(h(i-1) || JCS(event_i))` with events ordered by
 `metadata.sequence`; `chain_head` is the final hash rendered as
 lowercase hex and `event_count` the number of events folded in.

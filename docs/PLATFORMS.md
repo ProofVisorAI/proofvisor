@@ -38,7 +38,7 @@ emulation:
 A receipt sealed on any platform above verifies with `pvctl
 receipt-verify` on any other — across architecture, bitness (32→64),
 and endianness (BE⇄LE) — because verification hashes a canonical
-byte frame (`proofvisor-receipt-v2\0` + big-endian length + body).
+byte frame (`agentvisor-receipt-v2\0` + big-endian length + body).
 
 ## Windows
 

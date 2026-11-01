@@ -7,9 +7,17 @@ you should alert on.
 ## Boot
 
 `proofvisord` reads its TOML from `$PV_CONFIG` (if set), then
-`./proofvisor.toml`, `./config/harness.toml`, and
+`./proofvisor.toml`, `./config/harness.toml`, `./agentvisor.toml`, and
 `$HOME/.proofvisor/proofvisor.toml`. The example file
 (`config/harness.example.toml`) is NOT searched.
+
+Installations made before the ProofVisor rename keep working:
+`./agentvisor.toml` is still found (after the new names), so is
+`$HOME/.agentvisor/agentvisor.toml` when the new per-user file does not
+exist, and both `proofvisord` and `pvctl` copy every `AV_*` environment
+variable to its `PV_*` name when the `PV_*` one is unset, printing which
+ones on stderr. Rename them when convenient; the old names will be
+removed in a later release.
 
 On boot the harness logs a dedicated event on the `trust_anchor`
 target:

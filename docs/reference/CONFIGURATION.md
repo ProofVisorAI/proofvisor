@@ -41,7 +41,7 @@ source. All are optional.
 | `require_identity` | `false` | Refuse any request without a valid NHI bearer. The **default is off** (development posture): the shipped safety net is the loopback `listen` default plus the wildcard-bind refusal. Set to `true` (with a JWKS/HMAC source) for any deployment reachable by anyone but the operator. |
 | `identity_jwks_url` | none | JWKS URL for validating NHI tokens. Rotated JWKS entries are recognized within `identity_jwks_refresh_s` (default 300). |
 | `identity_allowed_issuers` | `[]` | If non-empty, only tokens whose `iss` matches one of these are accepted. |
-| `audience` | `proofvisor` | Required token audience. |
+| `audience` | `agentvisor-ai` | Required token audience, and the `iss` of the intent and exchange tokens the daemon signs. The value predates the ProofVisor name and is kept so existing identity providers and backends keep working. |
 | `enforce_identity_scopes` | `false` | Requires per-route scope claims. Applies only when `require_identity = true`. |
 | `allowed_hosts` | `[]` (disabled) | Host-header allowlist (DNS-rebinding defense). Non-empty: requests whose `Host` (port stripped, case-insensitive) isn't listed are refused 403 before any handler. Leave empty for loopback binds or when the ingress enforces Host. |
 | `chat_scope` / `session_close_scope` / `session_promote_scope` | `chat:write` / `session:close` / `session:promote` | Scope claims required on each route. |
@@ -368,9 +368,9 @@ Backends that verify JWTs offline still accept a revoked token until its
 expiry. Immediate revocation requires introspection on every call; caching
 an active answer delays revocation by the cache duration. Backends must
 also validate their intended token profile and the requested tool scope.
-Forwarded MCP credentials use JWT header `typ = "pv-tool+jwt"`. Tokens
+Forwarded MCP credentials use JWT header `typ = "av-tool+jwt"`. Tokens
 from the optional public exchange endpoint use `typ = "JWT"`; intent
-proofs use `typ = "pv-intent+jwt"`. A tool backend must require the first
+proofs use `typ = "av-intent+jwt"`. A tool backend must require the first
 profile and must reject the other two as tool credentials. Checking only
 the signature and audience is insufficient. Restrict network access to
 tool backends to the gateway as an additional control.
@@ -469,7 +469,7 @@ in the error. A timeout, a non-200 status, or a body without a boolean
 
 When `token_exchange_seed_file` is set, every forwarded tool call carries a
 signed intent token in the `x-pv-intent-token` header. It is an EdDSA JWT
-with the header `typ: pv-intent+jwt`, so a backend can tell it apart from
+with the header `typ: av-intent+jwt`, so a backend can tell it apart from
 an access token signed by the same key. Its claims are `iss` (the harness
 `audience`), `aud` (the receiving backend's `name`, or `default` for
 `tool_upstream_url`), `sub` (the human principal: the caller token's `sub`,

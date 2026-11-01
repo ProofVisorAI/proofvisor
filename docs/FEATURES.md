@@ -185,6 +185,21 @@ with demonstration data, which is what the public site shows by default.
   public interop decision servers.
 - **Windows**: the daemon and CLI compile for Windows x64, and CI and
   the release workflow build them there.
+- **The rename keeps existing deployments working.** Signed and hashed
+  labels (receipt tag, chain genesis, journal and outbox labels, token
+  types and claims, the default audience) keep their pre-rename bytes,
+  so receipts and state written by `agentvisord` verify and load. The
+  API accepts `av_srv_` keys and the old `X-AV-*` headers, webhooks and
+  Kafka records carry both header names, and the daemon and `pvctl`
+  adopt `AV_*` variables and find `agentvisor.toml` and `~/.agentvisor/`.
+  `CHANGELOG.md` lists what still changes (one sign-out on deploy,
+  metric, tracing, OCSF and `/health` names).
+- **Second security pass** on the code added here: SCIM can re-address
+  or re-attach only accounts its own workspace created and clears the
+  verified mark when it changes an email; daemon authentication bounds
+  argon2 work per address and in total; demo deployments refuse daemon
+  traffic; the Kafka client no longer decodes zstd (four RustSec
+  advisories).
 
 ## 7. Not yet, partial, or needs a decision
 
@@ -212,8 +227,18 @@ with demonstration data, which is what the public site shows by default.
 - **Still tested with stand-ins only:** a real Cloud Foundry
   foundation, cloud object storage, and identity providers other than
   Keycloak (for example Okta and Entra ID).
-- **None of this is deployed.** All work above is on local branches; the
-  hosted console and API still run the previous version.
+- **None of this is deployed.** It is pull request
+  ProofVisorAI/proofvisor#396 (a draft until approved); the hosted API at
+  `api.agentvisorai.me` still runs the previous version.
+- **The move to proofvisor.com is not done.** The console files point at
+  `api.proofvisor.com`, which has no DNS record, and `proofvisor.com`
+  does not serve the site yet; `render.yaml` keeps the live
+  `agentvisorai.me` values. Moving needs DNS, a Render custom domain,
+  new origin and URL settings, and SAML and OAuth updates. Passkeys are
+  bound to their domain, so users register them again after the move.
+- **Security review depth.** The code added on 2026-10-31 and the
+  rename's compatibility were reviewed line by line; older console API
+  code and the Rust daemon got spot checks only.
 
 ## 8. Verification record for 2026-10-31
 

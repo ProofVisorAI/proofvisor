@@ -188,9 +188,9 @@ fields, including `receipt_version` itself, are signature-covered).
    * **`receipt_version: 2`** (current) — the message is the
      concatenation of:
      1. the 22-byte domain tag: the ASCII bytes of
-        `proofvisor-receipt-v2` followed by a single NUL byte
-        (`b"proofvisor-receipt-v2\0"`, hex
-        `70726f6f667669736f722d726563656970742d763200`),
+        `agentvisor-receipt-v2` followed by a single NUL byte
+        (`b"agentvisor-receipt-v2\0"`, hex
+        `6167656e747669736f722d726563656970742d763200`),
      2. the length of `canon` in bytes as an unsigned 64-bit
         **big-endian** integer (8 bytes),
      3. `canon`.
@@ -202,7 +202,7 @@ fields, including `receipt_version` itself, are signature-covered).
    the same 32 bytes.
 
 The v2 domain tag exists because the same Ed25519 key also derives the
-harness's journal-MAC key (`proofvisor-journal-v1\0` framing in
+harness's journal-MAC key (`agentvisor-journal-v1\0` framing in
 `journal.rs`): tagging and length-framing every signed protocol
 message makes a signature from one protocol unusable in any other.
 

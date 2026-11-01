@@ -14,18 +14,52 @@ exercised against release binaries in CI on every push
 
 ### Breaking changes
 
-- **Rebrand: AgentBridge → ProofVisor.** The daemon is `proofvisord`
-  (was `agentbridged`), the CLI is `pvctl` (was `abctl`), and all thirteen
-  workspace crates are renamed `ab-*` → `pv-*`. Wire and persisted
-  surfaces changed with the brand: HTTP headers `X-AB-*` → `X-PV-*`,
-  environment variables `AB_*` → `PV_*`, Prometheus metrics `ab_*` →
-  `pv_*`, the event-chain genesis domain tag (`pv-genesis`), NATS
-  JetStream stream names (`pv_<topic>`), the cold-outbox HMAC domain,
-  the Kafka dedupe header (`proofvisor-event-uid`), the OCSF product
-  name (`proofvisor`), and the default JWT audience (`proofvisor`).
+- **Rename: AgentVisor AI → ProofVisor.** The daemon is `proofvisord`
+  (was `agentvisord`), the CLI is `pvctl` (was `avctl`), and the crates are
+  `pv-*` (were `av-*`). Unlike the earlier rebrand, deployments of the
+  previous name exist, so everything they depend on keeps working:
+  - **Unchanged bytes.** Every signed, hashed or derived label keeps its
+    old value: the receipt v2 domain tag (`agentvisor-receipt-v2\0`), the
+    event-chain genesis (`av-genesis`), the journal, cold-outbox, MCP
+    session and compression-marker labels, the JWT types `av-tool+jwt` and
+    `av-intent+jwt`, the delegation claims (`av_subject_tokens`,
+    `av_actor_tokens`, `av_delegation_depth`), and the default `audience`
+    (`agentvisor-ai`, which is also the `iss` of the tokens the daemon
+    signs). Receipts, journals and outboxes written before the rename
+    verify and load unchanged.
+  - **Old names still accepted.** `proofvisord` and `pvctl` adopt any
+    `AV_*` environment variable whose `PV_*` name is unset (and say so on
+    stderr); `./agentvisor.toml`, `~/.agentvisor/agentvisor.toml` and
+    `~/.agentvisor/console.toml` are still found; `pvctl setup` still
+    finds an `agentvisord` binary and recognises an old daemon's `/health`.
+    The console API accepts `av_srv_` API keys, the `X-AV-Deployment`
+    header from older daemons and the `X-AV-Org` header from older
+    console tabs. Receipt bundles with `"format": "agentvisor.receipt.v1"`
+    verify.
+  - **Both names sent.** Webhook deliveries carry `X-ProofVisor-*` and the
+    deprecated `X-AgentVisor-*` headers with the same values; Kafka records
+    carry `proofvisor-event-uid` and `agentvisor-event-uid`.
+  - **Changed without a fallback:** the session cookie (`pv_session`),
+    so everyone is signed out once when the new API is deployed, and
+    sign-ins in progress at that moment must restart; Prometheus metric
+    names (`pv_*` in the daemon, `proofvisor_api_*` in the API);
+    OpenTelemetry service and span attribute names (`proofvisor`,
+    `proofvisor.*`); the OCSF product name (`proofvisor`), so SIEM rules
+    that match `agentvisor-ai` must be updated; the `/health` `service`
+    value; and the console's saved live-mode choice (`?live=1` restores
+    it). Update dashboards, alerts and SIEM rules before upgrading.
+- **Rebrand: AgentBridge → AgentVisor AI.** The daemon is `agentvisord`
+  (was `agentbridged`), the CLI is `avctl` (was `abctl`), and all twelve
+  workspace crates are renamed `ab-*` → `av-*`. Wire and persisted
+  surfaces changed with the brand: HTTP headers `X-AB-*` → `X-AV-*`,
+  environment variables `AB_*` → `AV_*`, Prometheus metrics `ab_*` →
+  `av_*`, the event-chain genesis domain tag (`av-genesis`), NATS
+  JetStream stream names (`av_<topic>`), the cold-outbox HMAC domain,
+  the Kafka dedupe header (`agentvisor-event-uid`), the OCSF product
+  name (`agentvisor-ai`), and the default JWT audience (`agentvisor-ai`).
   Receipts, streams, and pending outbox intents produced by pre-rename
   builds do not carry over; nothing had been published, so no migration
-  path is provided. Setup root is `~/.proofvisor/`; the systemd unit and
+  path is provided. Setup root is `~/.agentvisor/`; the systemd unit and
   Kubernetes manifest are renamed accordingly. `find_server_binary`
   still falls back to the legacy binary names for source-built installs.
 - **Minimum supported Rust version raised to 1.94.**
@@ -304,7 +338,7 @@ exercised against release binaries in CI on every push
     mode. A denial costs no budget and is audited with its code
     (`UNMAPPED_TOOL`, `MISSION_EXPIRED`, `MISSION_DENIED`).
   - Forwarded calls carry a signed intent token (`x-pv-intent-token`,
-    `typ: pv-intent+jwt`) bound to the receiving backend and the calling
+    `typ: av-intent+jwt`) bound to the receiving backend and the calling
     agent.
   - `POST /v1/revoke` implements RFC 7009 for NHI tokens. Revoking a token
     also refuses every token delegated from it, and with
