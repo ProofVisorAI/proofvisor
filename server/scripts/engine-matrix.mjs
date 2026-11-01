@@ -57,7 +57,9 @@ for (const [name, engine] of Object.entries(engines)) {
     await pg.waitForSelector("#polPreview", { timeout: 5000 });
     await pg.fill("#polParam", "333");
     await pg.waitForTimeout(200);
-    const dsl = await pg.evaluate(() => document.querySelector("#polPreview").textContent.includes("> 333"));
+    // The spend-cap template writes the JSON spec daemons enforce:
+    // 333 USD becomes max_payout_usd_micros 333000000.
+    const dsl = await pg.evaluate(() => document.querySelector("#polPreview").textContent.includes("333000000"));
     if (!dsl) fails.push("policy-preview");
     await pg.keyboard.press("Escape");
 
