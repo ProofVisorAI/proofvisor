@@ -245,10 +245,10 @@ with demonstration data, which is what the public site shows by default.
 
 ## 8. Verification record for 2026-10-31 and 2026-11-01
 
-All on the merged `integration/all` branch. Every row except the last
-two (Keycloak and AuthZEN, run on 2026-10-31) was rerun on 2026-11-01,
-after the rename compatibility work, the pushed-schema fix and the
-three CI fixes.
+All on the merged `integration/all` branch. Every row was rerun on
+2026-11-01, after the rename compatibility work, the pushed-schema fix
+and the three CI fixes, except three: the Windows compile check, and
+Keycloak and AuthZEN, which were run on 2026-10-31.
 
 | Suite | Result |
 |---|---|
