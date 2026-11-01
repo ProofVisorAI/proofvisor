@@ -34,17 +34,29 @@ fn stderr(out: &Output) -> String {
 
 #[test]
 fn help_mentions_every_subcommand() {
+    // Every shipped subcommand (docs/FEATURES.md counts twenty-one).
     let expected = [
+        "setup",
+        "start",
+        "init",
+        "doctor",
+        "health",
+        "sidecar",
         "keygen",
+        "pubkey",
+        "receipt-locate",
+        "spool-prune",
         "receipt-verify",
         "atif-validate",
         "manifest-validate",
         "bridge-provision",
         "event-tail",
         "session-promote",
+        "token-revoke",
+        "instance-revoke",
         "config-validate",
+        "console-sync",
         "loadgen",
-        "spool-prune",
     ];
     let out = run(&["--help"]);
     assert!(out.status.success(), "pvctl --help must succeed");
@@ -65,16 +77,22 @@ fn each_subcommand_has_its_own_help() {
         "init",
         "doctor",
         "health",
+        "sidecar",
         "keygen",
+        "pubkey",
+        "receipt-locate",
+        "spool-prune",
         "receipt-verify",
         "atif-validate",
         "manifest-validate",
         "bridge-provision",
         "event-tail",
         "session-promote",
+        "token-revoke",
+        "instance-revoke",
         "config-validate",
+        "console-sync",
         "loadgen",
-        "spool-prune",
     ] {
         let out = run(&[cmd, "--help"]);
         assert!(

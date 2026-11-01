@@ -263,6 +263,20 @@ jobs:
           PROOFVISORD: ${{ github.workspace }}/target/debug/proofvisord
           PVCTL: ${{ github.workspace }}/target/debug/pvctl
         run: node scripts/daemon-console-drill.mjs
+      # Console → daemon policy push with the real binaries: policies
+      # written through the API reach proofvisord through `pvctl
+      # console-sync --pull-policies`, refusals name the console policy,
+      # the status comes back, and the rules survive a daemon restart.
+      # Until this step existed the script was only run by hand.
+      - name: Console policy push reaches a real daemon through pvctl
+        env:
+          TMPDIR: ${{ runner.temp }}
+          API_BASE: http://127.0.0.1:8985
+          SPA_ORIGIN: http://127.0.0.1:8787
+          PROOFVISORD: ${{ github.workspace }}/target/debug/proofvisord
+          PVCTL: ${{ github.workspace }}/target/debug/pvctl
+          PUSH_E2E_CLEANUP: "1"
+        run: node scripts/policy-push-e2e.mjs
       - name: Preserve daemon startup failure logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

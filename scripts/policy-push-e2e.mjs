@@ -72,13 +72,25 @@ async function api(path, { method = "GET", body } = {}) {
   const text = await res.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { json = null; }
-  return { status: res.status, json, text };
+  return { status: res.status, json, text, retryAfter: Number(res.headers.get("retry-after")) || 0 };
 }
 
-const signup = await api("/api/v1/auth/signup", {
+// Signup is capped per IP per minute, and in CI this script shares one
+// API and one IP with the smoke, contract and drill suites that each
+// sign up too. Honour Retry-After once rather than fail on a 429.
+let signup = await api("/api/v1/auth/signup", {
   method: "POST",
   body: { email: `push-e2e-${Date.now()}@policy.example`, password: "correcthorse42x", orgName: "Policy Push E2E" },
 });
+if (signup.status === 429) {
+  const wait = Math.min(61, Math.max(1, signup.retryAfter || 60));
+  console.log(`signup rate-limited; retrying in ${wait + 1}s`);
+  await new Promise((resolve) => setTimeout(resolve, (wait + 1) * 1000));
+  signup = await api("/api/v1/auth/signup", {
+    method: "POST",
+    body: { email: `push-e2e-${Date.now()}@policy.example`, password: "correcthorse42x", orgName: "Policy Push E2E" },
+  });
+}
 check("console workspace created", signup.status === 201, signup.text);
 const dep = await api("/api/v1/deployments", { method: "POST", body: { name: "push-e2e", environment: "production" } });
 check("deployment created", dep.status === 201, dep.text);
