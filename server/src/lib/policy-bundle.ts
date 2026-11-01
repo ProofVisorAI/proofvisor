@@ -136,6 +136,37 @@ function firstIssue(err: z.ZodError): string {
  * spec=null. The returned `detail` is human-readable and is surfaced
  * to the console as the 400 invalid_input explanation.
  */
+const REF_KEYWORDS = new Set(["$ref", "$dynamicRef", "$recursiveRef"]);
+
+/** Meta-schemas the daemon has built in (crates/pv-sandbox/src/pushed.rs tests the same list). */
+const BUILT_IN_META_SCHEMAS = new Set([
+  "https://json-schema.org/draft/2020-12/schema",
+  "https://json-schema.org/draft/2019-09/schema",
+  "http://json-schema.org/draft-07/schema#",
+  "http://json-schema.org/draft-07/schema",
+  "http://json-schema.org/draft-06/schema#",
+  "http://json-schema.org/draft-04/schema#",
+]);
+
+/** The first reference value that does not stay inside the document. */
+function findExternalRef(node: unknown, depth = 0): string | null {
+  if (depth > 64 || node === null || typeof node !== "object") return null;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const hit = findExternalRef(item, depth + 1);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (REF_KEYWORDS.has(key) && typeof value === "string" && !value.startsWith("#")) return value.slice(0, 120);
+    if (key === "$schema" && typeof value === "string" && !BUILT_IN_META_SCHEMAS.has(value)) return value.slice(0, 120);
+    const hit = findExternalRef(value, depth + 1);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
 export function validatePolicySpec(kind: string, scope: string, body: string): SpecValidation {
   if (!isEnforceableKind(kind)) return { ok: true, spec: null };
   if (!body.trim()) {
@@ -153,6 +184,19 @@ export function validatePolicySpec(kind: string, scope: string, body: string): S
   const res = SPEC_SCHEMAS[kind].safeParse(parsed);
   if (!res.success) return { ok: false, detail: `${kind} spec: ${firstIssue(res.error)}` };
   const spec = res.data as Record<string, unknown>;
+
+  // Daemons refuse to fetch external references in a pushed schema (they
+  // would reach into the customer's network or read local files), so a
+  // schema that needs one could never be enforced. Say so at write time.
+  if (kind === "schema") {
+    const external = findExternalRef(spec.json_schema);
+    if (external !== null) {
+      return {
+        ok: false,
+        detail: `schema spec: "${external}" points outside the schema; only references inside it (starting with #) are allowed`,
+      };
+    }
+  }
 
   // Tool names must fall inside the policy's scope.
   const pattern = toolPatternFromScope(scope);

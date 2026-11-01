@@ -119,12 +119,36 @@ impl std::fmt::Debug for PushedSchema {
     }
 }
 
+/// Refuses every external `$ref`. A pushed schema comes from the console,
+/// over the network; with jsonschema's default retriever a reference such
+/// as `http://169.254.169.254/…` or `file:///etc/…` would make the daemon
+/// fetch an address inside the customer's network, or read a local file,
+/// and report what it found back to the console in the policy status.
+/// References inside the schema itself (`#/$defs/…`) need no retrieval
+/// and keep working.
+struct NoExternalRefs;
+
+impl jsonschema::Retrieve for NoExternalRefs {
+    fn retrieve(
+        &self,
+        uri: &jsonschema::Uri<String>,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        Err(format!(
+            "pushed schemas may not reference external documents ({})",
+            uri.scheme().as_str()
+        )
+        .into())
+    }
+}
+
 impl PushedSchema {
     /// Compile a schema the same way local tool schemas are compiled
-    /// (draft 2020-12 with `format` enforced).
+    /// (draft 2020-12 with `format` enforced), except that external
+    /// references are refused (see [`NoExternalRefs`]).
     pub fn compile(policy: &str, tool: &str, schema: &Value) -> Result<Self, String> {
         let validator = jsonschema::options()
             .should_validate_formats(true)
+            .with_retriever(NoExternalRefs)
             .build(schema)
             .map_err(|e| format!("json_schema does not compile: {e}"))?;
         Ok(Self {
@@ -192,6 +216,51 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn pushed_schemas_never_fetch_external_references() {
+        // A listener that would see the daemon's request if it made one.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/schema.json", listener.local_addr().unwrap());
+        let err = PushedSchema::compile("p", "t", &json!({"$ref": url})).unwrap_err();
+        assert!(err.contains("may not reference external documents"), "{err}");
+        assert!(listener.accept().is_err(), "the daemon must not connect anywhere");
+
+        // A custom meta-schema and `$dynamicRef` are resolved the same way.
+        let meta = format!("http://{}/meta.json", listener.local_addr().unwrap());
+        assert!(PushedSchema::compile("p", "t", &json!({"$schema": meta})).is_err());
+        assert!(PushedSchema::compile("p", "t", &json!({"$dynamicRef": url})).is_err());
+        // The standard meta-schemas are built in and need no retrieval.
+        for draft in [
+            "https://json-schema.org/draft/2020-12/schema",
+            "https://json-schema.org/draft/2019-09/schema",
+            "http://json-schema.org/draft-07/schema#",
+            "http://json-schema.org/draft-07/schema",
+            "http://json-schema.org/draft-06/schema#",
+            "http://json-schema.org/draft-04/schema#",
+        ] {
+            PushedSchema::compile("p", "t", &json!({"$schema": draft, "type": "object"})).unwrap();
+        }
+        assert!(listener.accept().is_err(), "the daemon must not connect anywhere");
+
+        let file = std::env::temp_dir().join(format!("pv-pushed-ref-{}.json", std::process::id()));
+        std::fs::write(&file, r#"{"type":"object"}"#).unwrap();
+        let file_ref = format!("file://{}", file.display());
+        let err = PushedSchema::compile("p", "t", &json!({"$ref": file_ref})).unwrap_err();
+        let _ = std::fs::remove_file(&file);
+        assert!(err.contains("may not reference external documents"), "{err}");
+
+        // References inside the schema need no retrieval.
+        let local = PushedSchema::compile(
+            "p",
+            "t",
+            &json!({"$defs": {"amount": {"type": "integer", "maximum": 10}}, "properties": {"n": {"$ref": "#/$defs/amount"}}}),
+        )
+        .unwrap();
+        assert!(local.errors(&json!({"n": 5})).is_empty());
+        assert!(!local.errors(&json!({"n": 50})).is_empty());
+    }
 
     #[test]
     fn scopes_become_tool_patterns() {
