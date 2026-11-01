@@ -200,9 +200,13 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     if (!params.success) return reply.code(400).send({ error: "invalid_id" });
     const owned = await db.deployment.findFirst({
       where: { id: params.data.id, orgId: claims.orgId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, isDemo: true },
     });
     if (!owned) return reply.code(404).send({ error: "not_found" });
+    // The demo deployment's token is never revealed (routes/demo.ts), and
+    // ingest refuses demo deployments regardless; minting one here would
+    // hand out a credential that cannot work.
+    if (owned.isDemo) return reply.code(409).send({ error: "demo_deployment" });
     const plaintextToken = mintIngestToken();
     const ingestTokenHash = await hashPassword(plaintextToken);
     await db.deployment.update({

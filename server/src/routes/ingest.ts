@@ -16,6 +16,67 @@ import { buildPolicyBundle, currentOrgEtag } from "../lib/policy-bundle.js";
 // argon2 hash on file. This lookup is intentionally by deployment id (fast,
 // indexed) — never by scanning every deployment.
 
+// The ingest routes are exempt from the global rate limiter (a busy
+// fleet posts constantly), and every token check is an argon2 verify
+// (19 MiB, ~50-100 ms). Deployment ids are not secret — receipt share
+// links carry them — so without the guards below anyone could make the
+// API run unbounded argon2 work, exhausting its memory and CPU:
+//
+// 1. A short-lived cache of successful checks. The key hashes the
+//    deployment id, the presented token AND the stored argon2 hash, so a
+//    token rotation (new hash) invalidates it at once and a wrong token
+//    never matches. Ingest tokens are 192-bit random values, so a SHA-256
+//    of them is not a guessable password hash.
+// 2. A per-IP budget of failed checks. An address over the budget gets
+//    429 before any argon2 work.
+// 3. A cap on concurrent uncached verifications; excess callers get 429
+//    with Retry-After: 1, which `pvctl console-sync` already honours.
+const AUTH_CACHE_TTL_MS = 60_000;
+const AUTH_CACHE_MAX = 10_000;
+const AUTH_FAIL_WINDOW_MS = 60_000;
+const AUTH_FAIL_MAX_PER_IP = 20;
+const AUTH_FAIL_TRACK_MAX = 10_000;
+const AUTH_MAX_CONCURRENT_VERIFY = 8;
+
+const authCache = new Map<string, number>();
+const authFailures = new Map<string, { count: number; resetAt: number }>();
+let verifyInFlight = 0;
+
+function authCacheKey(deploymentId: string, token: string, hash: string): string {
+  return createHash("sha256").update(deploymentId).update("\0").update(token).update("\0").update(hash).digest("hex");
+}
+
+function failureBudgetExceeded(ip: string, now: number): boolean {
+  const f = authFailures.get(ip);
+  return f !== undefined && f.resetAt > now && f.count >= AUTH_FAIL_MAX_PER_IP;
+}
+
+function recordAuthFailure(ip: string, now: number): void {
+  const f = authFailures.get(ip);
+  if (f && f.resetAt > now) {
+    f.count += 1;
+    return;
+  }
+  if (authFailures.size >= AUTH_FAIL_TRACK_MAX) {
+    for (const [k, v] of authFailures) if (v.resetAt <= now) authFailures.delete(k);
+    // Still full of live entries: drop the oldest insertion.
+    if (authFailures.size >= AUTH_FAIL_TRACK_MAX) {
+      const oldest = authFailures.keys().next().value;
+      if (oldest !== undefined) authFailures.delete(oldest);
+    }
+  }
+  authFailures.set(ip, { count: 1, resetAt: now + AUTH_FAIL_WINDOW_MS });
+}
+
+function rememberAuth(key: string, now: number): void {
+  authCache.delete(key);
+  if (authCache.size >= AUTH_CACHE_MAX) {
+    const oldest = authCache.keys().next().value;
+    if (oldest !== undefined) authCache.delete(oldest);
+  }
+  authCache.set(key, now + AUTH_CACHE_TTL_MS);
+}
+
 async function authenticateDaemon(
   req: FastifyRequest,
   reply: FastifyReply,
@@ -27,15 +88,49 @@ async function authenticateDaemon(
     return null;
   }
   const token = auth.slice("Bearer ".length);
-  const deployment = await db.deployment.findUnique({
-    where: { id: deploymentId },
-    select: { id: true, orgId: true, ingestTokenHash: true },
-  });
-  if (!deployment) {
+  // Real tokens are "pv_live_" + 32 base64url characters (or 32 bare
+  // characters for tokens minted before the prefix). Anything far
+  // longer is not a token and is refused before hashing.
+  if (token.length === 0 || token.length > 256 || deploymentId.length > 64) {
     reply.code(401).send({ error: "unauthenticated" });
     return null;
   }
-  const ok = await verifyPassword(deployment.ingestTokenHash, token);
+  const now = Date.now();
+  const ip = req.ip;
+  const deployment = await db.deployment.findUnique({
+    where: { id: deploymentId },
+    select: { id: true, orgId: true, ingestTokenHash: true, isDemo: true },
+  });
+  // Demo deployments never accept daemon traffic: their rows are staged
+  // by POST /demo/attack and labelled "demo" in the console, so evidence
+  // posted under that label would be indistinguishable from the story.
+  if (!deployment || deployment.isDemo) {
+    reply.code(401).send({ error: "unauthenticated" });
+    return null;
+  }
+  const key = authCacheKey(deployment.id, token, deployment.ingestTokenHash);
+  const cachedUntil = authCache.get(key);
+  let ok = cachedUntil !== undefined && cachedUntil > now;
+  if (!ok) {
+    if (failureBudgetExceeded(ip, now)) {
+      reply.header("Retry-After", String(Math.ceil(AUTH_FAIL_WINDOW_MS / 1000)));
+      reply.code(429).send({ error: "rate_limited" });
+      return null;
+    }
+    if (verifyInFlight >= AUTH_MAX_CONCURRENT_VERIFY) {
+      reply.header("Retry-After", "1");
+      reply.code(429).send({ error: "rate_limited" });
+      return null;
+    }
+    verifyInFlight += 1;
+    try {
+      ok = await verifyPassword(deployment.ingestTokenHash, token);
+    } finally {
+      verifyInFlight -= 1;
+    }
+    if (ok) rememberAuth(key, now);
+    else recordAuthFailure(ip, now);
+  }
   if (!ok) {
     reply.code(401).send({ error: "unauthenticated" });
     return null;
