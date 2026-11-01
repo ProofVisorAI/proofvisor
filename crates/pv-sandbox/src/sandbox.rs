@@ -485,6 +485,63 @@ impl Sandbox {
     }
 }
 
+impl Sandbox {
+    /// Apply every console-pushed `llm.ingress` transform to a chat
+    /// request, in bundle order. The rewritten payload is what every
+    /// later gate sees, what is journaled, and what is forwarded.
+    pub fn transform_chat(&self, payload: &mut Value) -> Vec<TransformApplied> {
+        let pushed = self.pushed();
+        pushed
+            .transforms
+            .iter()
+            .filter_map(|rule| {
+                let replacements = rule.apply_to_chat(payload);
+                (replacements > 0).then(|| TransformApplied {
+                    policy: rule.policy.clone(),
+                    replacements,
+                })
+            })
+            .collect()
+    }
+
+    /// Apply every console-pushed `tool.args` transform that covers
+    /// `tool` to a call's `arguments`, in bundle order.
+    pub fn transform_tool_arguments(&self, tool: &str, arguments: &mut Value) -> Vec<TransformApplied> {
+        let pushed = self.pushed();
+        pushed
+            .transforms
+            .iter()
+            .filter_map(|rule| {
+                let replacements = rule.apply_to_tool_call(tool, arguments);
+                (replacements > 0).then(|| TransformApplied {
+                    policy: rule.policy.clone(),
+                    replacements,
+                })
+            })
+            .collect()
+    }
+
+    /// The first console-pushed `llm.egress` guardrail that refuses a
+    /// model response whose captured text is `text`.
+    pub fn refuses_response(&self, text: &str) -> Option<SanitizeDenial> {
+        self.pushed()
+            .refuses_response(text)
+            .map(|(policy, reason)| SanitizeDenial {
+                policy: Some(policy),
+                reason,
+            })
+    }
+}
+
+/// One console-pushed transform that rewrote a payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformApplied {
+    /// Console policy name.
+    pub policy: String,
+    /// How many matches were replaced.
+    pub replacements: usize,
+}
+
 /// A non-tool payload the sandbox refused. `policy` names the console
 /// policy when a pushed rule refused it (local policies are already
 /// named inside `reason`, as they are for tool calls).

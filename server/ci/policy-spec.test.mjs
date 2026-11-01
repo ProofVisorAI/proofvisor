@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validatePolicySpec } from "../src/lib/policy-bundle.ts";
+import { isEnforceablePolicy, validatePolicySpec } from "../src/lib/policy-bundle.ts";
 
 const schemaPolicy = (json_schema) =>
   validatePolicySpec("schema", "tool.create_payment", JSON.stringify({ tool: "create_payment", json_schema }));
@@ -65,8 +65,8 @@ test("a guardrail JSON spec is accepted and parsed", () => {
 test("a guardrail JSON object that is not a valid spec is refused with the reason", () => {
   const cases = [
     [{}, /applies_to/],
-    [{ applies_to: "llm.egress", deny_patterns: ["x"] }, /llm\.egress is not enforced by daemons yet/],
-    [{ applies_to: "tool.result", deny_patterns: ["x"] }, /applies_to must be tool\.args or llm\.ingress/],
+    [{ applies_to: "llm.egress", deny_patterns: ["x"] }, /not a response scope/],
+    [{ applies_to: "tool.result", deny_patterns: ["x"] }, /applies_to must be tool\.args, llm\.ingress or llm\.egress/],
     [{ applies_to: "tool.args", deny_patterns: [] }, /at least one pattern/],
     [{ applies_to: "tool.args", deny_patterns: [""] }, /must not be empty/],
     [{ applies_to: "tool.args", deny_patterns: ["x".repeat(513)] }, /at most 512 bytes/],
@@ -90,4 +90,52 @@ test("a guardrail's scope must match where it applies", () => {
   assert.match(guardrail("llm.request", toolArgs).detail, /not a tool scope/);
   assert.match(guardrail("tool.*", ingress).detail, /not a model scope/);
   assert.match(guardrail("llm.egress", ingress).detail, /not a model scope/);
+});
+
+const transform = (scope, body) => validatePolicySpec("transform", scope, typeof body === "string" ? body : JSON.stringify(body));
+
+test("a guardrail may apply to model responses with a response scope", () => {
+  const egress = { applies_to: "llm.egress", deny_patterns: ["(?i)project nightjar"], effect: "block" };
+  for (const scope of ["llm", "llm.*", "llm.response", "llm.egress"]) {
+    assert.deepEqual(guardrail(scope, egress), { ok: true, spec: egress }, scope);
+  }
+  assert.match(guardrail("llm.request", egress).detail, /not a response scope/);
+  assert.match(guardrail("tool.*", egress).detail, /not a response scope/);
+});
+
+test("a free-text transform is accepted as documentation only", () => {
+  for (const text of ["", "redact everything", 'policy "x" { transform = redact([\"ssn\"]) }']) {
+    assert.deepEqual(transform("llm.request", text), { ok: true, spec: null }, JSON.stringify(text));
+  }
+});
+
+test("a transform JSON spec is accepted and parsed", () => {
+  const tool = { applies_to: "tool.args", redact_patterns: ["TCK-[0-9]{4}"], replacement: "[ticket]" };
+  assert.deepEqual(transform("tool.*", tool), { ok: true, spec: tool });
+  assert.deepEqual(transform("tool.create_ticket", tool), { ok: true, spec: tool });
+  const chat = { applies_to: "llm.ingress", redact_patterns: ["[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"] };
+  for (const scope of ["llm", "llm.*", "llm.request", "llm.ingress"]) {
+    assert.deepEqual(transform(scope, chat), { ok: true, spec: chat }, scope);
+  }
+  assert.equal(isEnforceablePolicy("transform", "tool.*", JSON.stringify(tool)), true);
+  assert.equal(isEnforceablePolicy("transform", "tool.*", "free text"), false);
+});
+
+test("a transform JSON object that is not a valid spec is refused with the reason", () => {
+  for (const [body, reason] of [
+    [{ applies_to: "llm.egress", redact_patterns: ["x"] }, /tool\.args or llm\.ingress/],
+    [{ applies_to: "tool.args", redact_patterns: [] }, /at least one/],
+    [{ applies_to: "tool.args", redact_patterns: ["(?<=a)b"] }, /lookaround/],
+    [{ applies_to: "tool.args", redact_patterns: ["x"], replacement: "" }, /replacement/],
+    [{ applies_to: "tool.args", redact_patterns: ["x"], replacement: "a\nb" }, /control characters/],
+    [{ applies_to: "tool.args", redact_patterns: ["x"], replacement: "r".repeat(65) }, /at most 64 bytes/],
+    [{ applies_to: "tool.args", redact_patterns: ["x"], effect: "block" }, /unrecognized|Unrecognized|unknown/i],
+    ["{ not json }", /not valid JSON/],
+  ]) {
+    const result = transform("tool.*", body);
+    assert.equal(result.ok, false, JSON.stringify(body));
+    assert.match(result.detail, reason, result.detail);
+  }
+  assert.match(transform("llm.request", { applies_to: "tool.args", redact_patterns: ["x"] }).detail, /not a tool scope/);
+  assert.match(transform("tool.*", { applies_to: "llm.ingress", redact_patterns: ["x"] }).detail, /not a model scope/);
 });

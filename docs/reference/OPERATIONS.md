@@ -246,10 +246,9 @@ the console were compromised it could block calls, but it could not
 allow a call the local config refuses. A newer bundle file the daemon
 cannot apply leaves the rules in force unchanged and records the error
 in the status file; at boot, such a file stops the daemon, so it never
-silently runs without rules it was given. `transform` policies document
-intent and are not enforced by daemons; `guardrail` policies are
-enforced when their body is the JSON spec below, and are documentation
-otherwise.
+silently runs without rules it was given. `guardrail` and `transform`
+policies are enforced when their body is the JSON spec described
+below, and are documentation otherwise.
 
 ### Guardrail policies
 
@@ -275,7 +274,7 @@ The spec:
 
 | Field | Meaning |
 | --- | --- |
-| `applies_to` | `tool.args`: every string value in the arguments of a tool call, for the tools the policy scope names (`tool.*`, `tool.<name>`, `tool.payments.*`). `llm.ingress`: every string value under `messages` in a chat request; the scope must be `llm`, `llm.*`, `llm.request` or `llm.ingress`. `llm.egress` (model responses) is reserved: the console refuses it until daemons inspect response bodies. |
+| `applies_to` | `tool.args`: every string value in the arguments of a tool call, for the tools the policy scope names (`tool.*`, `tool.<name>`, `tool.payments.*`). `llm.ingress`: every string value under `messages` in a chat request; the scope must be `llm`, `llm.*`, `llm.request` or `llm.ingress`. `llm.egress`: the text of every choice of a model response, as the daemon captures it; the scope must be `llm`, `llm.*`, `llm.response` or `llm.egress`. |
 | `deny_patterns` | 1 to 64 regular expressions in the syntax of the Rust `regex` crate (no lookaround, no backreferences), each 1 to 512 bytes. A value that contains a match anywhere fires the rule. Daemons compile each pattern with the same bounds as `redaction_patterns` (`pv_redact::compile_pattern`): a pattern over the size or nesting limit, or one the daemon cannot compile, makes the whole policy unsupported on that daemon, with the reason shown in the console. |
 | `effect` | Optional; only `block` is accepted, and it is the default. |
 
@@ -295,11 +294,66 @@ How a daemon enforces a guardrail:
   names the policy the same way, and the stop-reason event carries it
   in `payload.policy`, so `pvctl console-sync` uploads the refusal as a
   block attributed to that policy.
+- `llm.egress` rules run on the response as the daemon captures it. A
+  buffered (non-streaming) response is held until it is complete, so a
+  match is refused with HTTP 403 naming the policy and no byte of the
+  response reaches the client. A streamed response is scanned frame by
+  frame (with a 1 KiB overlap, so a match that straddles two frames is
+  still found, and a full rescan at the end of the body): a match in
+  the first frame is refused with HTTP 403 like a buffered one; a
+  match later, after frames have already been relayed, ends the stream
+  with an error frame (`"type": "policy_blocked"`, `"code":
+  "guardrail"`) naming the policy, and the frame that completed the
+  match is never relayed. Either way the turn is attested as "Policy
+  Blocked" with `payload.policy`, so the console counts the block.
+  Only the response text is scanned, not reasoning content or tool
+  calls.
 - The refusal, the log line and the audit event say which pattern
   (by position) matched and where (a JSON pointer); the matched text
   itself is never copied anywhere.
 - Like every pushed rule, a guardrail only adds a restriction: a call
   the local config refuses stays refused.
+
+### Transform policies
+
+A transform is a list of regular expressions whose matches are
+replaced before a call goes any further. Like a guardrail, the console
+accepts two kinds of transform body: the JSON spec below (enforced) or
+free text (documentation only, listed by daemons in `unsupported` with
+the reason "transform policy has no JSON spec").
+
+```json
+{
+  "applies_to": "tool.args",
+  "redact_patterns": ["TCK-[0-9]{4}"],
+  "replacement": "[ticket]"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `applies_to` | `tool.args`: every string value in the arguments of a tool call, for the tools the policy scope names. `llm.ingress`: every string value under `messages` in a chat request; the scope must be `llm`, `llm.*`, `llm.request` or `llm.ingress`. Model responses are not rewritten. |
+| `redact_patterns` | 1 to 64 regular expressions, with the same syntax and bounds as a guardrail's `deny_patterns`. Every match of every pattern is replaced. |
+| `replacement` | Optional; the text each match becomes, 1 to 64 bytes, no control characters. `[REDACTED]` when omitted. `$` is literal, never a group reference. |
+
+How a daemon enforces a transform:
+
+- `tool.args` rules run before the tool call reaches the sandbox: the
+  rewritten arguments are what the local policies and schemas check,
+  what the verdict event journals, and what the backend receives. A
+  body the strict JSON-RPC parser refuses (a duplicate key, say) is
+  left alone, so the parse gate still refuses it.
+- `llm.ingress` rules run after the sanitize stage (so a guardrail
+  still sees the original text) and before compression, the token
+  budget and dispatch. The compression record for the turn lists the
+  transforms that fired as `payload.transforms` (policy name and the
+  number of replacements); the matched text is stored nowhere.
+- Every rewrite is logged with the policy name and counted in
+  `pv_pushed_transform_rewrites_total`.
+- A transform never widens anything: it only removes text, and every
+  refusal a daemon would make on the original call it still makes on
+  the rewritten one, except a guardrail over the very text that was
+  removed.
 
 ### Releasing a quarantined session id
 

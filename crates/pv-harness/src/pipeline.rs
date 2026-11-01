@@ -2369,6 +2369,31 @@ impl AppState {
         }
         self.observe_stage("sanitize", stage);
 
+        // Console-pushed transforms (redaction) rewrite the messages after
+        // the local chain and the guardrails have seen the original text,
+        // and before compression, the budget and dispatch: what is
+        // journaled and what is forwarded is the rewritten payload.
+        let transforms = self.sandbox.transform_chat(&mut payload);
+        let raw_prompt_tokens = if transforms.is_empty() {
+            raw_prompt_tokens
+        } else {
+            for transform in &transforms {
+                tracing::info!(
+                    session = %session_id,
+                    policy = %transform.policy,
+                    replacements = transform.replacements,
+                    "chat request rewritten by a console-pushed transform"
+                );
+            }
+            self.metrics
+                .counter(
+                    "pv_pushed_transform_rewrites_total",
+                    "Tool calls or chat requests rewritten by a console-pushed transform policy",
+                )
+                .inc();
+            pv_core::tokens::approx_tokens_json(&payload)
+        };
+
         let stage = Instant::now();
         let compression = if self.config.compression_enabled {
             pv_compress::compress(
@@ -2549,11 +2574,27 @@ impl AppState {
             session: Arc::clone(&session),
             identity: identity.clone(),
             class: EventClass::Compression,
-            payload: serde_json::json!({
-                "changed": compression.changed,
-                "tokens_before": compression.tokens_before,
-                "tokens_after": compression.tokens_after,
-            }),
+            payload: {
+                let mut record = serde_json::json!({
+                    "changed": compression.changed,
+                    "tokens_before": compression.tokens_before,
+                    "tokens_after": compression.tokens_after,
+                });
+                // Which pushed transforms rewrote the request, and how
+                // many matches each replaced. The matched text is gone.
+                if let (false, Some(object)) = (transforms.is_empty(), record.as_object_mut()) {
+                    object.insert(
+                        "transforms".to_owned(),
+                        Value::Array(
+                            transforms
+                                .iter()
+                                .map(|t| serde_json::json!({"policy": t.policy, "replacements": t.replacements}))
+                                .collect(),
+                        ),
+                    );
+                }
+                record
+            },
             text,
             analyze_loop,
             status: StatusId::Success,

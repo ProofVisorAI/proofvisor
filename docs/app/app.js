@@ -3775,16 +3775,15 @@
   /* Policy kinds. The four enforceable ones carry a JSON spec that
    * daemons apply verbatim (see pvValidatePolicySpec in datasource.js
    * for the shapes — the same validation the server runs). guardrail
-   * is enforceable per policy: a JSON spec (applies_to, deny_patterns)
-   * is pushed to daemons, free text is documentation and event
-   * attribution. transform is free text only. */
+   * and transform are enforceable per policy: a JSON spec is pushed to
+   * daemons, free text is documentation and event attribution. */
   var POLICY_KIND_INFO = {
     budget: { label: "Budget", enforceable: true, blurb: "Caps on tool calls, payout and tokens for a session." },
     allowlist: { label: "Tool allowlist", enforceable: true, blurb: "Which tools an agent may (or may never) call." },
     rate: { label: "Rate limit", enforceable: true, blurb: "Token velocity per principal inside a time window." },
     schema: { label: "Tool schema", enforceable: true, blurb: "A JSON Schema every call of one tool must satisfy." },
-    guardrail: { label: "Guardrail", enforceable: false, blurb: "Patterns that must not appear in tool arguments or chat requests. Enforced by daemons when the definition is the JSON spec; free text is documentation only." },
-    transform: { label: "Transform", enforceable: false, blurb: "Documentation only — daemons do not enforce it." },
+    guardrail: { label: "Guardrail", enforceable: false, blurb: "Patterns that must not appear in tool arguments, chat requests or model responses. Enforced by daemons when the definition is the JSON spec; free text is documentation only." },
+    transform: { label: "Transform", enforceable: false, blurb: "Patterns replaced in tool arguments or chat requests before the call is journaled or forwarded. Enforced by daemons when the definition is the JSON spec; free text is documentation only." },
   };
   function kindEnforceable(kind) {
     return window.pvIsEnforceableKind ? window.pvIsEnforceableKind(kind) : !!(POLICY_KIND_INFO[kind] && POLICY_KIND_INFO[kind].enforceable);
@@ -3999,6 +3998,44 @@
         };
       },
     },
+    {
+      id: "response_guard",
+      label: "🛑 Response guard",
+      hint: "Refuse model responses that mention an internal codename",
+      kind: "guardrail",
+      scope: "llm.egress",
+      param: null,
+      build: function () {
+        return {
+          name: "privacy.no_codenames",
+          description: "Refuse any model response that mentions an internal project codename before it reaches the agent: a buffered response is refused outright, a streamed one is cut at the first matching frame.",
+          spec: {
+            applies_to: "llm.egress",
+            deny_patterns: ["(?i)\\bproject nightjar\\b"],
+            effect: "block",
+          },
+        };
+      },
+    },
+    {
+      id: "redact_emails",
+      label: "✂️ Redact before sending",
+      hint: "Replace e-mail addresses in prompts before they reach the model",
+      kind: "transform",
+      scope: "llm.request",
+      param: null,
+      build: function () {
+        return {
+          name: "privacy.redact_emails",
+          description: "Replace every e-mail address in a chat request with [email] before the request is journaled or forwarded to the model.",
+          spec: {
+            applies_to: "llm.ingress",
+            redact_patterns: ["[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"],
+            replacement: "[email]",
+          },
+        };
+      },
+    },
   ];
 
   // Human summary of how daemons treat this policy. `enforceable` is
@@ -4010,7 +4047,9 @@
     if (enforceable)
       return "Daemons that pull policies (set up on each deployment's page) enforce this spec on top of their local config. A pushed policy can only tighten the host's own limits, never loosen them.";
     if (kind === "guardrail")
-      return "This guardrail is documentation only: its definition is free text. Daemons enforce a guardrail whose definition is the JSON spec {\"applies_to\": \"tool.args\" or \"llm.ingress\", \"deny_patterns\": [regular expressions]}; hits attributed to this name keep counting here.";
+      return "This guardrail is documentation only: its definition is free text. Daemons enforce a guardrail whose definition is the JSON spec {\"applies_to\": \"tool.args\", \"llm.ingress\" or \"llm.egress\", \"deny_patterns\": [regular expressions]}; hits attributed to this name keep counting here.";
+    if (kind === "transform")
+      return "This transform is documentation only: its definition is free text. Daemons enforce a transform whose definition is the JSON spec {\"applies_to\": \"tool.args\" or \"llm.ingress\", \"redact_patterns\": [regular expressions], \"replacement\": text}; every match is replaced before the call is journaled or forwarded.";
     return "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
   }
 
@@ -4124,7 +4163,7 @@
         close();
         var msg = rowEnforceable(p)
           ? "Policy created. Daemons that pull policies pick it up on their next sync (see a deployment's page to set this up)."
-          : "Policy saved. " + (p.kind === "guardrail" ? "A guardrail with a free-text definition documents intent — daemons do not enforce it." : p.kind + " policies document intent — daemons do not enforce them.");
+          : "Policy saved. " + (p.kind === "guardrail" || p.kind === "transform" ? "A " + p.kind + " with a free-text definition documents intent — daemons do not enforce it." : p.kind + " policies document intent — daemons do not enforce them.");
         toastLink(msg, "#/policies/" + p.id, "View policy →");
         navigate("#/policies/" + p.id);
       }).catch(function (err) {
@@ -4150,7 +4189,7 @@
   // stale ones; the counts come from the policy's `enforcement`.
   function policyEnforcementBadge(p, deps) {
     if (!rowEnforceable(p)) {
-      if (p.kind === "guardrail") return '<span class="pill neutral enf" title="This guardrail\'s definition is free text. Daemons enforce a guardrail only when its definition is the JSON spec.">Documentation only (no JSON spec)</span>';
+      if (p.kind === "guardrail" || p.kind === "transform") return '<span class="pill neutral enf" title="This ' + esc(p.kind) + '\'s definition is free text. Daemons enforce a ' + esc(p.kind) + ' only when its definition is the JSON spec.">Documentation only (no JSON spec)</span>';
       return '<span class="pill neutral enf" title="Daemons cannot enforce ' + esc(p.kind) + ' policies; this entry documents the rule and attributes hits.">Not enforceable by daemons (' + esc(p.kind) + ")</span>";
     }
     var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
@@ -4346,15 +4385,17 @@
   // sessions-fired history that hang off the policy id).
   function openEditPolicyModal(p, onSaved) {
     if (document.body.classList.contains("locked")) return;
-    // Structured fields exist for the four spec kinds; a guardrail is
-    // edited as text (the JSON spec, or free text for documentation).
+    // Structured fields exist for the four spec kinds; a guardrail or a
+    // transform is edited as text (the JSON spec, or free text).
     var enforceable = kindEnforceable(p.kind);
     var spec = parseSpec(p) || {};
     var editSub = enforceable
       ? "Changes reach every daemon on its next policy pull. The policy ID and its hit history stay put."
       : p.kind === "guardrail"
-        ? "A definition that is the JSON spec ({\"applies_to\": \"tool.args\" or \"llm.ingress\", \"deny_patterns\": [regular expressions]}) is enforced by every daemon on its next policy pull; free text is documentation only. The policy ID and its hit history stay put."
-        : "This " + esc(p.kind) + " policy is documentation: daemons do not enforce it, but hits they attribute to its name keep counting here.";
+        ? "A definition that is the JSON spec ({\"applies_to\": \"tool.args\", \"llm.ingress\" or \"llm.egress\", \"deny_patterns\": [regular expressions]}) is enforced by every daemon on its next policy pull; free text is documentation only. The policy ID and its hit history stay put."
+        : p.kind === "transform"
+          ? "A definition that is the JSON spec ({\"applies_to\": \"tool.args\" or \"llm.ingress\", \"redact_patterns\": [regular expressions], \"replacement\": text}) is enforced by every daemon on its next policy pull; free text is documentation only. The policy ID and its hit history stay put."
+          : "This " + esc(p.kind) + " policy is documentation: daemons do not enforce it, but hits they attribute to its name keep counting here.";
     var backdrop = h(
       '<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal modal-wide">' +
         "<h2>Edit policy</h2>" +
@@ -4429,7 +4470,7 @@
       try {
         await state.ds.updatePolicy(p.id, fields);
         close();
-        toast(enforceable || (v.spec && p.kind === "guardrail") ? "Policy updated — daemons pick it up on their next pull" : "Policy updated");
+        toast(enforceable || (v.spec && (p.kind === "guardrail" || p.kind === "transform")) ? "Policy updated — daemons pick it up on their next pull" : "Policy updated");
         if (onSaved) onSaved();
       } catch (e2) {
         btn.disabled = false;

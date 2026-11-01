@@ -797,6 +797,11 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         store: Arc::clone(&state.store),
         budget: state.effective_budget(),
         rates: Arc::clone(&state.pushed_rates),
+        pushed: state.sandbox.pushed(),
+        local_budget: state.config.budget.clone(),
+        failure_policy: None,
+        emitted_any: false,
+        egress_scanned: std::collections::BTreeMap::new(),
         finalizer: state.finalizer.clone(),
         _lease: lease,
         response_marker,
@@ -843,7 +848,10 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         let mut relay = Box::pin(stream);
         match relay.next().await {
             Some(Err(error)) => {
-                let mapped = if error.kind() == std::io::ErrorKind::QuotaExceeded {
+                let mapped = if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::QuotaExceeded | std::io::ErrorKind::PermissionDenied
+                ) {
                     crate::pipeline::PipelineError::blocked_source(error)
                 } else {
                     crate::pipeline::PipelineError::upstream_source(error)
@@ -883,7 +891,10 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
                     // per-session refusal SDKs must not auto-retry)
                     // and omitted the Retry-After that this file's own
                     // policy mandates on every 502.
-                    let mapped = if error.kind() == std::io::ErrorKind::QuotaExceeded {
+                    let mapped = if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::QuotaExceeded | std::io::ErrorKind::PermissionDenied
+                    ) {
                         crate::pipeline::PipelineError::blocked_source(error)
                     } else {
                         crate::pipeline::PipelineError::upstream_source(error)
@@ -981,6 +992,52 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
 /// by static allowlist below, AND (b) refuse the currently-configured
 /// `upstream_auth_header` name so operator-specific choices are also
 /// covered.
+/// Apply the console-pushed `tool.args` transforms to a `tools/call`
+/// body. A body the strict parser refuses is returned unchanged:
+/// re-serialising it would hide the defect (a duplicate key, say) from
+/// the parse gate that is about to refuse it.
+fn apply_pushed_tool_transforms(state: &AppState, body: Bytes) -> Bytes {
+    if state.sandbox.pushed().transforms.is_empty() || pv_sandbox::parse_tool_call(&body).is_err() {
+        return body;
+    }
+    let Ok(mut request) = serde_json::from_slice::<Value>(&body) else {
+        return body;
+    };
+    let Some(tool) = request
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return body;
+    };
+    let Some(arguments) = request.pointer_mut("/params/arguments") else {
+        return body;
+    };
+    let applied = state.sandbox.transform_tool_arguments(&tool, arguments);
+    if applied.is_empty() {
+        return body;
+    }
+    for transform in &applied {
+        tracing::info!(
+            tool = %tool,
+            policy = %transform.policy,
+            replacements = transform.replacements,
+            "tool arguments rewritten by a console-pushed transform"
+        );
+    }
+    state
+        .metrics
+        .counter(
+            "pv_pushed_transform_rewrites_total",
+            "Tool calls or chat requests rewritten by a console-pushed transform policy",
+        )
+        .inc();
+    match serde_json::to_vec(&request) {
+        Ok(bytes) => Bytes::from(bytes),
+        Err(_) => body,
+    }
+}
+
 fn is_forwardable_upstream_header(name: &axum::http::HeaderName, upstream_auth_header: &str) -> bool {
     use axum::http::header;
     // Any header name whose lowercased ASCII equals the configured
@@ -1568,6 +1625,10 @@ async fn mcp_call_inner(
             }
         }
     }
+    // Console-pushed transforms rewrite the arguments before the verdict
+    // is taken, so every gate, the journal and the backend see the
+    // rewritten call.
+    let body = apply_pushed_tool_transforms(&state, body);
     // Kept for the intent token: the intercept consumes the caller.
     let intent_caller = authenticated.clone();
     match state
@@ -3601,6 +3662,21 @@ struct AbortFinalizingStream {
     /// Console-pushed token-rate windows; completion tokens are recorded
     /// as the provider reports them.
     rates: Arc<crate::policy_push::RateLimits>,
+    /// Console-pushed rules at request time: egress guardrails over the
+    /// captured response text, and the budget policy names a mid-stream
+    /// refusal is attributed to.
+    pushed: Arc<pv_sandbox::PushedRules>,
+    /// The local budget, so a mid-stream refusal can say which pushed
+    /// policy set the cap it hit.
+    local_budget: pv_state::BudgetSpec,
+    /// Console policy the next failure capture is attributed to.
+    failure_policy: Option<String>,
+    /// True once a body byte reached the client (SSE only): after that
+    /// a refusal can only end the stream, not change the status.
+    emitted_any: bool,
+    /// Bytes of each choice's content the egress guardrails already
+    /// scanned, so a streamed response is scanned incrementally.
+    egress_scanned: std::collections::BTreeMap<u64, usize>,
     finalizer: crate::reconciler::Finalizer,
     _lease: crate::session::SessionLease,
     response_marker: Option<String>,
@@ -4121,11 +4197,15 @@ impl AbortFinalizingStream {
         // BudgetExceeded here previously attested every one of those
         // as an enforcement stop.
         let (class, status, stop_reason, payload) = if let Some((failure_reason, reason)) = failure {
+            let mut payload = json!({"reason": reason, "direction": "upstream_response"});
+            if let (Some(policy), Some(object)) = (self.failure_policy.take(), payload.as_object_mut()) {
+                object.insert("policy".to_owned(), Value::String(policy));
+            }
             (
                 pv_events::EventClass::StopReason,
                 pv_events::StatusId::Failure,
                 Some(failure_reason),
-                json!({"reason": reason, "direction": "upstream_response"}),
+                payload,
             )
         } else if !self.upstream_status.is_success() {
             (
@@ -4540,6 +4620,92 @@ impl AbortFinalizingStream {
     }
 }
 
+/// How far back an incremental egress scan starts before the bytes it
+/// has not seen yet, so a match that straddles two frames is still
+/// found. A pattern is at most 512 bytes; a match longer than this is
+/// caught by the full rescan at the end of the body.
+const EGRESS_SCAN_OVERLAP: usize = 1024;
+
+impl AbortFinalizingStream {
+    /// The first console-pushed egress guardrail that refuses the text
+    /// captured so far, as `(policy, reason)`. Scans only what arrived
+    /// since the last call (plus [`EGRESS_SCAN_OVERLAP`]); `full`
+    /// rescans everything, which the end-of-body check uses.
+    fn egress_refusal(&mut self, full: bool) -> Option<(String, String)> {
+        if !self.pushed.inspects_responses() {
+            return None;
+        }
+        for (index, capture) in &self.response_choices {
+            let scanned = if full {
+                0
+            } else {
+                self.egress_scanned.get(index).copied().unwrap_or(0)
+            };
+            let mut start = scanned
+                .saturating_sub(EGRESS_SCAN_OVERLAP)
+                .min(capture.content.len());
+            while start > 0 && !capture.content.is_char_boundary(start) {
+                start -= 1;
+            }
+            let window = capture.content.get(start..).unwrap_or_default();
+            if let Some(hit) = self.pushed.refuses_response(window) {
+                return Some(hit);
+            }
+            self.egress_scanned.insert(*index, capture.content.len());
+        }
+        None
+    }
+
+    /// Refuse the response for an egress guardrail hit: attest the turn
+    /// as policy-blocked and attributed to the policy, drop any held
+    /// output, and hand back the error the handler maps to HTTP 403.
+    fn refuse_egress(&mut self, policy: String, reason: String) -> std::io::Error {
+        tracing::warn!(
+            session = %self.session.id,
+            %policy,
+            %reason,
+            "model response refused by a console-pushed guardrail"
+        );
+        self.failure_policy = Some(policy);
+        if let Err(error) =
+            self.submit_response_capture(Some((pv_events::StopReason::PolicyBlocked, reason.clone())))
+        {
+            tracing::warn!(
+                %error,
+                session = %self.session.id,
+                "guardrail refusal capture submit failed; sealing session capture"
+            );
+            self.session.mark_capture_failed();
+        }
+        self.pending_output.clear();
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("response blocked by guardrail: {reason}"),
+        )
+    }
+
+    /// The SSE form of [`Self::refuse_egress`]: before any byte reached
+    /// the client the handler still turns the error into a real 403;
+    /// after that the status line is committed, so the stream ends with
+    /// an error frame the SDK surfaces, then EOF.
+    fn refuse_sse_egress(
+        &mut self,
+        policy: String,
+        reason: String,
+    ) -> Poll<Option<Result<Bytes, std::io::Error>>> {
+        let error = self.refuse_egress(policy, reason);
+        if !self.emitted_any {
+            return Poll::Ready(Some(Err(error)));
+        }
+        self.completed = true;
+        let frame = format!(
+            "data: {}\n\n",
+            json!({"error": {"message": error.to_string(), "type": "policy_blocked", "code": "guardrail"}})
+        );
+        Poll::Ready(Some(Ok(Bytes::from(frame))))
+    }
+}
+
 impl Stream for AbortFinalizingStream {
     type Item = Result<Bytes, std::io::Error>;
 
@@ -4584,10 +4750,16 @@ impl Stream for AbortFinalizingStream {
                     // deliberately avoids.
                     self.session
                         .latch_enforcement(pv_events::StopReason::BudgetExceeded);
-                    Some((
-                        pv_events::StopReason::BudgetExceeded,
-                        format!("{limit} exceeded (cap {cap})"),
-                    ))
+                    // Name the console policy that set the cap, as the
+                    // admission-time check does, so the refusal and the
+                    // stop-reason event attribute the block.
+                    let policy = self.pushed.budget_policy_for(&self.local_budget, &limit, cap);
+                    let reason = match &policy {
+                        Some(name) => format!("policy {name:?}: {limit} exceeded (cap {cap})"),
+                        None => format!("{limit} exceeded (cap {cap})"),
+                    };
+                    self.failure_policy = policy;
+                    Some((pv_events::StopReason::BudgetExceeded, reason))
                 }
                 // Backend outage: fail-closed refusal, not enforcement —
                 // attested Other, mirroring the no-latch decision above.
@@ -4628,7 +4800,10 @@ impl Stream for AbortFinalizingStream {
                 ))));
             }
             match pending.continuation {
-                BudgetContinuation::Emit(bytes) => return Poll::Ready(Some(Ok(bytes))),
+                BudgetContinuation::Emit(bytes) => {
+                    self.emitted_any = true;
+                    return Poll::Ready(Some(Ok(bytes)));
+                }
                 BudgetContinuation::ContinueNonSse => {}
                 BudgetContinuation::FinishSse => {
                     if let Err(error) = self.submit_response_capture(None) {
@@ -4670,6 +4845,10 @@ impl Stream for AbortFinalizingStream {
                                 return Poll::Ready(Some(Err(error)));
                             }
                         };
+                        if let Some((policy, reason)) = self.egress_refusal(false) {
+                            let error = self.refuse_egress(policy, reason);
+                            return Poll::Ready(Some(Err(error)));
+                        }
                         self.pending_output.push_back(bytes);
                         if delta > 0 {
                             self.begin_budget_check(delta, BudgetContinuation::ContinueNonSse);
@@ -4695,6 +4874,10 @@ impl Stream for AbortFinalizingStream {
                                 return Poll::Ready(Some(Err(error)));
                             }
                         };
+                        if let Some((policy, reason)) = self.egress_refusal(true) {
+                            let error = self.refuse_egress(policy, reason);
+                            return Poll::Ready(Some(Err(error)));
+                        }
                         if delta > 0 {
                             self.begin_budget_check(delta, BudgetContinuation::FinishNonSse);
                             context.waker().wake_by_ref();
@@ -4737,10 +4920,21 @@ impl Stream for AbortFinalizingStream {
             }
         }
 
+        if self.completed {
+            // An egress refusal mid-stream ended the body with an error
+            // frame; nothing more is relayed.
+            return Poll::Ready(None);
+        }
         match self.inner.as_mut().poll_next(context) {
             Poll::Ready(Some(Ok(bytes))) => match self.absorb_network_chunk(&bytes) {
-                Ok(0) => Poll::Ready(Some(Ok(bytes))),
                 Ok(delta) => {
+                    if let Some((policy, reason)) = self.egress_refusal(false) {
+                        return self.refuse_sse_egress(policy, reason);
+                    }
+                    if delta == 0 {
+                        self.emitted_any = true;
+                        return Poll::Ready(Some(Ok(bytes)));
+                    }
                     self.begin_budget_check(delta, BudgetContinuation::Emit(bytes));
                     context.waker().wake_by_ref();
                     Poll::Pending
@@ -4767,6 +4961,9 @@ impl Stream for AbortFinalizingStream {
                         return Poll::Ready(Some(Err(error)));
                     }
                 };
+                if let Some((policy, reason)) = self.egress_refusal(true) {
+                    return self.refuse_sse_egress(policy, reason);
+                }
                 if delta > 0 {
                     self.begin_budget_check(delta, BudgetContinuation::FinishSse);
                     context.waker().wake_by_ref();
@@ -7619,6 +7816,11 @@ mod tests {
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
             rates: Arc::clone(&state.pushed_rates),
+            pushed: state.sandbox.pushed(),
+            local_budget: state.config.budget.clone(),
+            failure_policy: None,
+            emitted_any: false,
+            egress_scanned: std::collections::BTreeMap::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -7717,6 +7919,11 @@ mod tests {
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
             rates: Arc::clone(&state.pushed_rates),
+            pushed: state.sandbox.pushed(),
+            local_budget: state.config.budget.clone(),
+            failure_policy: None,
+            emitted_any: false,
+            egress_scanned: std::collections::BTreeMap::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -7805,6 +8012,11 @@ mod tests {
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
             rates: Arc::clone(&state.pushed_rates),
+            pushed: state.sandbox.pushed(),
+            local_budget: state.config.budget.clone(),
+            failure_policy: None,
+            emitted_any: false,
+            egress_scanned: std::collections::BTreeMap::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -7877,6 +8089,11 @@ mod tests {
             store: Arc::clone(&state.store),
             budget: state.config.budget.clone(),
             rates: Arc::clone(&state.pushed_rates),
+            pushed: state.sandbox.pushed(),
+            local_budget: state.config.budget.clone(),
+            failure_policy: None,
+            emitted_any: false,
+            egress_scanned: std::collections::BTreeMap::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),

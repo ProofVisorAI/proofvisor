@@ -1,13 +1,16 @@
 # ProofVisor — what exists today
 
-Dated 2026-10-31, rechecked on 2026-11-01. Every item below was
-exercised on a laptop against the local `integration/all` branch (the rename branch
-plus the native-provider, policy-push, SCIM and billing, and interop
-work): the Rust test suites, the API and console test suites, the
-browser drills, the real-binary drills and the interop tests all
-passed. The numbers are in the
-last section. Items that are planned, partial or demo-only are listed
-separately so that nothing here overstates what a customer gets.
+Dated 2026-10-31, rechecked on 2026-11-01 (last pass in the evening,
+on `main`). Sections 1 to 6 list only features that an automated
+end-to-end test drives through the real server or binary and that
+passed on every run recorded in sections 8 and 9: the Rust test suites,
+the API and console test suites, the browser drills, the real-binary
+drills and the interop tests. Where the far end of a test is a stand-in
+rather than the real service (a local server speaking a vendor's wire
+format, fixture certificates for Cloud Foundry, a scripted identity
+provider), the item says so. Anything that is built but not proven
+that way, planned, partial or demo-only is in section 7, so that
+nothing here overstates what a customer gets.
 
 ## 1. The proxy (`proofvisord`)
 
@@ -22,7 +25,9 @@ chat-completions format.
   Messages, Gemini `generateContent`) and translates the answer back,
   including streaming, tool calls, stop reasons, usage and errors.
   `n > 1` works with every provider (Anthropic gets one request per
-  choice). Sixteen presets exist in `pvctl init` (OpenAI, Azure,
+  choice). The Anthropic and Gemini adapters are driven end to end
+  against local servers that speak each vendor's wire format; a run
+  against the vendors' live APIs is still owed (section 7). Sixteen presets exist in `pvctl init` (OpenAI, Azure,
   Anthropic and Gemini natively, Groq, Mistral, OpenRouter, Together,
   DeepSeek, xAI, Ollama, LM Studio, vLLM, llama.cpp, LiteLLM, custom).
 - **Streaming passes through.** Server-sent events are relayed frame by
@@ -192,8 +197,6 @@ with demonstration data, which is what the public site shows by default.
   real browser), the daemon's AuthZEN request format against two public
   interop decision servers, and the daemon's own AuthZEN client against
   the public Topaz server.
-- **Windows**: the daemon and CLI compile for Windows x64, and CI and
-  the release workflow build them there.
 - **The rename keeps existing deployments working.** Signed and hashed
   labels (receipt tag, chain genesis, journal and outbox labels, token
   types and claims, the default audience) keep their pre-rename bytes,
@@ -230,9 +233,29 @@ with demonstration data, which is what the public site shows by default.
   (`pv_redact::compile_pattern`). A guardrail saved before this spec
   existed keeps its free-text body: the console still accepts it, it
   stays documentation only, and daemons now list it as unsupported with
-  the reason "guardrail policy has no JSON spec". `applies_to:
-  "llm.egress"` (model responses) is reserved and refused by the
-  console until daemons inspect response bodies.
+  the reason "guardrail policy has no JSON spec".
+- **Guardrails over model responses** (`applies_to: "llm.egress"`,
+  scope `llm.egress`, added later on 2026-11-01). The daemon scans the
+  response text as it captures it. A buffered response that matches is
+  refused with HTTP 403 naming the policy and no byte of it reaches the
+  client. A streamed response that matches in its first frame is
+  refused the same way; one that matches later ends with an error frame
+  naming the policy, and the frame that completed the match is never
+  relayed (the scan overlaps frames by 1 KiB and rescans the whole body
+  at the end). The turn is attested "Policy Blocked" with the policy
+  name, so the console counts it as a block.
+- **Transform policies are enforced** when their body is the JSON spec
+  described in `docs/reference/OPERATIONS.md` ("Transform policies"):
+  `applies_to` (`tool.args` or `llm.ingress`), `redact_patterns` and an
+  optional `replacement` (default `[REDACTED]`). Tool arguments are
+  rewritten before the sandbox verdict, so the journal and the backend
+  both see the rewritten call; chat messages are rewritten after the
+  guardrails and before compression, and the compression record lists
+  the transforms that fired with their replacement counts. A free-text
+  transform stays documentation and is reported unsupported.
+- **A pushed token budget that a completion overflows** is refused
+  naming the console policy, as the admission-time check already did,
+  and the stop-reason event carries the policy name.
 
 ## 7. Not yet, partial, or needs a decision
 
@@ -242,21 +265,17 @@ with demonstration data, which is what the public site shows by default.
   SCIM) were proposed during development and need a business decision
   before anyone turns them on; they contradict today's "every
   governance feature on Free" wording.
-- **Transform policies** document intent in the console; daemons do
-  not enforce them. **Guardrails over model responses** (`applies_to:
-  "llm.egress"`) are not enforced either: the daemon streams response
-  bodies through without inspecting them, so the console refuses that
-  value for now.
-- **A pushed token budget that a streaming completion overflows
-  mid-stream** is refused with the limit name but without the console
-  policy's name; only the request-time check (prompt tokens, where a
-  pushed cap normally binds) names the policy.
+- **Transforms do not rewrite model responses**, and guardrails do not
+  inspect reasoning content or tool calls in a response; only the
+  response text is scanned.
 - **Budget policies written before this release have no spec.** The
   pre-rename console stored budget policies as text only, so a daemon
   reports such a policy as unsupported ("budget policy has no JSON
   spec") until an administrator re-saves it from a template.
-- **Windows** has not been run on Windows hardware yet, and its CI job
-  runs only after a push, so it is a Tier-2 platform.
+- **Windows.** The daemon and CLI compile for Windows x64 and CI builds
+  them there, but nothing has run on Windows hardware, so it is listed
+  here rather than among the shipped platforms: a build is not a
+  working feature.
 - **Release state.** The latest release is the pre-release
   `v0.1.0-rc.5`; nothing is on crates.io yet. Publishing needs explicit
   approval.
@@ -370,12 +389,17 @@ every push to `main`.
 | `pvctl sidecar` (unit-tested in-process only) | `crates/pv-cli/tests/e2e_sidecar.rs` runs the real binary from a settings file: buffered and streamed chat and an MCP call pass through, every forwarded request carries the token from the credential file and never the application's own bearer, a non-loopback listen address and a missing gateway are refused, SIGTERM exits 0 | 3 of 3 |
 | The CLI help contract listed ten of the twenty-one subcommands | `e2e_cli_contract.rs` now checks all twenty-one in `--help` and each one's own help | 22 of 22 |
 | `scripts/policy-push-e2e.mjs` ran only by hand | a step in the Console + API workflow (`console-api.yml`), after the daemon crash drill, with the same API and built binaries; the script now honours a signup `Retry-After` once | 36 of 36 locally |
+| Guardrails over model responses (`llm.egress`, previously refused by the console) | `crates/pv-harness/tests/e2e_policy_egress_and_transforms.rs`: a buffered response that matches is refused with 403 naming the policy and the matched text never reaches the client; a streamed match in the first frame is refused the same way; a later match ends the stream with an error frame, the completing frame withheld; each refusal is attested with the policy name. `scripts/policy-push-e2e.mjs`: a real daemon refuses a model response naming `privacy.no_codenames`, a clean response on the same session passes, and the console counts the block | 3 of 3; script 51 of 51 |
+| Transform policies (documentation only before) | same Rust file: an `llm.ingress` transform rewrites the chat request before the model sees it and the compression record names it with the replacement count; a `tool.args` transform rewrites the arguments before the backend sees them, leaves tools outside its scope alone, and leaves a body the strict parser refuses alone. Script: a real daemon forwards a rewritten tool call and the console shows the transform enforced. `server/ci/policy-spec.test.mjs`: the spec and its refusals | 2 of 2; script 51 of 51; 10 of 10 |
+| Mid-stream budget refusal without the policy name | same Rust file: a completion that overflows a pushed `max_tokens` is refused with `policy "llm.token_cap": max_tokens exceeded (cap 120)` and the stop-reason event carries the policy | 1 of 1 |
 | Audit-log CSV export (tested only by the scheduled console-smoke drill) | `server/ci/e2e.mjs`: status and download headers, the `id,at,event,…` header row, the org's own `deployment.create` entry and actor email, no formula-leading cells, and the `audit.exported_csv` breadcrumb in the JSON audit log | 146 of 146 (was 141) |
 
 Not closed, and why:
 
-- **Guardrail and transform policy enforcement** needs a spec design
-  first (section 7).
+- **Guardrail enforcement** was closed later the same evening (section
+  6; pull request ProofVisorAI/proofvisor#397), and **guardrails over
+  model responses, transform policies and the named mid-stream budget
+  refusal** after that (section 6, and the table below).
 - **Live Anthropic and Gemini runs** need real keys; none are available
   on the verification laptop.
 - **Windows hardware, a real Cloud Foundry foundation, Okta and Entra
@@ -388,3 +412,13 @@ clippy --workspace --all-targets --all-features -D warnings` clean; API
 unit tests 100 of 100; contract suite 146 of 146 and the policy-push
 script 36 of 36 against a locally booted API with the real daemon and
 `pvctl`.
+
+After the response guardrails, transforms and the named mid-stream
+budget refusal landed, on the same laptop: Rust workspace 1,757 tests
+passed, 0 failed, 3 ignored; `cargo fmt --check` and `cargo clippy
+--workspace --all-targets --all-features -D warnings` clean; API tests
+108 of 108; API type check clean; contract suite 146 of 146; policy-push
+script 51 of 51 against a locally booted API with the real daemon and
+`pvctl`; the 17-drill console battery 17 of 17 (the IP allow-list drill
+first hit the per-IP invitation rate limit left by the two invite drills
+before it, and passed on its own).

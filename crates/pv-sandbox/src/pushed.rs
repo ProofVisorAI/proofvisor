@@ -11,8 +11,12 @@
 //!   pass both;
 //! * schema rules run after the local schema, so arguments must satisfy
 //!   both;
-//! * guardrail rules (deny patterns over tool arguments or chat
-//!   requests) run after everything local, so they can only refuse.
+//! * guardrail rules (deny patterns over tool arguments, chat requests
+//!   or model responses) run after everything local, so they can only
+//!   refuse;
+//! * transform rules (redaction of tool arguments or chat requests) run
+//!   before the verdict, so the rewritten text is what every local gate
+//!   sees, what is journaled, and what is forwarded.
 //!
 //! A compromised console can therefore block calls the host allows, but
 //! it can never let through a call the host's own config refuses.
@@ -177,18 +181,23 @@ pub enum GuardrailTarget {
     ToolArgs,
     /// Every string value under `messages` of a chat request.
     LlmIngress,
+    /// The text of a model response (every choice's content), checked as
+    /// it is captured: a buffered response is refused before any byte
+    /// reaches the client, a streamed one is cut at the first matching
+    /// frame.
+    LlmEgress,
 }
 
 impl GuardrailTarget {
-    /// Parse the spec's `applies_to`. `llm.egress` is reserved (the
-    /// daemon does not inspect response bodies) and is reported as
-    /// unsupported with its own reason.
+    /// Parse the spec's `applies_to`.
     pub fn parse(applies_to: &str) -> Result<Self, String> {
         match applies_to {
             "tool.args" => Ok(Self::ToolArgs),
             "llm.ingress" => Ok(Self::LlmIngress),
-            "llm.egress" => Err("applies_to \"llm.egress\" is not enforced by this daemon (model responses are not inspected)".to_owned()),
-            other => Err(format!("applies_to {other:?} is not tool.args or llm.ingress")),
+            "llm.egress" => Ok(Self::LlmEgress),
+            other => Err(format!(
+                "applies_to {other:?} is not tool.args, llm.ingress or llm.egress"
+            )),
         }
     }
 }
@@ -344,6 +353,176 @@ impl PushedGuardrail {
             hit.pattern, hit.of, hit.pointer
         ))
     }
+
+    /// True for a rule over model responses.
+    pub fn inspects_responses(&self) -> bool {
+        self.target == GuardrailTarget::LlmEgress
+    }
+
+    /// The reason a model response whose captured text is `text` is
+    /// refused, if it is. Only the pattern position is reported, never
+    /// the matched text.
+    pub fn refuses_response(&self, text: &str) -> Option<String> {
+        if self.target != GuardrailTarget::LlmEgress {
+            return None;
+        }
+        let index = self.patterns.iter().position(|pattern| pattern.is_match(text))?;
+        Some(format!(
+            "model response matches deny pattern {} of {}",
+            index + 1,
+            self.patterns.len()
+        ))
+    }
+}
+
+/// Where a pushed transform rewrites text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformTarget {
+    /// Every string value in the arguments of a tool call.
+    ToolArgs,
+    /// Every string value under `messages` of a chat request.
+    LlmIngress,
+}
+
+impl TransformTarget {
+    /// Parse the spec's `applies_to`.
+    pub fn parse(applies_to: &str) -> Result<Self, String> {
+        match applies_to {
+            "tool.args" => Ok(Self::ToolArgs),
+            "llm.ingress" => Ok(Self::LlmIngress),
+            other => Err(format!("applies_to {other:?} is not tool.args or llm.ingress")),
+        }
+    }
+}
+
+/// Upper bound on patterns per transform (the console enforces the same).
+pub const MAX_TRANSFORM_PATTERNS: usize = 64;
+/// Upper bound on the replacement text, in bytes.
+pub const MAX_TRANSFORM_REPLACEMENT_BYTES: usize = 64;
+/// What a match is replaced with when the spec names no replacement.
+pub const DEFAULT_TRANSFORM_REPLACEMENT: &str = "[REDACTED]";
+
+/// One pushed transform: every match of its patterns in the text an
+/// agent sends is replaced before the verdict is taken, before anything
+/// is journaled, and before the call is forwarded. Patterns are compiled
+/// with the same bounds as the daemon's own `redaction_patterns`.
+pub struct PushedTransform {
+    /// Console policy name, recorded with every rewrite.
+    pub policy: String,
+    /// What the patterns are matched against.
+    pub target: TransformTarget,
+    /// For [`TransformTarget::ToolArgs`], which tools the rule covers.
+    pub scope: Option<ToolPattern>,
+    patterns: Vec<regex::Regex>,
+    replacement: String,
+}
+
+impl std::fmt::Debug for PushedTransform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushedTransform")
+            .field("policy", &self.policy)
+            .field("target", &self.target)
+            .field("scope", &self.scope)
+            .field("patterns", &self.patterns.len())
+            .field("replacement", &self.replacement)
+            .finish()
+    }
+}
+
+impl PushedTransform {
+    /// Compile a transform. `scope` is required for `tool.args` (it
+    /// names the tools) and ignored otherwise; `replacement` defaults to
+    /// [`DEFAULT_TRANSFORM_REPLACEMENT`].
+    pub fn compile(
+        policy: &str,
+        target: TransformTarget,
+        scope: Option<ToolPattern>,
+        redact_patterns: &[String],
+        replacement: Option<&str>,
+    ) -> Result<Self, String> {
+        if redact_patterns.is_empty() {
+            return Err("redact_patterns needs at least one pattern".to_owned());
+        }
+        if redact_patterns.len() > MAX_TRANSFORM_PATTERNS {
+            return Err(format!(
+                "redact_patterns holds {} patterns; at most {MAX_TRANSFORM_PATTERNS} are allowed",
+                redact_patterns.len()
+            ));
+        }
+        if target == TransformTarget::ToolArgs && scope.is_none() {
+            return Err("a tool.args transform needs a tool scope".to_owned());
+        }
+        let replacement = replacement.unwrap_or(DEFAULT_TRANSFORM_REPLACEMENT);
+        if replacement.is_empty() || replacement.len() > MAX_TRANSFORM_REPLACEMENT_BYTES {
+            return Err(format!(
+                "replacement must be 1 to {MAX_TRANSFORM_REPLACEMENT_BYTES} bytes"
+            ));
+        }
+        if replacement.chars().any(char::is_control) {
+            return Err("replacement must not contain control characters".to_owned());
+        }
+        let patterns = redact_patterns
+            .iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                pv_redact::compile_pattern(raw)
+                    .map_err(|error| format!("redact pattern {} does not compile: {error}", index + 1))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            policy: policy.to_owned(),
+            target,
+            scope,
+            patterns,
+            replacement: replacement.to_owned(),
+        })
+    }
+
+    /// Replace every match in every string value under `value`; keys
+    /// are left alone. Returns how many matches were replaced.
+    fn rewrite(&self, value: &mut Value) -> usize {
+        match value {
+            Value::String(text) => {
+                let mut replaced = 0;
+                for pattern in &self.patterns {
+                    let matches = pattern.find_iter(text).count();
+                    if matches > 0 {
+                        *text = pattern
+                            .replace_all(text, regex::NoExpand(&self.replacement))
+                            .into_owned();
+                        replaced += matches;
+                    }
+                }
+                replaced
+            }
+            Value::Array(items) => items.iter_mut().map(|item| self.rewrite(item)).sum(),
+            Value::Object(fields) => fields.values_mut().map(|item| self.rewrite(item)).sum(),
+            _ => 0,
+        }
+    }
+
+    /// Rewrite the arguments of a call to `tool`, when the rule covers
+    /// it. Returns how many matches were replaced.
+    pub fn apply_to_tool_call(&self, tool: &str, arguments: &mut Value) -> usize {
+        if self.target != TransformTarget::ToolArgs
+            || !self.scope.as_ref().is_some_and(|scope| scope.matches(tool))
+        {
+            return 0;
+        }
+        self.rewrite(arguments)
+    }
+
+    /// Rewrite the `messages` of a chat request `payload`. Returns how
+    /// many matches were replaced.
+    pub fn apply_to_chat(&self, payload: &mut Value) -> usize {
+        if self.target != TransformTarget::LlmIngress {
+            return 0;
+        }
+        match payload.get_mut("messages") {
+            Some(messages) => self.rewrite(messages),
+            None => 0,
+        }
+    }
 }
 
 /// Everything the daemon applied from one console bundle.
@@ -361,9 +540,26 @@ pub struct PushedRules {
     pub schemas: Vec<PushedSchema>,
     /// Pushed guardrails (deny patterns).
     pub guardrails: Vec<PushedGuardrail>,
+    /// Pushed transforms (redaction before forwarding).
+    pub transforms: Vec<PushedTransform>,
 }
 
 impl PushedRules {
+    /// True when any guardrail inspects model responses, so a relay can
+    /// skip the scan entirely otherwise.
+    pub fn inspects_responses(&self) -> bool {
+        self.guardrails.iter().any(PushedGuardrail::inspects_responses)
+    }
+
+    /// The first egress guardrail that refuses a response whose captured
+    /// text is `text`, as `(policy name, reason)`.
+    pub fn refuses_response(&self, text: &str) -> Option<(String, String)> {
+        self.guardrails.iter().find_map(|rule| {
+            rule.refuses_response(text)
+                .map(|reason| (rule.policy.clone(), format!("policy {:?}: {reason}", rule.policy)))
+        })
+    }
+
     /// Which pushed budget policy set the cap a refusal hit, when the
     /// binding cap came from the console rather than the local config.
     /// `limit` is the refusal's limit name (`max_tokens`,
@@ -392,7 +588,12 @@ impl PushedRules {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
 
     use super::*;
     use serde_json::json;
@@ -446,6 +647,159 @@ mod tests {
         .unwrap();
         assert!(local.errors(&json!({"n": 5})).is_empty());
         assert!(!local.errors(&json!({"n": 50})).is_empty());
+    }
+
+    #[test]
+    fn egress_guardrails_match_response_text_and_name_only_the_pattern() {
+        let rule = PushedGuardrail::compile(
+            "privacy.no_internal_codenames",
+            GuardrailTarget::LlmEgress,
+            None,
+            &["(?i)project\\s+nightjar".to_owned(), "ACME-INTERNAL".to_owned()],
+        )
+        .unwrap();
+        assert!(rule.inspects_responses());
+        assert_eq!(
+            rule.refuses_response("The plan for Project Nightjar is")
+                .as_deref(),
+            Some("model response matches deny pattern 1 of 2")
+        );
+        assert_eq!(
+            rule.refuses_response("tag ACME-INTERNAL here").as_deref(),
+            Some("model response matches deny pattern 2 of 2")
+        );
+        assert!(rule.refuses_response("nothing to see").is_none());
+        // Ingress and tool rules never look at responses, and an egress
+        // rule never looks at requests.
+        let ingress =
+            PushedGuardrail::compile("p", GuardrailTarget::LlmIngress, None, &["x".to_owned()]).unwrap();
+        assert!(!ingress.inspects_responses());
+        assert!(ingress.refuses_response("x").is_none());
+        assert!(rule
+            .refuses_chat(&json!({"messages": [{"content": "ACME-INTERNAL"}]}))
+            .is_none());
+        assert!(rule
+            .refuses_tool_call("t", &json!({"a": "ACME-INTERNAL"}))
+            .is_none());
+
+        let mut rules = PushedRules::default();
+        assert!(!rules.inspects_responses());
+        rules.guardrails.push(rule);
+        assert!(rules.inspects_responses());
+        let (policy, reason) = rules.refuses_response("ACME-INTERNAL").unwrap();
+        assert_eq!(policy, "privacy.no_internal_codenames");
+        assert_eq!(
+            reason,
+            "policy \"privacy.no_internal_codenames\": model response matches deny pattern 2 of 2"
+        );
+    }
+
+    #[test]
+    fn transforms_rewrite_matches_inside_their_target_only() {
+        let tool_rule = PushedTransform::compile(
+            "privacy.redact_tickets",
+            TransformTarget::ToolArgs,
+            ToolPattern::from_scope("tool.create_*"),
+            &["TCK-[0-9]{4}".to_owned()],
+            None,
+        )
+        .unwrap();
+        let mut arguments =
+            json!({"title": "see TCK-1234 and TCK-9999", "nested": {"note": "TCK-0001"}, "count": 3});
+        assert_eq!(tool_rule.apply_to_tool_call("create_ticket", &mut arguments), 3);
+        assert_eq!(
+            arguments,
+            json!({"title": "see [REDACTED] and [REDACTED]", "nested": {"note": "[REDACTED]"}, "count": 3})
+        );
+        // A tool outside the scope, and a second pass, change nothing.
+        let mut untouched = json!({"title": "TCK-1234"});
+        assert_eq!(tool_rule.apply_to_tool_call("delete_ticket", &mut untouched), 0);
+        assert_eq!(untouched, json!({"title": "TCK-1234"}));
+        assert_eq!(tool_rule.apply_to_tool_call("create_ticket", &mut arguments), 0);
+
+        let chat_rule = PushedTransform::compile(
+            "privacy.redact_codenames",
+            TransformTarget::LlmIngress,
+            None,
+            &["(?i)nightjar".to_owned()],
+            Some("<codename>"),
+        )
+        .unwrap();
+        let mut payload = json!({"model": "nightjar-1", "messages": [{"role": "user", "content": "Status of NIGHTJAR?"}, {"role": "assistant", "content": [{"type": "text", "text": "Nightjar is on track"}]}]});
+        assert_eq!(chat_rule.apply_to_chat(&mut payload), 2);
+        assert_eq!(payload["messages"][0]["content"], "Status of <codename>?");
+        assert_eq!(
+            payload["messages"][1]["content"][0]["text"],
+            "<codename> is on track"
+        );
+        assert_eq!(payload["model"], "nightjar-1", "only messages are rewritten");
+        // A replacement with `$` is literal, never a group reference.
+        let dollar = PushedTransform::compile(
+            "p",
+            TransformTarget::LlmIngress,
+            None,
+            &["(x)".to_owned()],
+            Some("$1$0"),
+        )
+        .unwrap();
+        let mut payload = json!({"messages": [{"content": "x"}]});
+        assert_eq!(dollar.apply_to_chat(&mut payload), 1);
+        assert_eq!(payload["messages"][0]["content"], "$1$0");
+    }
+
+    #[test]
+    fn transform_specs_are_bounded() {
+        let scope = ToolPattern::from_scope("tool.*");
+        let err =
+            PushedTransform::compile("p", TransformTarget::ToolArgs, scope.clone(), &[], None).unwrap_err();
+        assert!(err.contains("at least one"), "{err}");
+        let err = PushedTransform::compile("p", TransformTarget::ToolArgs, None, &["x".to_owned()], None)
+            .unwrap_err();
+        assert!(err.contains("needs a tool scope"), "{err}");
+        let err = PushedTransform::compile(
+            "p",
+            TransformTarget::ToolArgs,
+            scope.clone(),
+            &["(unclosed".to_owned()],
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("redact pattern 1 does not compile"), "{err}");
+        let err = PushedTransform::compile(
+            "p",
+            TransformTarget::ToolArgs,
+            scope.clone(),
+            &["x".to_owned()],
+            Some(""),
+        )
+        .unwrap_err();
+        assert!(err.contains("1 to 64 bytes"), "{err}");
+        let long = "r".repeat(MAX_TRANSFORM_REPLACEMENT_BYTES + 1);
+        assert!(PushedTransform::compile(
+            "p",
+            TransformTarget::ToolArgs,
+            scope.clone(),
+            &["x".to_owned()],
+            Some(&long)
+        )
+        .is_err());
+        let err = PushedTransform::compile(
+            "p",
+            TransformTarget::ToolArgs,
+            scope,
+            &["x".to_owned()],
+            Some("a\nb"),
+        )
+        .unwrap_err();
+        assert!(err.contains("control characters"), "{err}");
+        let many: Vec<String> = (0..=MAX_TRANSFORM_PATTERNS).map(|i| format!("p{i}")).collect();
+        let err = PushedTransform::compile("p", TransformTarget::LlmIngress, None, &many, None).unwrap_err();
+        assert!(err.contains("at most 64"), "{err}");
+        assert!(TransformTarget::parse("llm.egress").is_err());
+        assert_eq!(
+            GuardrailTarget::parse("llm.egress").unwrap(),
+            GuardrailTarget::LlmEgress
+        );
     }
 
     #[test]
@@ -596,9 +950,10 @@ mod tests {
             GuardrailTarget::parse("llm.ingress").unwrap(),
             GuardrailTarget::LlmIngress
         );
-        assert!(GuardrailTarget::parse("llm.egress")
-            .unwrap_err()
-            .contains("not inspected"));
+        assert_eq!(
+            GuardrailTarget::parse("llm.egress").unwrap(),
+            GuardrailTarget::LlmEgress
+        );
         assert!(GuardrailTarget::parse("tool.result").is_err());
     }
 

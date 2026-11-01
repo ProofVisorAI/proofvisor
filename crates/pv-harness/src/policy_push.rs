@@ -20,13 +20,12 @@
 //! fail open.
 //!
 //! Kinds: `budget`, `allowlist`, `schema` (tool calls), `rate`
-//! (per-principal token velocity on model traffic) and `guardrail`
-//! (deny patterns over tool arguments or chat requests, when the body
-//! is the JSON spec) are enforced. A `guardrail` with a free-text body
-//! is reported unsupported with that reason. `transform` policies
-//! document intent and attribute the daemon's own guard hits; the
-//! daemon neither enforces nor reports them. Anything else is reported
-//! unsupported.
+//! (per-principal token velocity on model traffic), `guardrail` (deny
+//! patterns over tool arguments, chat requests or model responses) and
+//! `transform` (redaction of tool arguments or chat requests before
+//! forwarding) are enforced when the body is the JSON spec. A
+//! `guardrail` or `transform` with a free-text body is reported
+//! unsupported with that reason. Anything else is reported unsupported.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,7 +34,8 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 use pv_sandbox::{
-    GuardrailTarget, PushedAllowlist, PushedGuardrail, PushedRules, PushedSchema, Sandbox, ToolPattern,
+    GuardrailTarget, PushedAllowlist, PushedGuardrail, PushedRules, PushedSchema, PushedTransform, Sandbox,
+    ToolPattern, TransformTarget,
 };
 use pv_state::{BudgetSpec, TokenVelocity};
 use serde::{Deserialize, Serialize};
@@ -149,7 +149,7 @@ pub fn compile(bundle: &PolicyBundle) -> CompiledBundle {
     let mut unsupported = Vec::new();
     for policy in bundle.policies.iter().filter(|policy| policy.enabled) {
         let outcome = match policy.kind.as_str() {
-            "transform" => continue,
+            "transform" => compile_transform(policy, &mut rules),
             "guardrail" => compile_guardrail(policy, &mut rules),
             "budget" => compile_budget(policy, &mut rules),
             "allowlist" => compile_allowlist(policy, &mut rules),
@@ -327,7 +327,7 @@ fn compile_guardrail(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(
     let target = spec
         .get("applies_to")
         .and_then(Value::as_str)
-        .ok_or_else(|| "applies_to must be tool.args or llm.ingress".to_owned())
+        .ok_or_else(|| "applies_to must be tool.args, llm.ingress or llm.egress".to_owned())
         .and_then(GuardrailTarget::parse)?;
     let scope = match target {
         GuardrailTarget::ToolArgs => Some(
@@ -339,6 +339,15 @@ fn compile_guardrail(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(
             if !matches!(scope, "llm" | "llm.*" | "llm.request" | "llm.ingress") {
                 return Err(format!(
                     "guardrail applies to llm.ingress; scope {scope:?} is not llm.request"
+                ));
+            }
+            None
+        }
+        GuardrailTarget::LlmEgress => {
+            let scope = policy.scope.trim();
+            if !matches!(scope, "llm" | "llm.*" | "llm.response" | "llm.egress") {
+                return Err(format!(
+                    "guardrail applies to llm.egress; scope {scope:?} is not llm.egress"
                 ));
             }
             None
@@ -358,6 +367,62 @@ fn compile_guardrail(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(
     rules
         .guardrails
         .push(PushedGuardrail::compile(&policy.name, target, scope, &patterns)?);
+    Ok(())
+}
+
+/// Compile a transform spec (docs/reference/OPERATIONS.md, "Transform
+/// policies"). Like a guardrail, a transform without a spec is free
+/// text the console stores as documentation; it is reported unsupported
+/// so the console shows it as not enforced.
+fn compile_transform(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(), String> {
+    if policy.spec.as_ref().is_none_or(Value::is_null) {
+        return Err("transform policy has no JSON spec (free text is documentation only)".to_owned());
+    }
+    let spec = spec_object(policy)?;
+    refuse_unknown_fields(spec, &["applies_to", "redact_patterns", "replacement"])?;
+    let target = spec
+        .get("applies_to")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "applies_to must be tool.args or llm.ingress".to_owned())
+        .and_then(TransformTarget::parse)?;
+    let scope = match target {
+        TransformTarget::ToolArgs => Some(
+            ToolPattern::from_scope(&policy.scope)
+                .ok_or_else(|| format!("scope {:?} does not name tools", policy.scope))?,
+        ),
+        TransformTarget::LlmIngress => {
+            let scope = policy.scope.trim();
+            if !matches!(scope, "llm" | "llm.*" | "llm.request" | "llm.ingress") {
+                return Err(format!(
+                    "transform applies to llm.ingress; scope {scope:?} is not llm.request"
+                ));
+            }
+            None
+        }
+    };
+    let patterns = match spec.get("redact_patterns") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "redact_patterns entries must be strings".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Err("redact_patterns must be a list of patterns".to_owned()),
+    };
+    let replacement = match spec.get("replacement") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.as_str()),
+        Some(other) => return Err(format!("replacement {other} is not a string")),
+    };
+    rules.transforms.push(PushedTransform::compile(
+        &policy.name,
+        target,
+        scope,
+        &patterns,
+        replacement,
+    )?);
     Ok(())
 }
 
@@ -761,9 +826,27 @@ mod tests {
             // says so instead of silently skipping it.
             json!({"id": "x8", "name": "p.x8", "kind": "guardrail", "scope": "llm.egress", "enabled": true, "spec": null, "body": "documentation only"}),
             policy(
-                "x9",
+                "g3",
                 "guardrail",
                 "llm.egress",
+                json!({"applies_to": "llm.egress", "deny_patterns": ["x"]}),
+            ),
+            policy(
+                "tr1",
+                "transform",
+                "tool.create_*",
+                json!({"applies_to": "tool.args", "redact_patterns": ["TCK-[0-9]+"], "replacement": "<ticket>"}),
+            ),
+            policy(
+                "tr2",
+                "transform",
+                "llm.request",
+                json!({"applies_to": "llm.ingress", "redact_patterns": ["(?i)nightjar"]}),
+            ),
+            policy(
+                "x9",
+                "guardrail",
+                "tool.*",
                 json!({"applies_to": "llm.egress", "deny_patterns": ["x"]}),
             ),
             policy(
@@ -790,12 +873,42 @@ mod tests {
                 "tool.*",
                 json!({"applies_to": "tool.args", "deny_patterns": ["x"], "effect": "warn"}),
             ),
+            policy(
+                "x14",
+                "transform",
+                "llm.request",
+                json!({"applies_to": "tool.args", "redact_patterns": ["x"]}),
+            ),
+            policy(
+                "x15",
+                "transform",
+                "tool.*",
+                json!({"applies_to": "llm.egress", "redact_patterns": ["x"]}),
+            ),
+            policy(
+                "x16",
+                "transform",
+                "tool.*",
+                json!({"applies_to": "tool.args", "redact_patterns": ["x"], "replacement": 7}),
+            ),
+            policy(
+                "x17",
+                "transform",
+                "tool.*",
+                json!({"applies_to": "tool.args", "redact_patterns": ["(unclosed"]}),
+            ),
         ]));
-        assert_eq!(compiled.applied, vec!["b1", "b2", "a1", "s1", "r1", "g1", "g2"]);
+        assert_eq!(
+            compiled.applied,
+            vec!["b1", "b2", "a1", "s1", "r1", "g1", "g2", "g3", "tr1", "tr2"]
+        );
         let refused: Vec<&str> = compiled.unsupported.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(
             refused,
-            vec!["x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13"],
+            vec![
+                "t1", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+                "x14", "x15", "x16", "x17"
+            ],
             "{:?}",
             compiled.unsupported
         );
@@ -809,7 +922,24 @@ mod tests {
                 .unwrap_or_default()
         };
         assert!(reason("x8").contains("no JSON spec"), "{}", reason("x8"));
-        assert!(reason("x9").contains("llm.egress"), "{}", reason("x9"));
+        assert!(
+            reason("t1").contains("transform policy has no JSON spec"),
+            "{}",
+            reason("t1")
+        );
+        assert!(reason("x9").contains("is not llm.egress"), "{}", reason("x9"));
+        assert!(reason("x14").contains("does not name tools"), "{}", reason("x14"));
+        assert!(
+            reason("x15").contains("not tool.args or llm.ingress"),
+            "{}",
+            reason("x15")
+        );
+        assert!(reason("x16").contains("is not a string"), "{}", reason("x16"));
+        assert!(
+            reason("x17").contains("redact pattern 1 does not compile"),
+            "{}",
+            reason("x17")
+        );
         assert!(
             reason("x10").contains("deny pattern 1 does not compile"),
             "{}",
@@ -818,11 +948,9 @@ mod tests {
         assert!(reason("x11").contains("does not name tools"), "{}", reason("x11"));
         assert!(reason("x12").contains("llm.ingress"), "{}", reason("x12"));
         assert!(reason("x13").contains("effect"), "{}", reason("x13"));
-        assert!(
-            !compiled.applied.contains(&"t1".to_owned()) && !refused.contains(&"t1"),
-            "transforms are neither"
-        );
-        assert_eq!(compiled.rules.guardrails.len(), 2);
+        assert_eq!(compiled.rules.guardrails.len(), 3);
+        assert!(compiled.rules.inspects_responses());
+        assert_eq!(compiled.rules.transforms.len(), 2);
         // Two budgets merge, stricter wins.
         assert_eq!(compiled.rules.budget.max_total_tool_calls, Some(5));
         assert_eq!(compiled.rules.budget.max_payout_usd_micros, Some(1_000_000));

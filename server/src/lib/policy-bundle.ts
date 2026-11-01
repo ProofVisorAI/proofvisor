@@ -47,10 +47,21 @@ export function isEnforceableKind(kind: string): kind is EnforceableKind {
  */
 export const GUARDRAIL_KIND = "guardrail";
 
-/** Where a guardrail's deny patterns are matched. `llm.egress` is reserved. */
-export const GUARDRAIL_APPLIES_TO = ["tool.args", "llm.ingress"] as const;
+/** Where a guardrail's deny patterns are matched. */
+export const GUARDRAIL_APPLIES_TO = ["tool.args", "llm.ingress", "llm.egress"] as const;
 export const GUARDRAIL_MAX_PATTERNS = 64;
 export const GUARDRAIL_MAX_PATTERN_BYTES = 512;
+
+/**
+ * Transforms are enforceable per policy the same way: a JSON spec
+ * (docs/reference/OPERATIONS.md, "Transform policies") is pushed to
+ * daemons, which replace every match before the call is journaled or
+ * forwarded; a free-text body is documentation only.
+ */
+export const TRANSFORM_KIND = "transform";
+export const TRANSFORM_APPLIES_TO = ["tool.args", "llm.ingress"] as const;
+export const TRANSFORM_MAX_PATTERNS = 64;
+export const TRANSFORM_MAX_REPLACEMENT_BYTES = 64;
 
 // Tool names are identifiers the daemon matches against tool-call
 // names: no whitespace, no control characters, bounded.
@@ -123,10 +134,30 @@ const guardrailSpec = z
   .object({
     applies_to: z
       .string()
-      .refine((v) => v !== "llm.egress", "llm.egress is not enforced by daemons yet; use tool.args or llm.ingress")
-      .refine((v) => (GUARDRAIL_APPLIES_TO as readonly string[]).includes(v), "applies_to must be tool.args or llm.ingress"),
+      .refine((v) => (GUARDRAIL_APPLIES_TO as readonly string[]).includes(v), "applies_to must be tool.args, llm.ingress or llm.egress"),
     deny_patterns: z.array(denyPattern).min(1, "deny_patterns needs at least one pattern").max(GUARDRAIL_MAX_PATTERNS),
     effect: z.literal("block").optional(),
+  })
+  .strict();
+
+const redactPattern = z
+  .string()
+  .min(1, "a redact pattern must not be empty")
+  .refine((p) => Buffer.byteLength(p, "utf8") <= GUARDRAIL_MAX_PATTERN_BYTES, `a redact pattern may be at most ${GUARDRAIL_MAX_PATTERN_BYTES} bytes`)
+  .refine((p) => !RUST_REGEX_UNSUPPORTED.test(p), "redact patterns use Rust regex syntax: lookaround and backreferences are not supported");
+
+const transformSpec = z
+  .object({
+    applies_to: z
+      .string()
+      .refine((v) => (TRANSFORM_APPLIES_TO as readonly string[]).includes(v), "applies_to must be tool.args or llm.ingress"),
+    redact_patterns: z.array(redactPattern).min(1, "redact_patterns needs at least one pattern").max(TRANSFORM_MAX_PATTERNS),
+    replacement: z
+      .string()
+      .min(1, "replacement must not be empty")
+      .refine((r) => Buffer.byteLength(r, "utf8") <= TRANSFORM_MAX_REPLACEMENT_BYTES, `replacement may be at most ${TRANSFORM_MAX_REPLACEMENT_BYTES} bytes`)
+      .refine((r) => !/[\u0000-\u001f\u007f]/.test(r), "replacement must not contain control characters")
+      .optional(),
   })
   .strict();
 
@@ -173,8 +204,8 @@ function firstIssue(err: z.ZodError): string {
 
 /**
  * Validate a policy body for its kind. Enforceable kinds must be a JSON
- * object matching the kind's spec shape; the other kinds (guardrail,
- * transform, anything custom) are free text and always pass with
+ * object matching the kind's spec shape; guardrails and transforms are
+ * enforceable per policy (see below); any other kind is free text and always passes with
  * spec=null. The returned `detail` is human-readable and is surfaced
  * to the console as the 400 invalid_input explanation.
  */
@@ -211,6 +242,7 @@ function findExternalRef(node: unknown, depth = 0): string | null {
 
 export function validatePolicySpec(kind: string, scope: string, body: string): SpecValidation {
   if (kind === GUARDRAIL_KIND) return validateGuardrail(scope, body);
+  if (kind === TRANSFORM_KIND) return validateTransform(scope, body);
   if (!isEnforceableKind(kind)) return { ok: true, spec: null };
   if (!body.trim()) {
     return { ok: false, detail: `a ${kind} policy needs a JSON spec in its body` };
@@ -293,16 +325,47 @@ function validateGuardrail(scope: string, body: string): SpecValidation {
     if (!toolPatternFromScope(trimmed)) {
       return { ok: false, detail: `guardrail spec applies to tool.args but the policy scope "${scope}" is not a tool scope (use tool.* or tool.<name>)` };
     }
+  } else if (spec.applies_to === "llm.egress") {
+    if (!["llm", "llm.*", "llm.response", "llm.egress"].includes(trimmed)) {
+      return { ok: false, detail: `guardrail spec applies to llm.egress but the policy scope "${scope}" is not a response scope (use llm.egress)` };
+    }
   } else if (!["llm", "llm.*", "llm.request", "llm.ingress"].includes(trimmed)) {
     return { ok: false, detail: `guardrail spec applies to llm.ingress but the policy scope "${scope}" is not a model scope (use llm.request)` };
   }
   return { ok: true, spec };
 }
 
-/** True when daemons can act on this policy: an enforceable kind, or a guardrail with a JSON spec. */
+/**
+ * A transform body is either the JSON spec (enforced: daemons replace
+ * every match before the call is journaled or forwarded) or free text
+ * (documentation). Same write-time strictness as guardrails.
+ */
+function validateTransform(scope: string, body: string): SpecValidation {
+  if (!looksLikeJsonObject(body)) return { ok: true, spec: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, detail: `transform body looks like a JSON spec but is not valid JSON (${(e as Error).message}); write free text to keep it documentation only` };
+  }
+  const res = transformSpec.safeParse(parsed);
+  if (!res.success) return { ok: false, detail: `transform spec: ${firstIssue(res.error)}` };
+  const spec = res.data as Record<string, unknown>;
+  const trimmed = scope.trim();
+  if (spec.applies_to === "tool.args") {
+    if (!toolPatternFromScope(trimmed)) {
+      return { ok: false, detail: `transform spec applies to tool.args but the policy scope "${scope}" is not a tool scope (use tool.* or tool.<name>)` };
+    }
+  } else if (!["llm", "llm.*", "llm.request", "llm.ingress"].includes(trimmed)) {
+    return { ok: false, detail: `transform spec applies to llm.ingress but the policy scope "${scope}" is not a model scope (use llm.request)` };
+  }
+  return { ok: true, spec };
+}
+
+/** True when daemons can act on this policy: an enforceable kind, or a guardrail or transform with a JSON spec. */
 export function isEnforceablePolicy(kind: string, scope: string, body: string): boolean {
   if (isEnforceableKind(kind)) return true;
-  return kind === GUARDRAIL_KIND && parseSpecOrNull(kind, scope, body) !== null;
+  return (kind === GUARDRAIL_KIND || kind === TRANSFORM_KIND) && parseSpecOrNull(kind, scope, body) !== null;
 }
 
 /** Parsed spec for display; null when the body is not a valid spec. */

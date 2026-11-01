@@ -27,10 +27,11 @@ pub mod sandbox;
 pub use denial_code::DenialCode;
 pub use policy::{NativePolicy, PolicyDecision, PolicyEngine};
 pub use pushed::{
-    GuardrailHit, GuardrailTarget, PushedAllowlist, PushedGuardrail, PushedRules, PushedSchema, ToolPattern,
+    GuardrailHit, GuardrailTarget, PushedAllowlist, PushedGuardrail, PushedRules, PushedSchema,
+    PushedTransform, ToolPattern, TransformTarget,
 };
 pub use rpc::{parse_tool_call, refuse_duplicate_json_keys, RpcError, ToolCallRequest};
-pub use sandbox::{Sandbox, SandboxConfig, SanitizeDenial, ToolVerdict};
+pub use sandbox::{Sandbox, SandboxConfig, SanitizeDenial, ToolVerdict, TransformApplied};
 
 #[cfg(feature = "wasm")]
 pub mod wasm_policy;

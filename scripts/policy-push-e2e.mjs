@@ -110,6 +110,8 @@ const policies = {
   // A guardrail written before the spec existed: free text, accepted,
   // documentation only.
   handbook: { name: "privacy.handbook", kind: "guardrail", scope: "llm.egress", body: "documentation only" },
+  egress: { name: "privacy.no_codenames", kind: "guardrail", scope: "llm.egress", body: JSON.stringify({ applies_to: "llm.egress", deny_patterns: ["(?i)project\\s+nightjar"], effect: "block" }) },
+  redact: { name: "privacy.redact_tickets", kind: "transform", scope: "tool.create_*", body: JSON.stringify({ applies_to: "tool.args", redact_patterns: ["TCK-[0-9]{4}"], replacement: "[ticket]" }) },
 };
 const ids = {};
 for (const [key, policy] of Object.entries(policies)) {
@@ -130,17 +132,23 @@ check("a guardrail JSON object that is not a valid spec is refused with the reas
 
 // ── Local mocks and daemon ──────────────────────────────────────────
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
+// The model answers with the codename when asked for it, so the egress
+// guardrail has something to refuse.
 const llm = createServer((req, res) => {
-  req.on("data", () => {});
+  let body = "";
+  req.on("data", (c) => (body += c));
   req.on("end", () => {
+    const content = /codename/.test(body) ? "The codename is Project Nightjar." : "ok";
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ id: "cc", object: "chat.completion", created: 1, model: "m", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 40, completion_tokens: 10, total_tokens: 50 } }));
+    res.end(JSON.stringify({ id: "cc", object: "chat.completion", created: 1, model: "m", choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }], usage: { prompt_tokens: 40, completion_tokens: 10, total_tokens: 50 } }));
   });
 });
+let lastToolBody = "";
 const tools = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
+    lastToolBody = body;
     let rpc = {};
     try { rpc = JSON.parse(body); } catch { /* tolerate */ }
     res.writeHead(200, { "content-type": "application/json" });
@@ -237,8 +245,8 @@ const first = pull();
 check("pvctl pulls the bundle and reports the daemon's status", first.status === 0, first.stderr + first.stdout);
 check("the bundle file is owner-only", (readFileSync(bundleFile) && (await import("node:fs")).statSync(bundleFile).mode & 0o077) === 0);
 const status = JSON.parse(readFileSync(statusFile, "utf8"));
-check("the daemon applied the five enforceable policies",
-  [ids.deny, ids.budget, ids.schema, ids.rate, ids.guard].every((id) => status.applied.includes(id)) && status.applied.length === 5,
+check("the daemon applied the seven enforceable policies",
+  [ids.deny, ids.budget, ids.schema, ids.rate, ids.guard, ids.egress, ids.redact].every((id) => status.applied.includes(id)) && status.applied.length === 7,
   JSON.stringify(status));
 check("the free-text guardrail is reported unsupported with a reason",
   status.unsupported.length === 1 && status.unsupported[0].id === ids.handbook && /no JSON spec/.test(status.unsupported[0].reason),
@@ -251,6 +259,15 @@ const pii = await callTool("s1", "create_ticket", { customer: { ssn: "123-45-678
 check("a tool call carrying an SSN is blocked by privacy.pii_egress",
   (pii.status !== 200 || !!pii.body.error) && blockedBy(pii).includes("privacy.pii_egress") && blockedBy(pii).includes("deny pattern 1 of 1 (at /customer/ssn)"), blockedBy(pii));
 check("the refusal never echoes the matched text", !blockedBy(pii).includes("6789"), blockedBy(pii));
+const redacted = await callTool("s-redact", "create_ticket", { title: "follow up on TCK-1234", note: "see TCK-9999" });
+check("a tool call covered by privacy.redact_tickets is forwarded with its matches replaced",
+  redacted.status === 200 && !redacted.body.error && lastToolBody.includes("[ticket]") && !lastToolBody.includes("TCK-1234") && !lastToolBody.includes("TCK-9999"),
+  blockedBy(redacted) + " backend saw: " + lastToolBody.slice(0, 200));
+const leak = await chat("chat-egress", "what is the codename?");
+check("a model response matching privacy.no_codenames is refused before it reaches the agent",
+  leak.status === 403 && leak.text.includes("privacy.no_codenames") && !leak.text.includes("Nightjar"), leak.status + " " + leak.text.slice(0, 200));
+const clean = await chat("chat-egress", "hello");
+check("a clean response on the same session still passes", clean.status === 200 && clean.text.includes("\"ok\""), clean.status + " " + clean.text.slice(0, 120));
 const badVendor = await callTool("s1", "create_purchase_order", { vendor: "Initech" });
 check("an unlisted vendor is blocked by procurement.vendors", blockedBy(badVendor).includes("procurement.vendors"), blockedBy(badVendor));
 const ok1 = await callTool("s1", "create_purchase_order", { vendor: "Contoso" });
@@ -293,6 +310,13 @@ check("the console shows the guardrail hit as a block attributed to privacy.pii_
 check("the console shows the guardrail enforced by 1 of 1 daemon and the free-text one unsupported",
   guardHits.enforcement.applied === 1 && listed.json.policies.find((p) => p.id === ids.handbook).enforcement.unsupported === 1,
   JSON.stringify([guardHits.enforcement, listed.json.policies.find((p) => p.id === ids.handbook).enforcement]));
+const egressHits = listed.json.policies.find((p) => p.id === ids.egress);
+check("the console shows the refused response as a block attributed to privacy.no_codenames",
+  egressHits.hits24h >= 1 && egressHits.blocks24h >= 1 && egressHits.enforcement.applied === 1,
+  JSON.stringify({ hits: egressHits.hits24h, blocks: egressHits.blocks24h, enforcement: egressHits.enforcement }));
+check("the console shows the transform enforced by 1 of 1 daemon",
+  listed.json.policies.find((p) => p.id === ids.redact).enforcement.applied === 1,
+  JSON.stringify(listed.json.policies.find((p) => p.id === ids.redact).enforcement));
 const deny = listed.json.policies.find((p) => p.id === ids.deny);
 check("the console shows the policy enforced by 1 of 1 daemon",
   deny.enforcement.deployments === 1 && deny.enforcement.applied === 1, JSON.stringify(deny.enforcement));

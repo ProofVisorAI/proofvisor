@@ -283,9 +283,45 @@ exercised against release binaries in CI on every push
   template now writes the spec. A guardrail with a free-text body is
   still accepted and stays documentation only; daemons now report it in
   `unsupported` ("guardrail policy has no JSON spec") instead of
-  skipping it silently. `applies_to: "llm.egress"` is reserved and
-  refused by the console until daemons inspect response bodies;
-  `transform` policies remain documentation only.
+  skipping it silently.
+- **Guardrails over model responses.** A `guardrail` policy may also
+  set `applies_to: "llm.egress"` (scope `llm.egress`). The daemon scans
+  the response text as it captures it: a buffered response that matches
+  is refused with HTTP 403 naming the policy before any byte reaches
+  the client; a streamed response that matches in its first frame is
+  refused the same way, and one that matches later ends with an error
+  frame (`type: policy_blocked`, `code: guardrail`) with the matching
+  frame never relayed. The turn is attested "Policy Blocked" with
+  `payload.policy`, so `pvctl console-sync` uploads it as a block the
+  console counts. Scanning is incremental with a 1 KiB overlap and a
+  full rescan at the end of the body. The console's "Response guard"
+  template writes the spec.
+- **Transform policies are enforced.** A `transform` policy whose body
+  is the JSON spec `{"applies_to": "tool.args" | "llm.ingress",
+  "redact_patterns": [<regex>, …], "replacement": "<text>"}`
+  (documented in `docs/reference/OPERATIONS.md`, "Transform policies")
+  replaces every match before the call goes further: tool arguments
+  are rewritten before the sandbox verdict, so the journal and the
+  backend both see the rewritten call; chat messages are rewritten
+  after the guardrails and before compression, and the compression
+  record lists the transforms that fired as `payload.transforms`.
+  Rewrites are logged and counted in
+  `pv_pushed_transform_rewrites_total`. A free-text transform stays
+  documentation and is now reported `unsupported` ("transform policy
+  has no JSON spec"). The console validates the spec on save, marks
+  such a policy enforceable, and offers a "Redact before sending"
+  template.
+- A pushed token budget that a provider's completion overflows is now
+  refused naming the console policy (`policy "<name>": max_tokens
+  exceeded (cap N)`), and the stop-reason event carries
+  `payload.policy`; before, only the admission-time check named it.
+- Tests: `crates/pv-harness/tests/e2e_policy_egress_and_transforms.rs`
+  (buffered, first-frame and mid-stream egress refusals, both transform
+  targets, the named budget overflow); `scripts/policy-push-e2e.mjs`
+  grows to 51 checks (a response refused by `privacy.no_codenames`, a
+  tool call rewritten by `privacy.redact_tickets`, both shown in the
+  console); `server/ci/policy-spec.test.mjs` covers the egress scope
+  rule and the transform spec.
 - End-to-end coverage for the behaviours that until now had unit tests
   only. `crates/pv-harness/tests/e2e_proxy_contracts.rs` drives the live
   router for context compression (a repetitive history reaches the
