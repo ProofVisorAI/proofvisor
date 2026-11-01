@@ -20,11 +20,13 @@ type HmacSha256 = Hmac<Sha256>;
 /// Truncated HMAC tag length (128 bits), matching the MCP session signer.
 const TAG_BYTES: usize = 16;
 
+// Wire format: markers already written use these two labels. They
+// predate the ProofVisor name and must never be renamed.
 /// Domain separation for the stub-tag MAC.
-const MAC_CONTEXT: &[u8] = b"proofvisor-compress-marker-v1";
+const MAC_CONTEXT: &[u8] = b"agentvisor-compress-marker-v1";
 
 /// Domain separation for the marker-key derivation.
-const KEY_CONTEXT: &[u8] = b"proofvisor-compress-marker-key-v1";
+const KEY_CONTEXT: &[u8] = b"agentvisor-compress-marker-key-v1";
 
 /// Separator between the stub body and its tag. The three stub bodies the
 /// passes build never contain this text, so `rsplit_once` is unambiguous.

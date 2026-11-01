@@ -166,7 +166,7 @@
     // (crates/pv-receipts/src/receipt.rs:50-64) dispatches on
     // `receipt_version`:
     //   * v1 → bare canonical bytes (legacy wire format)
-    //   * v2 → RECEIPT_DOMAIN_TAG_V2 (b"proofvisor-receipt-v2\0",
+    //   * v2 → RECEIPT_DOMAIN_TAG_V2 (b"agentvisor-receipt-v2\0",
     //          22 bytes) || u64_be(canonical.len()) || canonical
     // Rust defaults `RECEIPT_VERSION = 2` (receipt.rs:30), so every
     // modern daemon posts v2 receipts. Prior JS verifier used
@@ -175,7 +175,9 @@
     // "Signature does not verify" on this page. Now: parse
     // receipt.body to find `receipt_version`, dispatch to the
     // correct framing.
-    const RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("proofvisor-receipt-v2\0");
+    // Wire format: every v2 receipt is signed over these bytes; they predate
+    // the ProofVisor name and must never be renamed.
+    const RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("agentvisor-receipt-v2\0");
     function receiptSigningMessage(rawBody) {
       const canonical = new TextEncoder().encode(rawBody);
       let receiptVersion = 1;
@@ -407,7 +409,10 @@
 
     async function verifyBundle(bundle) {
       if (looksLikeRawReceipt(bundle)) bundle = rawReceiptToBundle(bundle);
-      if (bundle.format !== "proofvisor.receipt.v1") {
+      // Bundles exported before the ProofVisor rename say
+      // "agentvisor.receipt.v1"; the field is not signed and the
+      // contents are identical, so both names verify.
+      if (bundle.format !== "proofvisor.receipt.v1" && bundle.format !== "agentvisor.receipt.v1") {
         throw new Error("Unrecognized bundle format: " + bundle.format);
       }
       const r = bundle.receipt || {};

@@ -120,13 +120,14 @@ fn probe_routes_and_manifest_wiring_match() {
 fn config_search_order_matches_the_doc() {
     assert_eq!(
         pv_harness::config::CONFIG_SEARCH_PATHS,
-        ["proofvisor.toml", "config/harness.toml"],
+        ["proofvisor.toml", "config/harness.toml", "agentvisor.toml"],
         "config search paths changed — update OPERATIONS.md §Boot"
     );
     for needle in [
         "$PV_CONFIG",
         "`./proofvisor.toml`",
         "`./config/harness.toml`",
+        "`./agentvisor.toml`",
         "$HOME/.proofvisor/proofvisor.toml",
         "NOT searched",
     ] {

@@ -9,6 +9,7 @@ pub mod error;
 pub mod fsutil;
 pub mod hash;
 pub mod ids;
+pub mod legacy;
 pub mod metrics;
 pub mod text;
 pub mod time;

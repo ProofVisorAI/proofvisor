@@ -170,7 +170,10 @@ pub struct AuthzEvalResponse {
 /// JWT `typ` of intent tokens. A distinct explicit type (RFC 8725 §3.11)
 /// keeps a backend from accepting an intent token as an access token: both
 /// are signed by the same exchange key and carry the backend as `aud`.
-pub const INTENT_TOKEN_TYP: &str = "pv-intent+jwt";
+///
+/// Wire format: backends verify this `typ` (and `av-tool+jwt` for
+/// exchanged tokens); the `av` names predate ProofVisor. Never rename.
+pub const INTENT_TOKEN_TYP: &str = "av-intent+jwt";
 
 /// The acting agent inside an intent token (RFC 8693 `act` shape).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

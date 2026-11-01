@@ -29,7 +29,8 @@ struct Envelope {
 
 /// Derive the deployment-local HMAC key used for authenticated control files.
 pub fn key_from_signer(signer: &dyn pv_receipts::Signer) -> [u8; 32] {
-    let signature = signer.sign(b"proofvisor-active-journal-key-v1");
+    // Wire format: journals on disk are keyed from these bytes; never rename.
+    let signature = signer.sign(b"agentvisor-active-journal-key-v1");
     let mut key = [0u8; 32];
     key.copy_from_slice(&signature[..32]);
     key
@@ -98,7 +99,8 @@ fn build_mac(
 ) -> Result<HmacSha256, String> {
     let canonical = pv_receipts::canonicalize(payload).map_err(|error| error.to_string())?;
     let mut mac = HmacSha256::new_from_slice(key).map_err(|error| error.to_string())?;
-    mac.update(b"proofvisor-journal-v1\0");
+    // Wire format: every journal record on disk carries this MAC label.
+    mac.update(b"agentvisor-journal-v1\0");
     mac.update(&(domain.len() as u64).to_be_bytes());
     mac.update(domain.as_bytes());
     mac.update(&index.to_be_bytes());

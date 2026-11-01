@@ -81,7 +81,8 @@ async function authenticateDaemon(
   req: FastifyRequest,
   reply: FastifyReply,
 ): Promise<{ deploymentId: string; orgId: string } | null> {
-  const deploymentId = req.headers["x-pv-deployment"];
+  // Daemons released before the ProofVisor rename send X-AV-Deployment.
+  const deploymentId = req.headers["x-pv-deployment"] ?? req.headers["x-av-deployment"];
   const auth = req.headers.authorization;
   if (typeof deploymentId !== "string" || !auth?.startsWith("Bearer ")) {
     reply.code(401).send({ error: "unauthenticated" });
@@ -291,14 +292,16 @@ const eventPayload = z.object({
 // (crates/pv-receipts/src/receipt.rs `signing_message`) and the JS
 // verifier (docs/verify/verify.js `receiptSigningMessage`):
 //   * v1 → bare canonical body bytes
-//   * v2 → b"proofvisor-receipt-v2\0" || u64_be(body.len) || body
+//   * v2 → b"agentvisor-receipt-v2\0" || u64_be(body.len) || body
 // Without this check, the key-id comparison alone gated storage: any
 // holder of a leaked ingest token could POST a receipt whose sigB64 is
 // random bytes; first-write-wins then permanently sealed the session
 // against the LEGITIMATE receipt, and every downstream verifier
 // (console, /verify page, pvctl) reported an invalid compliance
 // artifact for a session the customer trusted.
-const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("proofvisor-receipt-v2\0", "utf8");
+// Wire format: every v2 receipt ever issued is signed over these bytes.
+// They predate the ProofVisor name and must never be renamed.
+const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("agentvisor-receipt-v2\0", "utf8");
 
 export function receiptSigningMessage(rawBody: string): Buffer {
   const canonical = Buffer.from(rawBody, "utf8");

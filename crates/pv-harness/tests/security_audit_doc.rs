@@ -99,7 +99,7 @@ fn compression_marker_is_keyed_and_the_todo_is_retired() {
     );
     assert!(
         COMPRESS_MARKER.contains("pub fn derive_marker_key")
-            && COMPRESS_MARKER.contains("proofvisor-compress-marker-v1")
+            && COMPRESS_MARKER.contains("agentvisor-compress-marker-v1")
             && COMPRESS_PASSES.contains("is_middle_history_stub"),
         "the keyed stub tag in pv-compress/src/marker.rs is gone — \
          SECURITY-AUDIT.md claims stubs are HMAC-tagged under a key derived \

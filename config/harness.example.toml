@@ -40,7 +40,7 @@ upstream_read_timeout_s = 300
 # tool_upstream_bearer_file = "/run/secrets/mcp_token"
 
 require_identity = false
-audience = "proofvisor"
+audience = "agentvisor-ai"
 # "signed" is the product's core promise (every session close mints an
 # Ed25519 receipt). The serde default is "unsigned" for zero-config
 # ergonomics, but every SHIPPED config opts into signed — matching

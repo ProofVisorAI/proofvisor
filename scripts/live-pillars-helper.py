@@ -418,9 +418,9 @@ class LiveChecks:
         request = requests[-1]
         self.check("the exchange backend path is used", request["path"] == "/secure")
         exchanged = request["headers"].get("authorization", "").removeprefix("Bearer ")
-        self.check("forwarded exchange tokens use the pv-tool+jwt profile",
-                   lambda: decode_part(exchanged, 0)["typ"] == "pv-tool+jwt")
-        self.check("the backend can introspect the forwarded pv-tool+jwt token",
+        self.check("forwarded exchange tokens use the av-tool+jwt profile",
+                   lambda: decode_part(exchanged, 0)["typ"] == "av-tool+jwt")
+        self.check("the backend can introspect the forwarded av-tool+jwt token",
                    lambda: self.introspect(exchanged).json()["active"] is True)
         claims = decode_part(exchanged)
         self.check("the exchanged token is for the backend", claims.get("aud") == "secure-backend")
@@ -429,7 +429,7 @@ class LiveChecks:
                    lambda: claims["sub"] == "user:live-" + self.run_id and claims["act"]["sub"] == "inst-" + self.run_id)
         self.check("the exchanged token has the configured lifetime", lambda: claims["exp"] - claims["iat"] == 120)
         intent = request["headers"].get("x-pv-intent-token", "")
-        self.check("the intent token has type pv-intent+jwt", lambda: decode_part(intent, 0)["typ"] == "pv-intent+jwt")
+        self.check("the intent token has type av-intent+jwt", lambda: decode_part(intent, 0)["typ"] == "av-intent+jwt")
         self.check("the intent token is bound to the backend, the human, and the agent",
                    lambda: decode_part(intent)["aud"] == "secure-backend"
                    and decode_part(intent)["sub"] == "user:live-" + self.run_id

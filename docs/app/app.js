@@ -3055,7 +3055,7 @@
         if (typeof parsed.receipt_version === "number") version = parsed.receipt_version;
       } catch (e) {}
       if (version === 2) {
-        return "utf8('proofvisor-receipt-v2\\0') || u64_be(byteLength(receipt.rawBody)) || receipt.rawBody (UTF-8 bytes)";
+        return "utf8('agentvisor-receipt-v2\\0') || u64_be(byteLength(receipt.rawBody)) || receipt.rawBody (UTF-8 bytes)";
       }
       return "receipt.rawBody (UTF-8 bytes)";
     }

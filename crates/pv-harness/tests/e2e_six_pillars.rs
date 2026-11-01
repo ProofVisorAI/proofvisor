@@ -2887,9 +2887,9 @@ async fn gateway_signed_tokens_keep_the_exchanged_revocation_namespace() {
     let invalid_ancestry = signer
         .sign(&pv_identity::ExchangedClaims {
             claims: claims.clone(),
-            pv_subject_tokens: Vec::new(),
-            pv_actor_tokens: Vec::new(),
-            pv_delegation_depth: 1,
+            av_subject_tokens: Vec::new(),
+            av_actor_tokens: Vec::new(),
+            av_delegation_depth: 1,
         })
         .unwrap();
     for token in [legacy, invalid_ancestry] {

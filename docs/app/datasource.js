@@ -112,7 +112,9 @@
   // and length prefix before the canonical body; prior JS
   // verifier used bare-body semantics (v1 only) and would show
   // every v2 receipt as INVALID.
-  var _RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("proofvisor-receipt-v2\0");
+  // Wire format: every v2 receipt is signed over these bytes; they predate
+  // the ProofVisor name and must never be renamed.
+  var _RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("agentvisor-receipt-v2\0");
   function _receiptSigningMessage(rawBody) {
     var canonical = new TextEncoder().encode(rawBody);
     var receiptVersion = 1;

@@ -49,7 +49,7 @@ function receipt(externalId) {
   const issued = Date.now();
   const body = JSON.stringify({ receipt_version: 2, receipt_id: receiptId, session_id: externalId, issued_at: issued, stop_reason: "completed", stop_reason_id: 0, subject: { kind: "event_chain", event_count: 1 } });
   const size = Buffer.alloc(8); size.writeBigUInt64BE(BigInt(Buffer.byteLength(body)));
-  return { sessionExternalId: externalId, receiptId, body, sigB64: sign(null, Buffer.concat([Buffer.from("proofvisor-receipt-v2\0"), size, Buffer.from(body)]), privateKey).toString("base64"), keyIdHex, eventCount: 1, issuedAt: new Date(issued).toISOString() };
+  return { sessionExternalId: externalId, receiptId, body, sigB64: sign(null, Buffer.concat([Buffer.from("agentvisor-receipt-v2\0"), size, Buffer.from(body)]), privateKey).toString("base64"), keyIdHex, eventCount: 1, issuedAt: new Date(issued).toISOString() };
 }
 async function detail(externalId) {
   const list = await request("/sessions?q=" + encodeURIComponent(externalId), "GET", undefined, auth);

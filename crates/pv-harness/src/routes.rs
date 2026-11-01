@@ -3489,7 +3489,7 @@ pub(crate) fn exchange_token_for(
         allowed_audiences: &allowed_audiences,
     };
     let exchanged = pv_identity::build_exchanged_claims(&params).map_err(|e| refused(e.to_string()))?;
-    signer.sign_with_typ(&exchanged, "pv-tool+jwt").map_err(|error| {
+    signer.sign_with_typ(&exchanged, "av-tool+jwt").map_err(|error| {
         tracing::error!(%error, "exchanged token signing failed");
         PipelineError::unavailable("backend token exchange could not sign a token".to_owned())
     })

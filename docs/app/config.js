@@ -17,6 +17,22 @@
 window.MOCK_MODE = true;
 window.API_BASE = "";
 
+// Saved preferences from before the ProofVisor rename used "av_" keys
+// (theme, tour and onboarding dismissals). Copy each to its "pv_" name
+// once so returning visitors keep them. Live mode is not carried over:
+// it pointed at the old API host, and `?live=1` turns it back on.
+try {
+  var __old = [];
+  for (var __i = 0; __i < localStorage.length; __i++) {
+    var __k = localStorage.key(__i);
+    if (__k && __k.indexOf("av_") === 0 && __k !== "av_live_mode") __old.push(__k);
+  }
+  __old.forEach(function (k) {
+    var pk = "pv_" + k.slice(3);
+    if (localStorage.getItem(pk) === null) localStorage.setItem(pk, localStorage.getItem(k));
+  });
+} catch (e) {}
+
 // Live-mode override: `?live=1` flips this page to the hosted API at
 // https://api.proofvisor.com (already permitted by the CSP connect-src
 // above) and remembers the choice in localStorage; `?live=0` reverts to

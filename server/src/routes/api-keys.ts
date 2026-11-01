@@ -28,6 +28,10 @@ import { dispatchEvent } from "../lib/webhooks.js";
 
 const roleSchema = z.enum(["owner", "admin", "member"]);
 
+// Keys minted before the ProofVisor rename start with "av_srv_" and keep
+// working (session-middleware accepts both); new keys use this prefix.
+export const API_KEY_PREFIX = "pv_srv_";
+
 export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", async (req, reply) => {
     const claims = requireSession(req, reply);
@@ -53,6 +57,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
         id: true,
         name: true,
         tokenHint: true,
+        tokenPrefix: true,
         role: true,
         createdByEmail: true,
         lastUsedAt: true,
@@ -63,7 +68,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       keys: rows.map((r) => ({
         id: r.id,
         name: r.name,
-        hint: "pv_srv_" + r.tokenHint + "…",
+        hint: r.tokenPrefix + r.tokenHint + "…",
         role: r.role,
         createdByEmail: r.createdByEmail,
         lastUsedAt: r.lastUsedAt,
@@ -95,7 +100,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const plaintextBody = randomToken(28); // 224 bits of randomness
-    const plaintext = "pv_srv_" + plaintextBody;
+    const plaintext = API_KEY_PREFIX + plaintextBody;
     const tokenHash = await hashPassword(plaintext);
     // R104 F1 + F2: resolve claims.sub to the ULTIMATE human user
     // id before persisting createdById. For a cookie session
@@ -194,6 +199,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
               name: body.data.name,
               tokenHash,
               tokenHint: plaintextBody.slice(0, 8),
+              tokenPrefix: API_KEY_PREFIX,
               role: body.data.role,
               createdById: creatorUser?.id ?? null,
               createdByEmail: creatorUser?.email ?? null,
@@ -240,7 +246,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
         apiKeyId: key.id,
         name: key.name,
         role: key.role,
-        hint: "pv_srv_" + key.tokenHint + "…",
+        hint: API_KEY_PREFIX + key.tokenHint + "…",
         createdByEmail: creatorUser?.email ?? null,
       },
       logger: req.log,
@@ -249,7 +255,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       key: {
         id: key.id,
         name: key.name,
-        hint: "pv_srv_" + key.tokenHint + "…",
+        hint: API_KEY_PREFIX + key.tokenHint + "…",
         role: key.role,
         createdAt: key.createdAt,
       },

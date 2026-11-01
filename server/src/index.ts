@@ -363,7 +363,8 @@ async function main(): Promise<void> {
   app.addHook("preHandler", async (req, reply) => {
     const method = req.method.toUpperCase();
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
-    const pinned = req.headers["x-pv-org"];
+    // Console pages loaded before the ProofVisor rename send X-AV-Org.
+    const pinned = req.headers["x-pv-org"] ?? req.headers["x-av-org"];
     if (typeof pinned !== "string" || pinned.length === 0) return;
     if (!req.session || req.session.sub.startsWith("apikey:")) return;
     if (

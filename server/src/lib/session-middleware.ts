@@ -34,7 +34,10 @@ export async function authenticate(
 ): Promise<void> {
   // ---------- API key path ----------
   const auth = req.headers.authorization;
-  if (typeof auth === "string" && auth.startsWith("Bearer pv_srv_")) {
+  // "av_srv_" is the prefix keys had before the ProofVisor rename; those
+  // keys are still in use and must keep working. Both prefixes are seven
+  // characters, and the stored hash covers the whole presented string.
+  if (typeof auth === "string" && (auth.startsWith("Bearer pv_srv_") || auth.startsWith("Bearer av_srv_"))) {
     const plaintext = auth.slice("Bearer ".length);
     const hint = plaintext.slice("pv_srv_".length, "pv_srv_".length + 8);
     const candidates = await db.apiKey.findMany({

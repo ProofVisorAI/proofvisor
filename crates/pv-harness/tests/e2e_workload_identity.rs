@@ -107,7 +107,7 @@ fn assertion(jti: &str) -> String {
     ]);
     jsonwebtoken::encode(
         &header,
-        &json!({"iss": INSTANCE_GUID, "sub": INSTANCE_GUID, "aud": "proofvisor",
+        &json!({"iss": INSTANCE_GUID, "sub": INSTANCE_GUID, "aud": "agentvisor-ai",
                 "iat": now, "exp": now + 120, "jti": jti}),
         &jsonwebtoken::EncodingKey::from_rsa_pem(fixture("instance.key").as_bytes()).unwrap(),
     )
@@ -174,7 +174,7 @@ async fn an_instance_identity_becomes_an_agent_token_that_is_attributable_to_a_h
     let token = reply.json["access_token"].as_str().unwrap().to_owned();
     let claims = decode(&token);
     assert_eq!(claims["sub"], "user:ana@acme.io");
-    assert_eq!(claims["iss"], "proofvisor#workload");
+    assert_eq!(claims["iss"], "agentvisor-ai#workload");
     assert_eq!(claims["instance_uid"], INSTANCE_GUID);
     assert_eq!(claims["azp"], format!("cf-app:{APP_GUID}"));
     assert_eq!(claims["charter"], "billing");

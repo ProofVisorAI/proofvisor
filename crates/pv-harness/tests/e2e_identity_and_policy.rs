@@ -165,7 +165,7 @@ async fn actor_token_exchange_records_both_agents_and_intersects_three_scope_set
     assert_eq!(claims["azp"], "inst-child");
     assert_eq!(claims["act"]["sub"], "inst-child");
     assert_eq!(claims["act"]["act"]["sub"], "inst-parent");
-    assert_eq!(claims["pv_actor_tokens"][0]["jti"], "j-actor");
+    assert_eq!(claims["av_actor_tokens"][0]["jti"], "j-actor");
 }
 
 #[tokio::test]

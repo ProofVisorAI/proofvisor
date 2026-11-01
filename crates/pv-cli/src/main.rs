@@ -307,7 +307,8 @@ async fn run_sidecar(
     let audience = audience
         .or_else(|| file.as_ref().map(|file| file.audience.clone()))
         .or_else(|| env("PV_AUDIENCE"))
-        .unwrap_or_else(|| "proofvisor".to_owned());
+        // Same pre-rename default as proofvisord's `audience`.
+        .unwrap_or_else(|| "agentvisor-ai".to_owned());
     let listen = match (listen, file.as_ref()) {
         (Some(listen), _) => listen,
         (None, Some(file)) => file
@@ -327,8 +328,21 @@ async fn run_sidecar(
     sidecar::run(listen, options).await
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
+    // Before any thread exists, and before clap reads `env = "PV_…"`
+    // fallbacks: adopt pre-rename AV_* variables (see pv_core::legacy).
+    pv_core::legacy::adopt_legacy_env();
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Error: could not start the async runtime: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> std::process::ExitCode {
     // Returning `Result<()>` relied on the default
     // Termination impl printing anyhow's DEBUG format — which appends
     // a full captured backtrace whenever RUST_BACKTRACE is exported,

@@ -875,7 +875,7 @@ fn a_public_backend_address_refuses_boot_when_backends_must_be_private() {
         .unwrap_err()
         .contains("require_private_backends"));
     config.backends = vec![backend(
-        "proofvisor",
+        "agentvisor-ai",
         "http://10.0.0.1/mcp",
         BackendAuth::None,
         &["t"],

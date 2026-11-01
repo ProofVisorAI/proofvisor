@@ -1097,7 +1097,14 @@ fn read_user_console_file_config() -> Result<ConsoleFileConfig> {
 
 fn user_console_config_path() -> Option<PathBuf> {
     #[allow(deprecated)]
-    std::env::home_dir().map(|home| home.join(".proofvisor").join("console.toml"))
+    std::env::home_dir().map(|home| {
+        // ~/.agentvisor/console.toml is where `pvctl console connect` wrote
+        // it before the ProofVisor rename.
+        pv_core::legacy::existing_or_legacy(
+            home.join(".proofvisor").join("console.toml"),
+            &home.join(".agentvisor").join("console.toml"),
+        )
+    })
 }
 
 struct ConsoleClient {

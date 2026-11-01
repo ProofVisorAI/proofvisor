@@ -707,7 +707,7 @@ impl IdentityValidator {
         validate_jose_header(&header)?;
         // Harness tool and intent credentials are separate profiles, even
         // if an operator also registers the harness key in the IdP key set.
-        if matches!(header.typ.as_deref(), Some("pv-tool+jwt" | "pv-intent+jwt")) {
+        if matches!(header.typ.as_deref(), Some("av-tool+jwt" | "av-intent+jwt")) {
             return Err(IdentityError::Verification(
                 "backend token profile is not an inbound identity".into(),
             ));

@@ -888,8 +888,12 @@ fn default_config_version() -> u32 {
 fn default_listen() -> String {
     "127.0.0.1:8484".to_owned()
 }
+// Wire value: workload identity tokens are minted for this audience and
+// the daemon signs intent/exchange tokens with it as `iss`. Deployments
+// that never set `audience` depend on it, so it keeps its pre-rename
+// value.
 fn default_audience() -> String {
-    "proofvisor".to_owned()
+    "agentvisor-ai".to_owned()
 }
 fn default_chat_path() -> String {
     "/v1/chat/completions".to_owned()
@@ -1107,11 +1111,18 @@ impl std::fmt::Display for ConfigSource {
 /// a working checkout silently defeats the wizard-written per-user file
 /// (developers who ran `pvctl init` still saw the example's settings
 /// because the example outranked the wizard file).
-pub const CONFIG_SEARCH_PATHS: [&str; 2] = ["proofvisor.toml", "config/harness.toml"];
+/// `agentvisor.toml` is the name before the ProofVisor rename; it is tried
+/// last so an installation that has both files uses the new one.
+pub const CONFIG_SEARCH_PATHS: [&str; 3] = ["proofvisor.toml", "config/harness.toml", "agentvisor.toml"];
 
 /// Per-user config file inside `home`, as written by the `pvctl` wizard.
 pub fn user_config_path_from(home: &std::path::Path) -> std::path::PathBuf {
-    home.join(".proofvisor").join("proofvisor.toml")
+    // An installation made before the ProofVisor rename has only
+    // ~/.agentvisor/agentvisor.toml; keep finding it.
+    pv_core::legacy::existing_or_legacy(
+        home.join(".proofvisor").join("proofvisor.toml"),
+        &home.join(".agentvisor").join("agentvisor.toml"),
+    )
 }
 
 /// Per-user config file (`~/.proofvisor/proofvisor.toml`), if the home
@@ -3969,7 +3980,7 @@ mod tests {
             !config.allow_wildcard_bind,
             "anonymous wildcard binding must not be enabled"
         );
-        assert_eq!(config.audience, "proofvisor");
+        assert_eq!(config.audience, "agentvisor-ai");
         assert_eq!(
             config.identity_hmac_secret_file.as_deref(),
             Some("/etc/proofvisor/identity.hmac")
@@ -3994,7 +4005,7 @@ mod tests {
         assert!(config.require_identity);
         assert!(!config.dashboard_enabled);
         assert!(!config.allow_wildcard_bind);
-        assert_eq!(config.audience, "proofvisor");
+        assert_eq!(config.audience, "agentvisor-ai");
         assert_eq!(config.state_backend, "redis");
         assert_eq!(
             config.state_endpoint.as_deref(),

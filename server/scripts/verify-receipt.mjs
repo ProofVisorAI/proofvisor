@@ -163,7 +163,9 @@ if (looksLikeRawReceipt(bundle)) {
   };
 }
 
-if (bundle.format !== "proofvisor.receipt.v1") {
+// Bundles exported before the ProofVisor rename say "agentvisor.receipt.v1";
+// the field is not signed and the contents are identical.
+if (bundle.format !== "proofvisor.receipt.v1" && bundle.format !== "agentvisor.receipt.v1") {
   console.error("Unrecognized format:", bundle.format);
   process.exit(2);
 }
@@ -199,14 +201,14 @@ const key = createPublicKey({ key: spki, format: "der", type: "spki" });
 // crates/pv-receipts/src/receipt.rs:50-64 `signing_message()`
 // dispatches on `receipt_version`:
 //   v1 → bare canonical bytes (legacy)
-//   v2 → RECEIPT_DOMAIN_TAG_V2 (b"proofvisor-receipt-v2\0") ||
+//   v2 → RECEIPT_DOMAIN_TAG_V2 (b"agentvisor-receipt-v2\0") ||
 //        u64_be(canonical.len()) || canonical
 // Rust defaults RECEIPT_VERSION=2 (receipt.rs:30), so modern
 // daemons emit v2 receipts. Prior CLI used bare-body semantics
 // only and would fail every v2 receipt as "SIGNATURE DOES NOT
 // VERIFY" (exit 1) even though the sig was cryptographically
 // valid. Now: parse body, dispatch to correct framing.
-const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("proofvisor-receipt-v2\0", "utf8");
+const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("agentvisor-receipt-v2\0", "utf8");
 function receiptSigningMessage(rawBody) {
   const canonical = Buffer.from(rawBody, "utf8");
   let receiptVersion = 1;

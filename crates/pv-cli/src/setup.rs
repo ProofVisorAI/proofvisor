@@ -1151,7 +1151,11 @@ async fn health_ok(base: &str) -> bool {
     }
     matches!(
         response.json::<serde_json::Value>().await,
-        Ok(body) if body.get("service").and_then(serde_json::Value::as_str) == Some("proofvisor")
+        // "agentvisor" is what daemons released before the rename report.
+        Ok(body) if matches!(
+            body.get("service").and_then(serde_json::Value::as_str),
+            Some("proofvisor" | "agentvisor")
+        )
     )
 }
 
@@ -1159,15 +1163,20 @@ async fn health_ok(base: &str) -> bool {
 ///
 /// Naming history: prior to v0.1.0 the binary was `agent-bridge`; it was
 /// renamed to `agentbridged` (the `agent-bridge` name on crates.io is
-/// taken by an unrelated project) and then to `proofvisord` as part of
-/// the ProofVisor rebrand. We look for the current name first, then
+/// taken by an unrelated project), then `agentvisord`, and then to
+/// `proofvisord` as part of the ProofVisor rebrand. We look for the current name first, then
 /// fall back to the legacy names so operators upgrading from a
 /// source-built older install keep working.
 fn find_server_binary() -> PathBuf {
     let candidates: &[&str] = if cfg!(windows) {
-        &["proofvisord.exe", "agentbridged.exe", "agent-bridge.exe"]
+        &[
+            "proofvisord.exe",
+            "agentvisord.exe",
+            "agentbridged.exe",
+            "agent-bridge.exe",
+        ]
     } else {
-        &["proofvisord", "agentbridged", "agent-bridge"]
+        &["proofvisord", "agentvisord", "agentbridged", "agent-bridge"]
     };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

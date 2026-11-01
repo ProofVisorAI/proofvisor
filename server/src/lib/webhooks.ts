@@ -675,6 +675,13 @@ async function deliverOne(
         "X-ProofVisor-Delivery": deliveryId,
         "X-ProofVisor-Timestamp": timestamp,
         "X-ProofVisor-Signature": sig,
+        // The same values under the names receivers configured before the
+        // ProofVisor rename, so their signature checks keep working.
+        // Deprecated; documented in server/README.md (webhooks row).
+        "X-AgentVisor-Event": event,
+        "X-AgentVisor-Delivery": deliveryId,
+        "X-AgentVisor-Timestamp": timestamp,
+        "X-AgentVisor-Signature": sig,
       },
       body,
       signal: controller.signal,

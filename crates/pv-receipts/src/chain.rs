@@ -1,6 +1,6 @@
 //! Session event-chain hashing.
 //!
-//! `h₀ = SHA-256("pv-genesis" ‖ session_id)`;
+//! `h₀ = SHA-256("av-genesis" ‖ session_id)`;
 //! `hᵢ = SHA-256(hᵢ₋₁ ‖ JCS(eventᵢ))`.
 //!
 //! Ordering is driven by the per-session sequence number (events are fed in
@@ -21,7 +21,9 @@ impl EventChain {
     /// Start a chain for `session_id`.
     pub fn new(session_id: &str) -> Self {
         let mut h = Sha256::new();
-        h.update(b"pv-genesis");
+        // Wire format: every chain head ever sealed starts here; the
+        // label predates the ProofVisor name and must never be renamed.
+        h.update(b"av-genesis");
         h.update(session_id.as_bytes());
         Self {
             head: h.finalize().into(),

@@ -450,6 +450,9 @@ impl KafkaBus {
         let key_bytes = event_uid.as_bytes().to_vec();
         let mut headers = std::collections::BTreeMap::new();
         headers.insert("proofvisor-event-uid".to_owned(), event_uid.as_bytes().to_vec());
+        // Same uid under the pre-rename name, for consumers that dedupe on
+        // it. Deprecated; drop together with the read fallback below.
+        headers.insert("agentvisor-event-uid".to_owned(), event_uid.as_bytes().to_vec());
         let offset = self
             .executor
             .run(move || async move {
@@ -624,10 +627,12 @@ impl EventBus for KafkaBus {
                         // field, could never find the record it had in
                         // fact produced, and re-published a duplicate.
                         // Consult the header first, then the payload.
-                        if record
-                            .record
-                            .headers
+                        // Records produced before the ProofVisor rename carry
+                        // the same uid under `agentvisor-event-uid`.
+                        let headers = &record.record.headers;
+                        if headers
                             .get("proofvisor-event-uid")
+                            .or_else(|| headers.get("agentvisor-event-uid"))
                             .is_some_and(|uid| uid.as_slice() == page_uid.as_bytes())
                         {
                             return Ok(Page::Found(record.offset));

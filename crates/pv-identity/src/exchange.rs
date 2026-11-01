@@ -35,13 +35,13 @@ pub struct ExchangedClaims {
     #[serde(flatten)]
     pub claims: NhiClaims,
     /// Original identities, leaf first, for JTI and instance revocation.
-    pub pv_subject_tokens: Vec<RevocationIdentity>,
+    pub av_subject_tokens: Vec<RevocationIdentity>,
     /// The RFC 8693 actor token's identity, when one was presented, so
     /// revoking the actor also revokes every token it obtained.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pv_actor_tokens: Vec<RevocationIdentity>,
+    pub av_actor_tokens: Vec<RevocationIdentity>,
     /// Total delegation depth, including parent links removed during exchange.
-    pub pv_delegation_depth: usize,
+    pub av_delegation_depth: usize,
 }
 
 impl std::ops::Deref for ExchangedClaims {
@@ -347,9 +347,9 @@ pub fn build_exchanged_claims_with_actor(
     validate_claim_fields(&claims, params.now_s, DEFAULT_LEEWAY_SECS, false)?;
     let exchanged = ExchangedClaims {
         claims,
-        pv_subject_tokens: params.subject_chain.to_vec(),
-        pv_actor_tokens: actor.map(|actor| actor.chain.to_vec()).unwrap_or_default(),
-        pv_delegation_depth: depth,
+        av_subject_tokens: params.subject_chain.to_vec(),
+        av_actor_tokens: actor.map(|actor| actor.chain.to_vec()).unwrap_or_default(),
+        av_delegation_depth: depth,
     };
     // Leave room for base64url expansion, the JOSE header and Ed25519
     // signature inside the verifier's 16 KiB pre-authentication limit.
@@ -377,7 +377,7 @@ pub struct ExchangedValidation<'a> {
     pub max_depth: usize,
     /// Validation clock, in epoch seconds.
     pub now_s: u64,
-    /// Exact expected type: `JWT` or `pv-tool+jwt`.
+    /// Exact expected type: `JWT` or `av-tool+jwt`.
     pub token_type: &'a str,
     /// Permit bounded future activation for holder revocation only.
     pub for_revocation: bool,
@@ -393,7 +393,7 @@ pub fn verify_exchanged_token(
     }
     let header = jsonwebtoken::decode_header(token).map_err(|e| IdentityError::Malformed(e.to_string()))?;
     crate::validator::validate_jose_header(&header)?;
-    if !matches!(params.token_type, "JWT" | "pv-tool+jwt")
+    if !matches!(params.token_type, "JWT" | "av-tool+jwt")
         || header.typ.as_deref() != Some(params.token_type)
         || header.alg != Algorithm::EdDSA
         || header.kid.as_deref() != Some(params.kid)
@@ -453,17 +453,17 @@ pub fn verify_exchanged_token(
         return Err(IdentityError::Verification("token is not yet active".into()));
     }
     let act_links = token.act.as_ref().map_or(0, |a| 1 + a.depth());
-    if token.pv_subject_tokens.is_empty()
-        || token.pv_subject_tokens.len() > params.max_depth
-        || token.pv_actor_tokens.len() > 1
-        || token.pv_delegation_depth == 0
-        || token.pv_delegation_depth > params.max_depth
-        || token.pv_subject_tokens.len().saturating_add(token.pv_actor_tokens.len()) > token.pv_delegation_depth
-        || act_links > token.pv_delegation_depth
+    if token.av_subject_tokens.is_empty()
+        || token.av_subject_tokens.len() > params.max_depth
+        || token.av_actor_tokens.len() > 1
+        || token.av_delegation_depth == 0
+        || token.av_delegation_depth > params.max_depth
+        || token.av_subject_tokens.len().saturating_add(token.av_actor_tokens.len()) > token.av_delegation_depth
+        || act_links > token.av_delegation_depth
         || token.act.is_none()
         // An actor-token exchange records the actor as `act.sub` above the
         // subject's agent, so it always carries at least two act links.
-        || token.pv_actor_tokens.first().is_some_and(|actor| {
+        || token.av_actor_tokens.first().is_some_and(|actor| {
             act_links < 2 || token.act.as_ref().is_none_or(|act| act.sub != actor.instance_uid)
         })
     {
@@ -471,7 +471,7 @@ pub fn verify_exchanged_token(
             "invalid exchanged-token ancestry or depth".into(),
         ));
     }
-    for ancestor in token.pv_subject_tokens.iter().chain(&token.pv_actor_tokens) {
+    for ancestor in token.av_subject_tokens.iter().chain(&token.av_actor_tokens) {
         if ancestor.iss.is_empty()
             || ancestor.iss.chars().count() > MAX_IDENTITY_STRING_CHARS
             || pv_core::text::contains_bidi_or_zero_width(&ancestor.iss)
@@ -491,7 +491,7 @@ pub fn verify_exchanged_token(
         }
     }
     if token
-        .pv_subject_tokens
+        .av_subject_tokens
         .first()
         .is_none_or(|source| source.instance_uid != token.instance_uid)
     {
@@ -516,7 +516,7 @@ pub fn check_exchanged_revocation(
     {
         return Err(IdentityError::Revoked(token.jti.clone()));
     }
-    for ancestor in token.pv_subject_tokens.iter().chain(&token.pv_actor_tokens) {
+    for ancestor in token.av_subject_tokens.iter().chain(&token.av_actor_tokens) {
         match upstream
             .check_token(&ancestor.iss, &ancestor.jti, &ancestor.instance_uid, ancestor.iat)
             .map_err(IdentityError::RevocationUnavailable)?
@@ -882,14 +882,14 @@ mod tests {
         assert_eq!(
             verify_exchanged_token(&signed, &params)
                 .unwrap()
-                .pv_subject_tokens,
+                .av_subject_tokens,
             chain
         );
-        for typ in ["pv-intent+jwt", "pv-tool+jwt", "jwt"] {
+        for typ in ["av-intent+jwt", "av-tool+jwt", "jwt"] {
             assert!(verify_exchanged_token(&signed_exchange(&token, typ, &encoding), &params).is_err());
         }
-        params.token_type = "pv-tool+jwt";
-        assert!(verify_exchanged_token(&signed_exchange(&token, "pv-tool+jwt", &encoding), &params).is_ok());
+        params.token_type = "av-tool+jwt";
+        assert!(verify_exchanged_token(&signed_exchange(&token, "av-tool+jwt", &encoding), &params).is_ok());
         params.token_type = "JWT";
         for mutation in 0..10 {
             let mut invalid = token.clone();
@@ -897,12 +897,12 @@ mod tests {
                 0 => invalid.claims.iss = "other-issuer".into(),
                 1 => invalid.claims.aud = "other-backend".into(),
                 2 => invalid.claims.aud = Audience::Multi(audiences.to_vec()),
-                3 => invalid.pv_subject_tokens.clear(),
-                4 => invalid.pv_subject_tokens[0].jti.clear(),
+                3 => invalid.av_subject_tokens.clear(),
+                4 => invalid.av_subject_tokens[0].jti.clear(),
                 5 => invalid.claims.jti.clear(),
-                6 => invalid.pv_delegation_depth = 5,
-                7 => invalid.pv_subject_tokens[0].instance_uid = "different".into(),
-                8 => invalid.pv_subject_tokens[0].iss.clear(),
+                6 => invalid.av_delegation_depth = 5,
+                7 => invalid.av_subject_tokens[0].instance_uid = "different".into(),
+                8 => invalid.av_subject_tokens[0].iss.clear(),
                 _ => invalid.claims.parent_token = Some("nested-jwt".into()),
             }
             assert!(
@@ -913,7 +913,7 @@ mod tests {
         // Tokens issued before issuer-bound ancestry was introduced must be
         // reissued. Guessing the missing issuer would permit cross-issuer rules.
         let mut legacy = serde_json::to_value(&token).unwrap();
-        legacy["pv_subject_tokens"][0]
+        legacy["av_subject_tokens"][0]
             .as_object_mut()
             .unwrap()
             .remove("iss");
@@ -1099,8 +1099,8 @@ mod tests {
             "client-1",
             "the subject's agent is one level down"
         );
-        assert_eq!(result.pv_delegation_depth, 2);
-        assert_eq!(result.pv_actor_tokens, actor_chain.to_vec());
+        assert_eq!(result.av_delegation_depth, 2);
+        assert_eq!(result.av_actor_tokens, actor_chain.to_vec());
         assert!(result.exp <= actor.exp, "never outlives the actor");
     }
 
@@ -1197,7 +1197,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(verified.pv_actor_tokens.len(), 1);
+        assert_eq!(verified.av_actor_tokens.len(), 1);
 
         let exchanged_store = crate::InMemoryRevocationStore::new();
         let upstream = crate::InMemoryRevocationStore::new();

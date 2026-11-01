@@ -320,7 +320,7 @@ fn chain_boundary_splice_cannot_preserve_head_and_count() {
 }
 
 // ---------------------------------------------------------------------------
-// 9. Genesis concatenation: SHA-256("pv-genesis" ‖ session_id) has no
+// 9. Genesis concatenation: SHA-256("av-genesis" ‖ session_id) has no
 //    separator — distinct ids must yield distinct heads, and the empty id
 //    must still be domain-tagged (not plain SHA-256("")).
 // ---------------------------------------------------------------------------
@@ -747,7 +747,7 @@ fn chain_is_not_idempotent_under_duplicate_events() {
 // 23. Receipt signature domain separation: the signing Ed25519 key
 //     also feeds the journal-MAC KDF, so a signature over un-tagged bytes
 //     is a cross-protocol confusion surface. v2 receipts sign
-//     `b"proofvisor-receipt-v2\0" || len(JCS) as u64 BE || JCS(body)`;
+//     `b"agentvisor-receipt-v2\0" || len(JCS) as u64 BE || JCS(body)`;
 //     v1 receipts (bare JCS) remain verifiable for the migration window.
 //     The attack shapes: (a) a v2-labeled receipt carrying an un-tagged
 //     signature, and (b) an honestly-signed body relabeled to the other

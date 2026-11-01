@@ -72,7 +72,7 @@ data:
     enforce_identity_scopes = true
     identity_hmac_secret_file = "/etc/proofvisor/identity.hmac"
     identity_allowed_issuers = ["https://identity.example.invalid"]
-    audience = "proofvisor"
+    audience = "agentvisor-ai"
     dashboard_enabled = false
 
     atif_spool_dir = "/app/spool/atif"

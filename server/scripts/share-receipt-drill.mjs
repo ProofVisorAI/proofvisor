@@ -122,7 +122,10 @@ if (bobJsErrors.length) fail("Bob had JS errors: " + bobJsErrors.join(" | "));
 
 // ── Attacker — hand-craft a URL with tampered rawBody ──────────────────
 // Extract the base64 payload from the legit URL, decode, tamper, re-encode.
-const b64u = localizedUrl.split("#data=")[1];
+// The fragment is `data=<b64url>` plus, since the deployment pin,
+// optional `&deployment=…&api=…`; only the data part is the bundle.
+const [b64u, ...pinParams] = localizedUrl.split("#data=")[1].split("&");
+const pinSuffix = pinParams.length ? "&" + pinParams.join("&") : "";
 const b64 = b64u.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((b64u.length + 3) % 4);
 const decoded = Buffer.from(b64, "base64").toString("utf8");
 const parsed = JSON.parse(decoded);
@@ -130,7 +133,7 @@ parsed.receipt.rawBody = parsed.receipt.rawBody.replace(/"sessionId":"/, '"sessi
 const tamperedJson = JSON.stringify(parsed);
 const tamperedB64u = Buffer.from(tamperedJson, "utf8").toString("base64")
   .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-const tamperedUrl = localizedUrl.split("#data=")[0] + "#data=" + tamperedB64u;
+const tamperedUrl = localizedUrl.split("#data=")[0] + "#data=" + tamperedB64u + pinSuffix;
 
 await bob.goto(tamperedUrl, { waitUntil: "networkidle" });
 await bob.waitForSelector(".result-card", { timeout: 8000 });

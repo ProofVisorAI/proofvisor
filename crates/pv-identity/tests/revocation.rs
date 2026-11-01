@@ -333,7 +333,7 @@ fn issuer_supplied_exchange_ancestry_cannot_replace_verified_parent_identities()
     let child = claims("real-child", &["tool:read"], 200, Some(mint(&parent)));
     let mut payload = serde_json::to_value(&child).unwrap();
     payload.as_object_mut().unwrap().insert(
-        "pv_subject_tokens".into(),
+        "av_subject_tokens".into(),
         serde_json::json!([
             {"jti":"forged-ancestor", "instance_uid":"other-agent", "iat":child.iat}
         ]),
@@ -341,7 +341,7 @@ fn issuer_supplied_exchange_ancestry_cannot_replace_verified_parent_identities()
     payload
         .as_object_mut()
         .unwrap()
-        .insert("pv_delegation_depth".into(), serde_json::json!(0));
+        .insert("av_delegation_depth".into(), serde_json::json!(0));
     let mut header = Header::new(Algorithm::HS256);
     header.kid = Some(KID.into());
     let token = jsonwebtoken::encode(&header, &payload, &EncodingKey::from_secret(SECRET)).unwrap();
@@ -408,7 +408,7 @@ fn issuer_scoped_revocation_does_not_affect_another_issuer_or_key_domain() {
 fn inbound_validator_refuses_backend_profiles_even_with_a_trusted_key() {
     let validator = validator_with(Arc::new(InMemoryRevocationStore::new()));
     let claims = claims("profile", &["tool:read"], 300, None);
-    for typ in ["pv-intent+jwt", "pv-tool+jwt"] {
+    for typ in ["av-intent+jwt", "av-tool+jwt"] {
         let mut header = Header::new(Algorithm::HS256);
         header.kid = Some(KID.into());
         header.typ = Some(typ.into());

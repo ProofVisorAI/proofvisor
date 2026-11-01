@@ -225,7 +225,7 @@ const rawBodyObj = {
 const rawCanon = Buffer.from(jcs(rawBodyObj), "utf8");
 const rawLen = Buffer.alloc(8);
 rawLen.writeBigUInt64BE(BigInt(rawCanon.length), 0);
-const rawMsg = Buffer.concat([Buffer.from("proofvisor-receipt-v2\0", "utf8"), rawLen, rawCanon]);
+const rawMsg = Buffer.concat([Buffer.from("agentvisor-receipt-v2\0", "utf8"), rawLen, rawCanon]);
 const rawSig = sign(null, rawMsg, rawKeys.privateKey);
 const rawReceipt = { ...rawBodyObj, signature_b64: rawSig.toString("base64") };
 const rawPath = bundlePath.replace(".json", "-raw.json");

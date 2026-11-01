@@ -26,13 +26,16 @@ use serde::{Deserialize, Serialize};
 ///   feeds the journal-MAC KDF (`journal.rs`), and a signature over
 ///   un-tagged bytes could in principle be replayed as a signature over
 ///   some other protocol's message. Mirrors the framing style of
-///   `journal.rs` (`b"proofvisor-journal-v1\0"` + BE length prefixes).
+///   `journal.rs` (`b"agentvisor-journal-v1\0"` + BE length prefixes).
 pub const RECEIPT_VERSION: u32 = 2;
 
 /// Domain-separation tag prepended to every version-2 receipt signing
 /// message. The trailing NUL makes the tag self-delimiting so no JCS
 /// body could extend it into a different tag.
-pub const RECEIPT_DOMAIN_TAG_V2: &[u8] = b"proofvisor-receipt-v2\0";
+///
+/// Wire format: every v2 receipt ever issued is signed over these bytes.
+/// They predate the ProofVisor name and must never be renamed.
+pub const RECEIPT_DOMAIN_TAG_V2: &[u8] = b"agentvisor-receipt-v2\0";
 
 /// Build the exact byte message the receipt signature covers for a
 /// given `receipt_version`, from the JCS canonical form of the body.
@@ -1115,7 +1118,7 @@ mod tests {
     fn v2_signing_message_framing_is_tag_belen_canon() {
         let canon = r#"{"a":1}"#;
         let message = signing_message(2, canon).unwrap();
-        let mut expected = b"proofvisor-receipt-v2\0".to_vec();
+        let mut expected = b"agentvisor-receipt-v2\0".to_vec();
         expected.extend_from_slice(&(canon.len() as u64).to_be_bytes());
         expected.extend_from_slice(canon.as_bytes());
         assert_eq!(message, expected);

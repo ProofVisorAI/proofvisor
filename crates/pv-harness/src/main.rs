@@ -16,8 +16,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing_subscriber::prelude::*;
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Before any thread exists: adopt pre-rename AV_* variables (see
+    // pv_core::legacy), then start the same runtime #[tokio::main] built.
+    pv_core::legacy::adopt_legacy_env();
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("proofvisord: could not start the async runtime: {error}");
+            std::process::exit(1);
+        }
+    };
+    runtime.block_on(async_main());
+}
+
+async fn async_main() {
     // Fail-closed CLI contract: proofvisord historically ignored ALL
     // arguments, so `proofvisord --config /etc/prod.toml` silently booted
     // from the env/search-path config instead (possibly permissive

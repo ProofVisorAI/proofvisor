@@ -190,7 +190,11 @@ model ApiKey {
   orgId          String
   name           String // "CI runner", "Grafana dashboard"
   tokenHash      String
-  tokenHint      String // prefix plus first 8 chars (pv_live_XXXXXXXX) for UI display
+  tokenHint      String // first 8 chars after the prefix, for UI display
+  // The prefix the key was minted with: "av_srv_" for keys issued before
+  // the ProofVisor rename (the column default fills them in), "pv_srv_"
+  // since. Both authenticate; the console shows the real one.
+  tokenPrefix    String    @default("av_srv_")
   createdById    String?
   createdByEmail String?
   role           String    @default("admin") // acts as this role for RBAC

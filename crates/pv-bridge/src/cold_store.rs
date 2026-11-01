@@ -525,7 +525,8 @@ fn pending_mac(control_key: &[u8; 32], pending: &PendingColdEvent) -> Result<Str
         pv_receipts::canonicalize(&value).map_err(|error| BusError::Backend(error.to_string()))?;
     let mut mac =
         Hmac::<Sha256>::new_from_slice(control_key).map_err(|error| BusError::Backend(error.to_string()))?;
-    mac.update(b"proofvisor-cold-outbox-v1\0");
+    // Wire format: outbox entries on disk carry this label; never rename.
+    mac.update(b"agentvisor-cold-outbox-v1\0");
     mac.update(canonical.as_bytes());
     Ok(hex::encode(mac.finalize().into_bytes()))
 }
@@ -553,7 +554,7 @@ fn verify_pending_mac(
         pv_receipts::canonicalize(&value).map_err(|error| BusError::Backend(error.to_string()))?;
     let mut mac =
         Hmac::<Sha256>::new_from_slice(control_key).map_err(|error| BusError::Backend(error.to_string()))?;
-    mac.update(b"proofvisor-cold-outbox-v1\0");
+    mac.update(b"agentvisor-cold-outbox-v1\0");
     mac.update(canonical.as_bytes());
     // Same 128-char cap as journal.rs — HMAC-SHA256 is
     // 64 hex chars; refuse a giant `presented_hex` so a fs-tamper
@@ -692,7 +693,7 @@ mod tests {
         };
         let canonical = pv_receipts::canonicalize(&serde_json::to_value(&payload).unwrap()).unwrap();
         let mut mac = Hmac::<Sha256>::new_from_slice(&[0u8; 32]).unwrap();
-        mac.update(b"proofvisor-cold-outbox-v1\0");
+        mac.update(b"agentvisor-cold-outbox-v1\0");
         mac.update(canonical.as_bytes());
         let forged = PendingEnvelope {
             payload,

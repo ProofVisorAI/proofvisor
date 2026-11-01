@@ -145,7 +145,8 @@ impl SessionSigner {
     pub(crate) fn derive(journal_key: &[u8; 32]) -> Self {
         let mut key = [0u8; 32];
         if let Ok(mut mac) = HmacSha256::new_from_slice(journal_key) {
-            mac.update(b"proofvisor-mcp-session-key-v1");
+            // Wire format: MCP session ids already issued; never rename.
+            mac.update(b"agentvisor-mcp-session-key-v1");
             key.copy_from_slice(&mac.finalize().into_bytes());
         }
         Self { key }
@@ -153,7 +154,7 @@ impl SessionSigner {
 
     fn mac(&self, principal: &str, version: &str, issued_s: u64, agent_session: &str) -> Option<HmacSha256> {
         let mut mac = HmacSha256::new_from_slice(&self.key).ok()?;
-        mac.update(b"proofvisor-mcp-session-v1");
+        mac.update(b"agentvisor-mcp-session-v1");
         for field in [principal.as_bytes(), version.as_bytes(), agent_session.as_bytes()] {
             mac.update(&u64::try_from(field.len()).ok()?.to_be_bytes());
             mac.update(field);

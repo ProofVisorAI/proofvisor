@@ -247,7 +247,7 @@ fn wasmtime_policy_missing_required_exports_is_denied_cleanly() {
 // ---------------------------------------------------------------------------
 // 8. Cold-store MAC domain separation (attack: reuse a MAC generated for a
 // different bucket / different domain). The `pending_mac` in cold_store
-// prefixes with `b"proofvisor-cold-outbox-v1\0"` before HMAC-ing; a MAC
+// prefixes with `b"agentvisor-cold-outbox-v1\0"` before HMAC-ing; a MAC
 // computed without that prefix must not verify.
 //
 // We cannot invoke pending_mac directly (pub(crate)), but we CAN verify
