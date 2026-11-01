@@ -38,12 +38,14 @@
  *     deployment.pubkey_first_set, deployment.pubkey_rotation_refused,
  *     deployment.receipt_overwrite_refused, deployment.receipt_key_id_mismatch
  *   member.invited, member.invite_accepted, member.invite_accepted_requires_login,
+ *     member.invite_accepted_reset_unverified_account,
  *     member.invite_revoked, member.role_changed, member.left, member.removed
  *   apikey.created, apikey.renamed, apikey.revoked
  *   webhook.created, webhook.updated, webhook.deleted, webhook.test_fired,
  *     webhook.secret_rotated, webhook.delivery_redelivered
  *   org.created, org.exported, org.delete.initiated, org.delete.committed,
  *     org.ip_allowlist_updated, org.renamed, org.retention_updated, org.retention_swept
+ *     org.domain_added, org.domain_verified, org.domain_removed
  *   audit.viewed, audit.exported_csv
  *
  * Note: `policy.block` is NOT an audit slug — it's a webhook

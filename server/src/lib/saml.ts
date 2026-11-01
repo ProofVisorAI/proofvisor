@@ -639,9 +639,15 @@ export function generateMetadata(cfg: SamlConfig): string {
 }
 
 /**
- * Find an active SAML config on an org that matches the given email's
- * domain (or return the single active config if allowedDomains is empty).
- * Used by the login page to advertise SSO before a user is authenticated.
+ * Find the active SAML config the login page may send an email's owner
+ * to. Used by anonymous discovery before anyone is authenticated, so it
+ * only trusts a domain the organisation has PROVEN it controls (an
+ * `OrgDomain` row with `verifiedAt`, see lib/domains.ts). `allowedDomains`
+ * on the config is free text any workspace owner can type; on its own it
+ * would let an attacker's org claim "victimcorp.com" and turn the real
+ * login page into a redirect to their "identity provider". Within the
+ * proven org, the config must still list the domain (or list none,
+ * meaning any domain the IdP asserts).
  */
 export async function findConfigForEmail(email: string): Promise<
   SamlConfig | null
@@ -652,16 +658,18 @@ export async function findConfigForEmail(email: string): Promise<
   // stored allowedDomains may carry legacy/admin-pasted NFD bytes;
   // visually identical domains must match.
   const domain = email.slice(at + 1).toLowerCase().normalize("NFC");
+  const owner = await db.orgDomain.findUnique({ where: { domain } });
+  if (!owner || !owner.verifiedAt) return null;
   const configs = await db.samlConfig.findMany({
-    where: { isActive: true },
+    where: { isActive: true, orgId: owner.orgId },
+    orderBy: { createdAt: "asc" },
   });
   for (const c of configs) {
     const domains = c.allowedDomains
       .split(",")
       .map((d) => d.trim().toLowerCase().normalize("NFC"))
       .filter(Boolean);
-    if (domains.length === 0) continue;
-    if (domains.includes(domain)) return c;
+    if (domains.length === 0 || domains.includes(domain)) return c;
   }
   return null;
 }

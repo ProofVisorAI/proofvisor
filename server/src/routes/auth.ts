@@ -1718,6 +1718,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // membership. The plaintext token is delivered ONLY via the configured
   // email path; it is never logged in production (log-read access would
   // otherwise be sufficient to take over any account).
+  // A second reset link for the same account within this window is not
+  // issued (see the handler).
+  const RESET_REISSUE_COOLDOWN_MS = 60_000;
   app.post("/reset-request", {
     // 3/hour per IP. Reset-request is anonymous, so an attacker could
     // spam it to burn our mail budget or DOS a specific mailbox.
@@ -1745,6 +1748,15 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       try {
         const user = await db.user.findUnique({ where: { email: emailAddr } });
         if (!user) return;
+        // Per-account cooldown. Each request overwrote the live token,
+        // so an attacker rotating IPs past the 3/hour limit could keep
+        // invalidating a victim's reset link and flood the mailbox.
+        // Within the cooldown the earlier link stays valid and no mail
+        // goes out; the response was already the uniform 202.
+        if (user.resetTokenAt && Date.now() - user.resetTokenAt.getTime() < RESET_REISSUE_COOLDOWN_MS) {
+          req.log.info({ userId: user.id }, "password_reset_request_within_cooldown");
+          return;
+        }
         const plaintextToken = randomToken(32);
         const resetTokenHash = await hashPassword(plaintextToken);
         const updated = await db.user.updateMany({

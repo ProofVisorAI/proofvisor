@@ -428,9 +428,11 @@ test("groups map to roles: admin group promotes, removal falls back to the defau
   // Rename an unmapped group to a mapped name → mapping applies to its members.
   const put = await idp.json("PUT", `/scim/v2/Groups/${eng.data.id}`, { displayName: "owner", members: [{ value: dan.data.id }] }, { headers: scimHeaders });
   assert.equal(put.status, 200, JSON.stringify(put.data));
-  assert.equal((await idp.json("GET", `/scim/v2/Users/${dan.data.id}`)).data.roles[0].value, "owner");
+  // A group named "owner" grants admin, never owner: provisioning must not
+  // be able to mint owners (org deletion, SAML and SCIM token rights).
+  assert.equal((await idp.json("GET", `/scim/v2/Users/${dan.data.id}`)).data.roles[0].value, "admin");
 
-  // Deleting the mapped group drops dan back to member (not the last owner: the real owner remains).
+  // Deleting the mapped group drops dan back to member.
   const del = await idp.json("DELETE", `/scim/v2/Groups/${eng.data.id}`);
   assert.equal(del.status, 204);
   assert.equal((await idp.json("GET", `/scim/v2/Users/${dan.data.id}`)).data.roles[0].value, "member");

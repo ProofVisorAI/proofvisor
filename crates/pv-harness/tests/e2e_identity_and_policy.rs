@@ -516,6 +516,137 @@ async fn authzen_against_the_public_topaz_interop_pdp() {
     );
 }
 
+/// `signed_workflow_scope`: with it set, a token may open a signed
+/// workflow only when it holds the scope, so a consequential tool is
+/// out of reach for a token that can only run unsigned sessions. Unset,
+/// any token may choose `X-PV-Workflow: signed` (the historical rule).
+#[tokio::test]
+async fn signed_workflow_scope_keeps_consequential_tools_from_unscoped_tokens() {
+    fn signed_call(bearer: &str, session: &str, tool: &str) -> Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("x-pv-session", session)
+            .header("x-pv-workflow", "signed")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": tool, "arguments": {}}
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+    }
+    let upstream = common::MockBackend::start().await;
+    let (state, _dir) = gateway(vec![backend("pay", &upstream.url, &["payout"])], |config| {
+        config.enforce_identity_scopes = true;
+        config.signed_workflow_scope = Some("workflow:signed".into());
+        assert!(config.consequential_tools.iter().any(|t| t == "payout"));
+    });
+    let tools_only = token(&state, "user:ana@acme.io", "inst-a", &["tool:*"], "j-wf-1");
+    let signed_ok = token(
+        &state,
+        "user:ana@acme.io",
+        "inst-a",
+        &["tool:*", "workflow:signed"],
+        "j-wf-2",
+    );
+
+    // Unsigned: the built-in consequential gate refuses as before.
+    let unsigned = send(&state, tool_call(&tools_only, "wf-1", "payout", 1)).await;
+    assert_eq!(unsigned.status, 403, "{}", unsigned.json);
+    assert!(
+        unsigned.json.to_string().contains("requires a signed workflow"),
+        "{}",
+        unsigned.json
+    );
+
+    // Signed, but the token lacks the scope: refused before any budget spend.
+    let no_scope = send(&state, signed_call(&tools_only, "wf-2", "payout")).await;
+    assert_eq!(no_scope.status, 403, "{}", no_scope.json);
+    assert!(
+        no_scope.json.to_string().contains("workflow:signed"),
+        "the refusal names the missing scope: {}",
+        no_scope.json
+    );
+    assert!(upstream.tool_calls().is_empty(), "nothing reached the backend");
+
+    // Signed with the scope: admitted.
+    let admitted = send(&state, signed_call(&signed_ok, "wf-3", "payout")).await;
+    assert_eq!(admitted.status, 200, "{}", admitted.json);
+    assert_eq!(upstream.tool_calls().len(), 1);
+
+    // The chat route applies the same gate.
+    let chat = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {tools_only}"))
+        .header("x-pv-session", "wf-4")
+        .header("x-pv-workflow", "signed")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]}))
+                .unwrap(),
+        ))
+        .unwrap();
+    let chat_refused = send(&state, chat).await;
+    assert_eq!(chat_refused.status, 403, "{}", chat_refused.json);
+}
+
+/// The daemon's own AuthZEN client against the public Cerbos demo PDP.
+/// The Cerbos demo policy models `todo` resources, so `[authzen.resources]`
+/// maps `create_todo` to `{"type":"todo"}`; without the mapping the daemon
+/// would describe the tool as `{"type":"tool"}` and the demo policy would
+/// deny every call. Needs network access, so it runs only with `--ignored`.
+#[tokio::test]
+#[ignore = "needs network access to authzen-proxy-demo.cerbos.dev"]
+async fn authzen_against_the_public_cerbos_demo_pdp_with_a_resource_map() {
+    let upstream = common::MockBackend::start().await;
+    let (state, _dir) = gateway(vec![backend("todo", &upstream.url, &["create_todo"])], |config| {
+        config
+            .intent_map
+            .insert("create_todo".into(), "can_create_todo".into());
+        let mut pdp = authzen("https://authzen-proxy-demo.cerbos.dev", false);
+        pdp.timeout_ms = 10_000;
+        pdp.resources.insert(
+            "create_todo".into(),
+            pv_harness::config::AuthzenResourceConfig {
+                resource_type: "todo".into(),
+                id: Some("todo-1".into()),
+                properties: None,
+            },
+        );
+        config.authzen = Some(pdp);
+    });
+    let rick = token(
+        &state,
+        "rick@the-citadel.com",
+        "inst-rick",
+        &["tool:*"],
+        "j-rick-c",
+    );
+    let beth = token(
+        &state,
+        "beth@the-smiths.com",
+        "inst-beth",
+        &["tool:*"],
+        "j-beth-c",
+    );
+
+    let allowed = send(&state, tool_call(&rick, "cerbos-1", "create_todo", 1)).await;
+    assert_eq!(allowed.status, 200, "{}", allowed.json);
+    let denied = send(&state, tool_call(&beth, "cerbos-2", "create_todo", 2)).await;
+    assert_eq!(denied.status, 403, "{}", denied.json);
+    assert_eq!(denied.json["error"]["data"]["code"], "PDP_DENIED");
+    assert_eq!(
+        upstream.tool_calls().len(),
+        1,
+        "only the permitted call reaches the backend"
+    );
+}
+
 /// `[authzen.resources]` maps a tool to the resource type and id the
 /// decision point's policies model: an exact name, a pattern, or the
 /// documented default when neither matches.

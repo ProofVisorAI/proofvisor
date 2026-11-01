@@ -199,6 +199,13 @@ test("reset confirmation consumes a mailed token once and atomically requests AP
   assert.ok(token, "SMTP must receive a usable reset token");
   assert.ok(await verifyPassword(user.resetTokenHash, token));
   assert.ok(!JSON.stringify(logs).includes(token), "application logs must not contain the reset token");
+  // A repeat within the cooldown keeps the first link valid and sends no
+  // second mail, so an attacker cannot keep invalidating a victim's link.
+  const repeat = await app.inject({ method: "POST", url: "/reset-request", payload: { email: user.email } });
+  assert.equal(repeat.statusCode, 202);
+  await eventually(() => logs.some((entry) => entry.msg === "password_reset_request_within_cooldown"));
+  assert.equal(messages.length, before + 1, "no second reset mail within the cooldown");
+  assert.ok(await verifyPassword(user.resetTokenHash, token), "the first token is still the live one");
   const payload = { email: user.email, token, newPassword: "replacement-password-1234" };
   const invalid = await app.inject({ method: "POST", url: "/reset-confirm", payload: { ...payload, token: "incorrect-token-with-valid-length" } });
   assert.equal(invalid.statusCode, 401);

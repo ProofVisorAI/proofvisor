@@ -177,7 +177,10 @@ async fn introspect_inner(state: AppState, headers: HeaderMap, body: Bytes) -> R
     }
 }
 
-pub(crate) async fn revoke(State(state): State<AppState>, body: Bytes) -> Response {
+pub(crate) async fn revoke(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(refusal) = crate::routes::refuse_foreign_origin(&state, &headers) {
+        return refusal;
+    }
     control_request(state, move |state| revoke_inner(state, body)).await
 }
 

@@ -79,6 +79,7 @@ source. All are optional.
 | --- | --- | --- |
 | `default_workflow` | `unsigned` | Workflow when the `X-PV-Workflow` header is absent. **`unsigned` produces ATIF trajectories but NO signed receipts** — every shipped config (example, container, docker, K8s) overrides this to `signed`; set it explicitly if you need verifiable receipts and cannot send the header. |
 | `consequential_tools` | `["db_write", "payout", "merge", "deploy"]` | Tool names that require a signed workflow because they have real-world consequences. |
+| `signed_workflow_scope` | unset | Scope a bearer token must hold to open a signed workflow (`X-PV-Workflow: signed`). Unset, any caller may pick the signed workflow, so `consequential_tools` only chooses the audit mode a consequential call runs under. Set to, for example, `workflow:signed` and a token without that scope is refused with `403` on a signed session, so it cannot reach a consequential tool at all. Applies when `enforce_identity_scopes` is on. |
 
 ## Identity (development HMAC)
 
@@ -99,7 +100,7 @@ source. All are optional.
 | `payout_field` | `amount_usd` | Tool-call argument field carrying a payout in USD, charged against `max_payout_usd_micros`. Set this to match YOUR tool schema — the cap only fires on calls carrying this exact field. |
 | `wasm_policy_paths` | `["config/policies/payload_limit.wat"]` | WASM/WAT policy modules, evaluated in order. The default path resolves to an embedded built-in when no file exists on disk. |
 | `tool_upstream_transport` | `json_rpc` | Wire protocol for `tool_upstream_url`: `json_rpc` sends one plain JSON-RPC POST per call (the historical behavior); `mcp` speaks the MCP Streamable HTTP transport described under [Backend routing](#backend-routing). `[[backends]]` entries choose their own `transport` and default to `mcp`. |
-| `mcp_allowed_origins` | `[]` | Browser origins (`scheme://host[:port]`) allowed to call the MCP endpoints. A request that carries any other `Origin` header is refused with `403`, as the MCP transport requires. Agents run server-side and send no `Origin`, so the empty default refuses only browser pages. |
+| `mcp_allowed_origins` | `[]` | Browser origins (`scheme://host[:port]`) allowed to call the daemon from a web page. A request to the MCP, chat completions, session lifecycle, token exchange or revocation routes that carries any other `Origin` header is refused with `403` (the MCP transport requires this, and it stops a hostile page from driving a loopback daemon cross-site). Agents run server-side and send no `Origin`, so the empty default refuses only browser pages. |
 
 ### MCP protocol on `/mcp`
 

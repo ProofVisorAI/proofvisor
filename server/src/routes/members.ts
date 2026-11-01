@@ -916,6 +916,23 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
       // every race window below).
       newUserPasswordHash = await hashPassword(body.data.password);
     }
+    // Pre-registration takeover guard. Signup does not verify the
+    // mailbox, so anyone can register the invitee's address first with
+    // a password (and passkeys) of their choosing. Granting the invite
+    // to such an account would hand the attacker a live membership in
+    // the inviting org. The invite link was mailed to the address, so
+    // the person accepting it holds the mailbox: treat the accept as a
+    // break-glass reset of that unverified account. The invitee sets a
+    // new password here; every session is fenced, API keys the account
+    // minted are revoked and its passkeys are deleted, then the
+    // membership is granted and they sign in with the new password.
+    let unverifiedResetPasswordHash: string | null = null;
+    if (user && !user.emailVerifiedAt) {
+      if (!body.data.password) {
+        return reply.code(400).send({ error: "password_required_for_unverified_user" });
+      }
+      unverifiedResetPasswordHash = await hashPassword(body.data.password);
+    }
 
     // R79 MEDIUM (Class B), rewritten: consume the invite FIRST
     // inside an INTERACTIVE transaction, then grant the membership.
@@ -952,6 +969,7 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
     // the R80 F5 requery used to.
     const INVITE_NOT_CONSUMABLE = "__invite_not_consumable__";
     let createdUserThisRequest = false;
+    let unverifiedAccountReset = false;
     try {
       user = await db.$transaction(async (tx) => {
         const consumed = await tx.invite.updateMany({
@@ -1008,10 +1026,33 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
         // invite stayed "unverified" and the OAuth pre-hijack gate
         // refused SSO for it forever.
         if (!grantee.emailVerifiedAt) {
-          await tx.user.update({
-            where: { id: grantee.id },
-            data: { emailVerifiedAt: new Date() },
-          });
+          if (unverifiedResetPasswordHash) {
+            const now = new Date();
+            await tx.user.update({
+              where: { id: grantee.id },
+              data: {
+                passwordHash: unverifiedResetPasswordHash,
+                emailVerifiedAt: now,
+                sessionRevokedAt: now,
+                resetTokenHash: null,
+                resetTokenAt: null,
+                pendingEmail: null,
+                pendingEmailTokenHash: null,
+                pendingEmailAt: null,
+              },
+            });
+            await tx.apiKey.updateMany({
+              where: { createdById: grantee.id, revokedAt: null },
+              data: { revokedAt: now },
+            });
+            await tx.webauthnCredential.deleteMany({ where: { userId: grantee.id } });
+            unverifiedAccountReset = true;
+          } else {
+            await tx.user.update({
+              where: { id: grantee.id },
+              data: { emailVerifiedAt: new Date() },
+            });
+          }
         }
         return grantee;
       });
@@ -1044,7 +1085,9 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
       writeAudit(
         {
           orgId: matched.orgId,
-          event: "member.invite_accepted_requires_login",
+          event: unverifiedAccountReset
+            ? "member.invite_accepted_reset_unverified_account"
+            : "member.invite_accepted_requires_login",
           actorId: user.id,
           actorEmail: user.email,
           target: user.email,
@@ -1061,6 +1104,10 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
           name: targetOrg?.name ?? null,
         },
         requiresLogin: true,
+        // The account existed but its mailbox was never verified, so the
+        // accept replaced its password (see above): sign in with the one
+        // just entered, not with whatever was set before.
+        passwordReset: unverifiedAccountReset,
       });
     }
 

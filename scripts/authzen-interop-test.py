@@ -59,8 +59,10 @@ def daemon_shaped_request(subject, action, tool, resource_type, resource_id):
     resource: the daemon always sends {"type": "tool", "id": <tool>}, and
     the Cerbos demo policy only models "todo" resources, so this script
     sends the Todo scenario's resource to test format conformance. The
-    daemon's own client, with its real resource, is exercised against
-    Topaz by `authzen_against_the_public_topaz_interop_pdp` in
+    daemon's own client is exercised against both PDPs by the ignored
+    tests `authzen_against_the_public_topaz_interop_pdp` (default
+    resource) and `authzen_against_the_public_cerbos_demo_pdp_with_a_resource_map`
+    (`[authzen.resources]` mapping create_todo to a "todo" resource) in
     crates/pv-harness/tests/e2e_identity_and_policy.rs."""
     return {
         "subject": {

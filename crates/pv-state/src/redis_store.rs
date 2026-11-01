@@ -828,6 +828,36 @@ fn scan_and_delete_single(conn: &mut redis::Connection, pattern: &str) {
     }
 }
 
+/// The Redis Cluster hash slot of `key`: CRC16-XMODEM of the key (or of
+/// the first non-empty `{hash-tag}` when the key has one) modulo 16384,
+/// exactly as `CLUSTER KEYSLOT` computes it. The `redis` crate stopped
+/// exporting its own copy in 0.32, so the daemon keeps this one and pins
+/// it with the reference values from the Redis documentation.
+fn cluster_key_slot(key: &[u8]) -> u16 {
+    const SLOTS: u16 = 16_384;
+    let hashed = key
+        .iter()
+        .position(|b| *b == b'{')
+        .and_then(|open| key.get(open + 1..))
+        .and_then(|after_open| {
+            let len = after_open.iter().position(|b| *b == b'}')?;
+            (len > 0).then(|| after_open.get(..len)).flatten()
+        })
+        .unwrap_or(key);
+    let mut crc: u16 = 0;
+    for byte in hashed {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc % SLOTS
+}
+
 /// Cluster variant: bare `SCAN` has no key argument so
 /// `redis::cluster_routing::RoutingInfo::for_routable` returns `None`
 /// on it (the sync ClusterConnection then fails with
@@ -849,7 +879,7 @@ fn scan_and_delete_cluster(conn: &mut redis::cluster::ClusterConnection, pattern
     use redis::cluster_routing::{Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr};
     const SCAN_COUNT: usize = 500;
     let route_key = route_prefix.trim_end_matches('*');
-    let slot = redis::cluster_routing::get_slot(route_key.as_bytes());
+    let slot = cluster_key_slot(route_key.as_bytes());
     let routing = RoutingInfo::SingleNode(SingleNodeRoutingInfo::SpecificNode(Route::new(
         slot,
         SlotAddr::Master,
@@ -1102,5 +1132,30 @@ mod transport_tests {
             assert!(validate_transports(&nodes.map(str::to_owned)).is_err());
         }
         assert!(validate_transports(&["rediss://one:6379".into(), "rediss://two:6379".into()]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod cluster_slot_tests {
+    use super::cluster_key_slot;
+
+    /// Reference values from `CLUSTER KEYSLOT` (Redis cluster spec).
+    #[test]
+    fn matches_cluster_keyslot() {
+        assert_eq!(cluster_key_slot(b"foo"), 12182);
+        assert_eq!(cluster_key_slot(b"bar"), 5061);
+        assert_eq!(cluster_key_slot(b"123456789"), 12739);
+        assert_eq!(cluster_key_slot(b""), 0);
+    }
+
+    #[test]
+    fn hash_tags_select_the_slot() {
+        assert_eq!(cluster_key_slot(b"{foo}.bar"), cluster_key_slot(b"foo"));
+        assert_eq!(cluster_key_slot(b"x{foo}{bar}"), cluster_key_slot(b"foo"));
+        // An empty tag is ignored, so the whole key is hashed (values
+        // read from `CLUSTER KEYSLOT` on redis:7).
+        assert_eq!(cluster_key_slot(b"{}foo"), 9500);
+        // Only the first `{` counts, even when it has no closing brace.
+        assert_eq!(cluster_key_slot(b"{foo"), 13308);
     }
 }

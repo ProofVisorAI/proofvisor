@@ -128,7 +128,10 @@ with demonstration data, which is what the public site shows by default.
   password reset.
 - **Second factor with passkeys (WebAuthn)** and administrator reset.
 - **Single sign-on:** Google, Microsoft and generic OIDC; a SAML 2.0
-  service provider with discovery by email domain. Tested against
+  service provider with discovery by email domain. Discovery trusts
+  only domains the workspace has verified with a DNS TXT record
+  (Settings → SSO → Verified email domains), and the login page shows
+  which provider it found and asks before leaving. Tested against
   scripted identity-provider fixtures, not yet against a customer's IdP.
 - **Organisation administration:** rename, retention windows with a
   manual sweep, IP allow-list (refuses to lock out the current user),
@@ -196,7 +199,8 @@ with demonstration data, which is what the public site shows by default.
   official MCP SDK client, Keycloak 26.8.1 (OIDC and SAML login in a
   real browser), the daemon's AuthZEN request format against two public
   interop decision servers, and the daemon's own AuthZEN client against
-  the public Topaz server.
+  the public Topaz server, and against the public Cerbos demo server
+  with the mapping (its policy models `todo` resources).
 - **The rename keeps existing deployments working.** Signed and hashed
   labels (receipt tag, chain genesis, journal and outbox labels, token
   types and claims, the default audience) keep their pre-rename bytes,
@@ -298,13 +302,6 @@ with demonstration data, which is what the public site shows by default.
   API needs real keys and makes a few paid requests
   (`scripts/provider-smoke.py --allow-live-request --provider anthropic`
   or `gemini`).
-- **AuthZEN against other public decision servers.** The daemon's own
-  AuthZEN client was run against the public Topaz interop server and
-  decided correctly (allow and deny). With `[authzen.resources]` a tool
-  can now be described as the resource type a server's policies model
-  (see section 6), but only Topaz has been exercised; the Cerbos demo
-  policy, which models `todo` resources, has not been re-run with a
-  mapping.
 - **Still tested with stand-ins only:** a real Cloud Foundry
   foundation, cloud object storage, and identity providers other than
   Keycloak (for example Okta and Entra ID).
@@ -330,8 +327,12 @@ with demonstration data, which is what the public site shows by default.
   id and secret are added; SAML and SCIM are built in and off by
   default.
 - **Security review depth.** The code added on 2026-10-31 and the
-  rename's compatibility were reviewed line by line; older console API
-  code and the Rust daemon got spot checks only.
+  rename's compatibility were reviewed line by line on those days. On
+  2026-11-01 the older console API code (every route, the auth,
+  session, SAML, OIDC, passkey, SCIM, webhook and export code) and the
+  daemon's older paths (authentication, token exchange, MCP gateway,
+  policy and budget enforcement, relay, receipts) were reviewed line by
+  line as well; the findings are fixed (section 10).
 
 ## 8. Verification record for 2026-10-31 and 2026-11-01
 
@@ -366,6 +367,7 @@ passed on 2026-11-01).
 | Keycloak 26.8.1 OIDC and SAML login | 22 checks passed |
 | The daemon's AuthZEN request format, sent by a test script to public interop PDPs (Cerbos, Aserto Topaz) | allow and deny as expected |
 | The daemon's own AuthZEN client against the public Topaz PDP | allow and deny as expected |
+| The daemon's own AuthZEN client against the public Cerbos demo PDP, with `[authzen.resources]` mapping the tool to a `todo` resource (2026-11-01) | allow and deny as expected |
 
 Added later on 2026-11-01, after a second pass over the whole chain:
 
@@ -446,3 +448,38 @@ passed, 0 failed, 3 ignored; `cargo fmt --check` and `cargo clippy
 108 of 108 and the type check clean; contract suite 146 of 146;
 policy-push script 55 of 55 against a locally booted API with the real
 daemon and `pvctl`.
+
+## 10. Security review findings closed on 2026-11-01 (night)
+
+Both reviews read the older code line by line. Every finding is fixed
+and pinned by a test that runs in the normal suites.
+
+| Finding | Fix | Proof |
+|---|---|---|
+| A web page could drive a loopback daemon cross-site: the chat, session and token routes did not look at `Origin`, and a `no-cors` `POST` with a `Blob` body needs no preflight. | Every state-changing route refuses an `Origin` that is not in `mcp_allowed_origins`, the allowlist the MCP routes already used. | `e2e_origin_guard` (3 tests) |
+| The "requires a signed workflow" refusal for consequential tools was only an audit-mode choice: any caller could send `X-PV-Workflow: signed`. | New `signed_workflow_scope` setting; when set, a token without that scope cannot open a signed session, so consequential tools stay out of reach. Unset by default, documented. | `signed_workflow_scope_keeps_consequential_tools_from_unscoped_tokens` |
+| Any workspace owner could claim another company's email domain in a SAML config, and the login page redirected that company's users to the attacker's "identity provider". | Discovery only consults domains the organisation verified by a DNS TXT record (`_proofvisor-challenge.<domain>`); one domain belongs to one organisation; the login page names the provider and asks before leaving. | `identity-hardening.test.mjs`, `saml-browser-e2e.mjs` |
+| Accepting an invitation for an address someone had pre-registered (unverified) granted the invited role to the squatter's account. | For an unverified existing account, accepting the invitation sets the password the invitee enters, fences every session, revokes the account's API keys and deletes its passkeys, then grants the membership. | `identity-hardening.test.mjs` |
+| A SCIM group named `owner` granted the owner role, so a compromised SCIM token could mint owners. | A group named `owner` grants admin. Owners are only made in the console. | `scim.test.mjs` |
+| No per-account cooldown on password-reset requests: an attacker rotating IPs could keep invalidating a victim's reset link. | One reset link per account per minute; the earlier link stays valid. | `external-auth.test.mjs` |
+| Webhook URLs (Slack and Discord embed their secret in the path) were copied into the audit log and its CSV export. | The audit entry keeps the host only. | type check, `e2e.mjs` |
+| The webhook SSRF blocklist lacked multicast, reserved, benchmarking and TEST-NET ranges. | Added. | type check |
+| Five open advisories against `quinn-proto`, and three unmaintained crates (`unsafe-libyaml` through `serde_yaml`, `rustls-pemfile` through `redis` 0.27, `paste` through `tokenizers`). | `quinn-proto` updated; `serde_yaml` replaced by its maintained fork `serde_norway` (same API); `redis` upgraded to 0.32, which drops `rustls-pemfile` (the daemon now computes Redis Cluster hash slots itself, pinned against `CLUSTER KEYSLOT`). `paste` remains, reachable only through `tokenizers` behind the optional `onnx` feature; no release of `tokenizers` without it exists. | `cargo audit` (one previously dispositioned advisory left), Redis contract and revocation tests against a live single node and a live six-node cluster |
+
+Also closed from section 7: the daemon's AuthZEN client now runs against
+the public Cerbos demo decision server with `[authzen.resources]`
+mapping the tool to a `todo` resource (allow and deny as expected), and
+a budget, allowlist, rate or schema policy saved before the JSON spec
+existed is marked "Needs the JSON spec: edit and re-save" in the
+console instead of silently counting on a daemon's unsupported report.
+
+Gates on the tree that closes section 10, on the same laptop: Rust
+workspace 1,865 tests passed, 0 failed, 5 ignored (`--all-features`,
+no fail-fast); `cargo fmt --check` and `cargo clippy --workspace
+--all-targets --all-features -D warnings` clean; `cargo audit` down to
+the one advisory dispositioned in `deny.toml`; API tests 111 of 111 and
+the type check clean; contract suite 146 of 146; policy-push script 55
+of 55 with the rebuilt daemon and `pvctl`; SAML browser suite 8 of 8;
+console browser suite all checks; Redis contract (8) and revocation (7)
+suites against a live single node and a live six-node cluster; the
+daemon's AuthZEN client against the public Topaz and Cerbos servers.

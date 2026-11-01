@@ -1414,7 +1414,16 @@
                 }
                 var relay = (sessionStorage.getItem("pv_return_to") || "");
                 var url = r.ssoConfig.loginUrl + (relay ? "?RelayState=" + encodeURIComponent(relay) : "");
-                window.location.assign(url);
+                // Never bounce straight to the identity provider: the
+                // person sees which provider their workspace verified
+                // for the domain and confirms before leaving this page.
+                var domain = String(email).slice(String(email).lastIndexOf("@") + 1);
+                confirmModal({
+                  title: "Continue to " + (r.ssoConfig.displayName || "your identity provider") + "?",
+                  body: "Your workspace verified " + domain + " and uses \"" + (r.ssoConfig.displayName || "SAML SSO") + "\" for sign-in. You will leave ProofVisor to sign in there. Continue only if that is your company's identity provider.",
+                  confirmLabel: "Continue to sign-in",
+                  onConfirm: function () { window.location.assign(url); },
+                });
               }).catch(function (err) {
                 toast(err.message || "SSO discovery failed", true);
               });
@@ -1595,7 +1604,10 @@
         // to /#/login with a friendly banner explaining they
         // were added to the org and need to sign in normally.
         if (s.requiresLogin) {
-          toast("You were added to " + (s.org && s.org.name ? s.org.name : "the workspace") + ". Sign in with your existing password to continue.");
+          var workspace = (s.org && s.org.name ? s.org.name : "the workspace");
+          toast(s.passwordReset
+            ? "You were added to " + workspace + ". Your account had never verified its email, so the password you just entered replaced the old one. Sign in with it to continue."
+            : "You were added to " + workspace + ". Sign in with your existing password to continue.");
           navigate("#/login?joined=1");
           return;
         }
@@ -4212,6 +4224,11 @@
       return '<span class="pill neutral enf" title="Daemons cannot enforce ' + esc(p.kind) + ' policies; this entry documents the rule and attributes hits.">Not enforceable by daemons (' + esc(p.kind) + ")</span>";
     }
     var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
+    // A budget, allowlist, rate or schema policy saved before the JSON
+    // spec existed has a free-text body. Daemons refuse it ("policy has
+    // no JSON spec"), so say so here instead of counting on the
+    // unsupported pill, which only appears once a daemon has pulled.
+    if (parseSpec(p) === null) return '<span class="pill err enf" title="This policy was written before daemons could enforce ' + esc(p.kind) + ' rules, so its definition is free text. Edit it and save the JSON spec (a template fills it in); until then every daemon reports it unsupported.">Needs the JSON spec: edit and re-save</span>';
     if (!p.enabled) return '<span class="pill neutral enf" title="Disabled policies are left out of the bundle daemons pull.">Disabled — not in the bundle</span>';
     if (!e.deployments) return '<span class="pill neutral enf" title="Register a deployment; its page shows how to start pulling policies.">No daemons yet</span>';
     var staleNames = (deps || []).filter(function (d) { return !d.isDemo && d.policyBundle && d.policyBundle.stale; }).map(function (d) { return d.name; });
@@ -5832,8 +5849,9 @@
         '<div style="padding: 20px 16px">' + mfaRows + '</div>' +
       '</div>';
 
-    root.innerHTML = oauthCard + samlCard + mfaCard + '<div id="scimCard"></div>';
+    root.innerHTML = oauthCard + '<div id="domainsCard"></div>' + samlCard + mfaCard + '<div id="scimCard"></div>';
     var ssoRole = (state.session && state.session.org && state.session.org.role) || "member";
+    if (ssoRole !== "member" && typeof state.ds.listDomains === "function") renderDomainsCard($("#domainsCard", root), ssoRole === "owner");
     if (ssoRole === "owner" && typeof state.ds.getScimSettings === "function") renderScimCard($("#scimCard", root));
 
     var addBtn = $("#addSamlBtn", root);
@@ -5948,6 +5966,109 @@
   }
 
   // ---------- SCIM provisioning card (owner only) ----------
+  // Verified email domains. The login page's "Continue with SAML SSO"
+  // looks an email's domain up here: only a domain this workspace has
+  // proven with a DNS TXT record can send its users to the workspace's
+  // identity provider. Owners add, verify and remove; admins can read.
+  async function renderDomainsCard(host, canManage) {
+    if (!host) return;
+    host.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";
+    var rows = [];
+    try { rows = ((await state.ds.listDomains()) || {}).domains || []; }
+    catch (e) {
+      host.innerHTML = '<div class="card empty"><h3>Could not load domains</h3><p>' + esc((e && e.message) || "Try again in a moment.") + "</p></div>";
+      return;
+    }
+    var table = rows.length
+      ? '<div class="table-wrap"><table>' +
+          '<thead><tr><th>Domain</th><th>Status</th><th>DNS record to publish</th><th class="act-2"><span class="sr-only">Actions</span></th></tr></thead>' +
+          '<tbody>' + rows.map(function (d) {
+            return '<tr data-dom="' + esc(d.id) + '">' +
+              '<td class="mono">' + esc(d.domain) + '</td>' +
+              '<td>' + (d.verifiedAt ? '<span class="pill ok">verified · ' + timeAgoCell(d.verifiedAt) + '</span>' : '<span class="pill warn">pending</span>') + '</td>' +
+              '<td class="mono" style="font-size:11.5px">' + (d.verifiedAt ? '<span style="color:var(--fg-3)">(record may be removed)</span>' :
+                'TXT <b>' + esc(d.txtRecord.name) + '</b><br/>' + esc(d.txtRecord.value) +
+                ' <button class="btn" data-dom-act="copy" title="Copy the record value">Copy</button>') + '</td>' +
+              '<td>' + (canManage
+                ? (d.verifiedAt ? '' : '<button class="btn accent" data-dom-act="verify">Check DNS</button> ') +
+                  '<button class="btn danger" data-dom-act="remove">Remove</button>'
+                : '') + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody>' +
+        '</table></div>'
+      : (canManage
+          ? emptyState("No verified domains", "Add your company's email domain, publish the TXT record it gives you, then check DNS. Until a domain is verified, the login page will not send its users to your SAML provider.", "+ Add domain", null, "addDomainBtn")
+          : emptyState("No verified domains", "Ask an owner to add and verify the workspace's email domain."));
+    host.innerHTML =
+      '<div class="card" style="padding:0">' +
+        '<div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:baseline">' +
+          '<h2 style="margin:0; font-size:var(--t-section); font-weight:600">Verified email domains</h2>' +
+          '<span style="margin-left:8px; color:var(--fg-3); font-size:var(--t-sec)">' + rows.filter(function (d) { return d.verifiedAt; }).length + ' verified</span>' +
+          (rows.length && canManage ? '<button class="btn accent" id="addDomainBtn" style="margin-left:auto">+ Add domain</button>' : '') +
+        '</div>' +
+        '<div style="padding: 20px 16px">' +
+          '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0 0 var(--s-4)">SAML discovery on the login page trusts only domains proven here. Publish one DNS TXT record per domain; it can be removed once the check has passed.</p>' +
+          table +
+        '</div>' +
+      '</div>';
+    var add = $("#addDomainBtn", host);
+    if (add) add.addEventListener("click", function () {
+      openInputModal({
+        title: "Add an email domain",
+        label: "Domain",
+        placeholder: "company.com",
+        confirmLabel: "Add",
+        sub: "You will get a DNS TXT record to publish before the domain counts.",
+        onConfirm: function (value) {
+          state.ds.addDomain(value).then(function () {
+            toast("Domain added. Publish the TXT record, then check DNS.");
+            renderDomainsCard(host, canManage);
+          }).catch(function (err) {
+            var code = err && err.errorCode;
+            toast(code === "domain_claimed" ? "That domain is already claimed by a workspace."
+              : code === "invalid_domain" ? "Enter a plain domain name such as company.com."
+              : (err && err.message) || "Could not add the domain", true);
+          });
+        },
+      });
+    });
+    host.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-dom-act]");
+      if (!btn) return;
+      var tr = e.target.closest("tr[data-dom]");
+      if (!tr) return;
+      var id = tr.getAttribute("data-dom");
+      var row = rows.find(function (d) { return d.id === id; }) || {};
+      var act = btn.getAttribute("data-dom-act");
+      if (act === "copy") { copyText(row.txtRecord ? row.txtRecord.value : ""); toast("Record value copied"); return; }
+      if (act === "verify") {
+        btn.disabled = true;
+        state.ds.verifyDomain(id).then(function () {
+          toast(row.domain + " verified");
+          renderDomainsCard(host, canManage);
+        }).catch(function (err) {
+          btn.disabled = false;
+          toast(err && err.errorCode === "txt_record_not_found"
+            ? "The TXT record was not found yet. DNS changes can take a few minutes to spread; try again shortly."
+            : (err && err.message) || "Could not check the domain", true);
+        });
+        return;
+      }
+      if (act === "remove") {
+        confirmModal({
+          title: "Remove " + (row.domain || "this domain") + "?",
+          body: "Sign-in discovery for this domain stops immediately. You can add and verify it again later.",
+          confirmLabel: "Remove",
+          danger: true,
+          onConfirm: function () {
+            state.ds.removeDomain(id).then(function () { renderDomainsCard(host, canManage); })
+              .catch(function (err) { toast((err && err.message) || "Could not remove the domain", true); });
+          },
+        });
+      }
+    });
+  }
+
   async function renderScimCard(host) {
     if (!host) return;
     host.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";

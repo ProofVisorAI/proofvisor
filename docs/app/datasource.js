@@ -1442,6 +1442,14 @@
       ] };
     },
     async discoverSaml(_email) { return { ssoConfig: null }; },
+    async listDomains() {
+      return { domains: [{ id: "dom_northwind", domain: "northwind.com", verifiedAt: new Date(Date.now() - 20 * 24 * 3600 * 1000).toISOString(), createdAt: new Date(Date.now() - 21 * 24 * 3600 * 1000).toISOString(), txtRecord: { name: "_proofvisor-challenge.northwind.com", value: "proofvisor-domain-verification=demo" } }] };
+    },
+    async addDomain(domain) {
+      return { domain: { id: "dom_" + Math.random().toString(36).slice(2, 8), domain: String(domain).toLowerCase(), verifiedAt: null, createdAt: new Date().toISOString(), txtRecord: { name: "_proofvisor-challenge." + String(domain).toLowerCase(), value: "proofvisor-domain-verification=demo" } } };
+    },
+    async verifyDomain(_id) { var e = new Error("The TXT record was not found. Demo mode cannot look up DNS."); e.errorCode = "txt_record_not_found"; throw e; },
+    async removeDomain(_id) { return {}; },
     async listSamlConfigs() {
       if (freshElapsed() != null) return { configs: freshRuntime().samlConfigs.slice() };
       return { configs: MOCK_SAML_CONFIGS.slice() };
@@ -2706,6 +2714,20 @@
     },
     async regenerateSamlSpKeypair(id) {
       return apiFetch("/api/v1/auth/saml/" + encodeURIComponent(id) + "/keypair", { method: "POST", body: {} });
+    },
+    // Verified email domains. A verified domain is what lets the login
+    // page send an email address to the workspace's SAML provider.
+    async listDomains() {
+      return apiFetch("/api/v1/org/domains");
+    },
+    async addDomain(domain) {
+      return apiFetch("/api/v1/org/domains", { method: "POST", body: { domain: domain } });
+    },
+    async verifyDomain(id) {
+      return apiFetch("/api/v1/org/domains/" + encodeURIComponent(id) + "/verify", { method: "POST", body: {} });
+    },
+    async removeDomain(id) {
+      return apiFetch("/api/v1/org/domains/" + encodeURIComponent(id), { method: "DELETE" });
     },
 
     // WebAuthn ceremonies. The SPA calls navigator.credentials.create /

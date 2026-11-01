@@ -181,6 +181,9 @@ function isBlockedIp(ip: string): boolean {
   if (a === 192 && b === 168) return true;   // 192.168.0.0/16
   if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10
   if (a === 0) return true;                  // 0.0.0.0/8
+  if (a >= 224) return true;                 // 224.0.0.0/4 multicast, 240.0.0.0/4 reserved, 255.255.255.255
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmarking
+  if (a === 192 && b === 0) return true;     // 192.0.0.0/24 IETF protocol assignments, 192.0.2.0/24 TEST-NET-1
   return false;
 }
 

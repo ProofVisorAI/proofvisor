@@ -63,6 +63,7 @@ impl HarnessConfig {
             session_promote_scope: default_promote_scope(),
             default_workflow: "unsigned".into(),
             consequential_tools: default_consequential_tools(),
+            signed_workflow_scope: None,
             tool_schema_dir: None,
             require_tool_schema: false,
             policy_bundle_file: None,

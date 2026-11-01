@@ -79,8 +79,13 @@ try {
   mode = "available";
   await page.evaluate(() => sessionStorage.setItem("pv_return_to", "#/sessions?status=live"));
   await submit();
+  // Discovery never redirects on its own: the person is told which
+  // provider the workspace verified and confirms before leaving.
+  await page.locator(".modal [data-confirm]").waitFor();
+  check("Discovery shows the provider and asks before leaving the page", /Fixture SSO/.test(await page.locator(".modal").innerText()) && page.url().startsWith(origin + "/app/"));
+  await page.locator(".modal [data-confirm]").click();
   await page.waitForURL(origin + "/api/v1/auth/saml/fixture/login?**");
-  check("Retry after recovery navigates to the discovered login endpoint with its return path", new URL(page.url()).searchParams.get("RelayState") === "#/sessions?status=live");
+  check("Confirming navigates to the discovered login endpoint with its return path", new URL(page.url()).searchParams.get("RelayState") === "#/sessions?status=live");
   check("Discovery preserves the entered work email", requests.length === 3 && requests.every(email => email === "person+browser@example.test"));
   for (const slug of ["saml_request_unavailable", "saml_assertion_request_state_unavailable"]) {
     await page.goto(origin + "/app/#/login?err=" + slug);

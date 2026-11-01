@@ -86,6 +86,38 @@ exercised against release binaries in CI on every push
 
 ### Security
 
+- **Cross-site requests to the daemon are refused.** The chat
+  completions, session close and promote, token exchange and revocation
+  routes now apply the same `Origin` allowlist (`mcp_allowed_origins`)
+  the MCP routes already used. A hostile web page could otherwise drive
+  a loopback daemon in anonymous mode with `no-cors` posts and spend the
+  operator's provider budget.
+- **`signed_workflow_scope`.** When set, a bearer token must hold that
+  scope to open a signed workflow, so `consequential_tools` becomes an
+  authorization control rather than an audit-mode choice. Unset by
+  default.
+- **SAML discovery trusts verified domains only.** An organisation
+  proves an email domain with a DNS TXT record
+  (`_proofvisor-challenge.<domain>`); only then does the login page send
+  that domain's users to the organisation's SAML provider, and it names
+  the provider and asks before leaving. One domain belongs to one
+  organisation. New endpoints under `/api/v1/org/domains`.
+- **Invitation acceptance resets pre-registered, unverified accounts.**
+  Accepting an invitation for an address someone registered without
+  verifying it sets the invitee's new password, fences every session,
+  revokes the account's API keys and deletes its passkeys before the
+  membership is granted.
+- **SCIM groups cannot mint owners.** A group named `owner` grants
+  admin.
+- **Password reset requests have a per-account cooldown** of one minute,
+  so a flood cannot keep invalidating a victim's link.
+- **Webhook audit entries record the host only**, not the full URL that
+  may carry a secret. The webhook SSRF blocklist now covers multicast,
+  reserved, benchmarking and TEST-NET ranges.
+- **Dependencies.** `quinn-proto` updated past five advisories;
+  `serde_yaml` replaced by `serde_norway`; `redis` upgraded to 0.32
+  (drops the unmaintained `rustls-pemfile`).
+
 - **Redaction is on by default in every shipped configuration.** The
   three `config/` files, the Cloud Foundry and Kubernetes manifests, and
   the configs written by `pvctl init` and `pvctl setup` now set

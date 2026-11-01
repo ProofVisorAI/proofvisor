@@ -55,7 +55,7 @@ serde = { version = "1.0", features = ["derive"] }
 # parses floats at reduced precision and canonical hashes differ from other
 # JCS implementations (verified by the RFC Appendix vectors in pv-receipts).
 serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
-serde_yaml = "0.9"
+serde_yaml = { package = "serde_norway", version = "0.9" }
 toml = "1.1"
 thiserror = "2.0"
 anyhow = "1.0"

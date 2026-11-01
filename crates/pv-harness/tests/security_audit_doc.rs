@@ -142,20 +142,28 @@ fn resolved_dependency_states_hold_in_the_lockfile() {
          resolution note pins 48.x as post-dating every analyzed advisory; \
          re-triage and update the doc"
     );
-    let pemfile = LOCKFILE
-        .split("name = \"rustls-pemfile\"\n")
-        .nth(1)
-        .expect("Redis TLS certificate parser recorded in the audit")
-        .split("[[package]]")
-        .next()
-        .expect("first dependency block");
     assert!(
-        pemfile.starts_with("version = \"2.2.0\"")
-            && pemfile.contains("\"rustls-pki-types\"")
-            && AUDIT.contains("returned on 2026-09-24")
-            && AUDIT.contains("`rustls-native-certs` 0.7.3"),
-        "Redis TLS certificate-parser maintenance state changed — re-triage \
-         and update SECURITY-AUDIT.md's informational section"
+        !LOCKFILE.contains("name = \"rustls-pemfile\"\n"),
+        "rustls-pemfile is back in Cargo.lock — SECURITY-AUDIT.md records \
+         that the redis 0.32 upgrade removed it; re-triage and update the doc"
+    );
+    let redis = LOCKFILE
+        .split("name = \"redis\"\n")
+        .nth(1)
+        .expect("redis in lockfile");
+    assert!(
+        redis.starts_with("version = \"0.32.")
+            && AUDIT.contains("upgraded to 0.32")
+            && AUDIT.contains("cluster_key_slot"),
+        "Redis driver line changed — re-triage the TLS certificate-parser \
+         note in SECURITY-AUDIT.md's informational section"
+    );
+    assert!(
+        !LOCKFILE.contains("name = \"unsafe-libyaml\"\n")
+            && LOCKFILE.contains("name = \"serde_norway\"\n")
+            && AUDIT.contains("serde_norway"),
+        "the YAML parser changed — SECURITY-AUDIT.md records serde_norway \
+         replacing the archived serde_yaml"
     );
     let nats = LOCKFILE
         .split("name = \"async-nats\"\n")

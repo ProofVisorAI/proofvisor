@@ -91,17 +91,27 @@ attacker cannot substitute a hostile model.
 
 ### Informational (no CVE)
 
-- The 2026-09-24 all-feature audit reports maintenance warnings for `paste`
+- The 2026-09-24 all-feature audit reported maintenance warnings for `paste`
   1.0.15 and `rustls-pemfile` 2.2.0. Neither advisory identifies a vulnerability;
   an archived dependency still requires maintenance tracking.
 - `rustls-pemfile` left the dependency tree on 2026-08-16 after the Kafka TLS
-  migration, but returned on 2026-09-24 when certificate-verified Redis TLS was
-  enabled. Redis 0.27.6 depends on it directly and through
-  `rustls-native-certs` 0.7.3. Version 2.2.0 delegates PEM parsing to
-  `rustls-pki-types`; removing the archived wrapper requires updating the Redis
-  dependency chain. The warning remains visible in the audit and is not
-  suppressed. Live TLS tests cover trusted certificates, an untrusted CA,
-  hostname mismatch, incorrect credentials, and refusal of insecure URLs.
+  migration, returned on 2026-09-24 when certificate-verified Redis TLS was
+  enabled (Redis 0.27 depended on it directly and through
+  `rustls-native-certs` 0.7.3), and left again on 2026-11-01 when the Redis
+  dependency was upgraded to 0.32, which parses PEM through
+  `rustls-pki-types` itself. The upgrade removed the crate's exported
+  hash-slot helper, so `pv-state` computes Redis Cluster slots itself
+  (`cluster_key_slot`, pinned against `CLUSTER KEYSLOT` on redis:7). Live
+  TLS tests cover trusted certificates, an untrusted CA, hostname mismatch,
+  incorrect credentials, and refusal of insecure URLs; the contract and
+  revocation suites ran against a live single node and a live six-node
+  cluster on the new driver.
+- On 2026-11-01 `serde_yaml` 0.9 (archived, carrying the unmaintained
+  `unsafe-libyaml`) was replaced by its maintained fork `serde_norway` with
+  the same API, and `quinn-proto` was updated past RUSTSEC-2026-0338 to
+  -0342. `paste` remains, reachable only through `tokenizers` behind the
+  optional `onnx` feature; no `tokenizers` release without it exists. The
+  warning stays visible in the audit and is not suppressed.
 
 ## Adversarial regressions added this session
 

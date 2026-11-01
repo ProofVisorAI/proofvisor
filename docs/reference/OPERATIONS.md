@@ -478,3 +478,27 @@ The workspace's SemVer contract:
 Rolling upgrades within a MAJOR version are safe: mix old and new
 pods behind the same LB and the audit chain remains verifiable
 under any pinned key that either version signed with.
+
+## Verified email domains (SAML discovery)
+
+The login page's "Continue with SAML SSO" asks for an email address and
+looks its domain up. The lookup only trusts domains the organisation has
+proven it controls, so a stranger's workspace cannot send your users to a
+fake identity provider.
+
+1. In the console open Settings → SSO → Verified email domains and add
+   the domain, for example `acme.com`.
+2. Publish the DNS TXT record the console shows:
+   `_proofvisor-challenge.acme.com` with the value
+   `proofvisor-domain-verification=<token>`.
+3. Click "Check DNS". Once it passes, the record may be removed. The
+   SAML config for that domain must still list it under allowed domains
+   (or list none).
+
+A domain can be claimed by one organisation only; a second claim answers
+`409 domain_claimed`. Removing the domain stops discovery for it at once.
+Owners add, verify and remove domains; admins can read them. The API
+endpoints are `GET`, `POST` `/api/v1/org/domains`,
+`POST /api/v1/org/domains/:id/verify` and `DELETE /api/v1/org/domains/:id`.
+Outside production the API answers lookups from the JSON file named by
+`PV_TEST_DNS_TXT_FILE` instead of DNS, which is how the test suite runs.

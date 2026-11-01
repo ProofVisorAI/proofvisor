@@ -573,7 +573,50 @@ fn refuse_non_json_content_type(headers: &HeaderMap, context_label: &str) -> Opt
     )))
 }
 
+/// Refuse a request that a browser page sent cross-site. A server-side
+/// agent never sends `Origin`; a browser always does on a cross-origin
+/// `POST`, even in `no-cors` mode where no preflight runs. Without this
+/// check a hostile page could drive the chat, session and token routes
+/// of a loopback daemon in anonymous mode and spend the operator's
+/// provider budget. Same allowlist as the MCP routes
+/// (`mcp_allowed_origins`); the refusal uses the route's own error shape.
+pub(crate) fn refuse_foreign_origin(state: &AppState, headers: &HeaderMap) -> Option<Response> {
+    let mut origins = headers.get_all(axum::http::header::ORIGIN).iter();
+    let origin = origins.next()?;
+    let allowed = origins.next().is_none()
+        && origin.to_str().is_ok_and(|origin| {
+            state
+                .config
+                .mcp_allowed_origins
+                .iter()
+                .any(|allowed| allowed.trim_end_matches('/').eq_ignore_ascii_case(origin))
+        });
+    if allowed {
+        return None;
+    }
+    state
+        .metrics
+        .counter(
+            "pv_foreign_origin_refusals_total",
+            "Requests refused because their Origin header is not allowlisted",
+        )
+        .inc();
+    Some(
+        (
+            StatusCode::FORBIDDEN,
+            Json(openai_error_body(
+                StatusCode::FORBIDDEN,
+                "Origin is not allowed for this endpoint (see mcp_allowed_origins)",
+            )),
+        )
+            .into_response(),
+    )
+}
+
 async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(refusal) = refuse_foreign_origin(&state, &headers) {
+        return refusal;
+    }
     // Parity with the MCP path (routes.rs::mcp_call): refuse an
     // inbound request whose declared `Content-Type` is not
     // `application/json`. The chat endpoint historically accepted
@@ -3111,6 +3154,9 @@ async fn close_session(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(refusal) = refuse_foreign_origin(&state, &headers) {
+        return refusal;
+    }
     let caller = match lifecycle_caller(&state, &headers, &state.config.session_close_scope).await {
         Ok(caller) => caller,
         Err(error) => return pipeline_error(error),
@@ -3140,6 +3186,9 @@ async fn promote_session(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(refusal) = refuse_foreign_origin(&state, &headers) {
+        return refusal;
+    }
     let caller = match lifecycle_caller(&state, &headers, &state.config.session_promote_scope).await {
         Ok(caller) => caller,
         Err(error) => return pipeline_error(error),
@@ -3186,7 +3235,10 @@ async fn jwks(State(state): State<AppState>) -> Response {
 /// validates the inbound subject token, narrows scopes to their
 /// intersection with the requested set, and returns a fresh JWT
 /// scoped to the target backend audience.
-async fn token_exchange(State(state): State<AppState>, body: Bytes) -> Response {
+async fn token_exchange(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(refusal) = refuse_foreign_origin(&state, &headers) {
+        return refusal;
+    }
     crate::token_routes::control_request(state, move |state| async move {
         tokio::task::spawn_blocking(move || token_exchange_inner(state, body))
             .await

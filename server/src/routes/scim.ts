@@ -76,9 +76,18 @@ function isRole(v: unknown): v is Role {
   return v === "owner" || v === "admin" || v === "member";
 }
 
-/** The role a group grants its members, or null for an unmapped group. */
+/**
+ * The role a group grants its members, or null for an unmapped group.
+ * A group named "owner" grants admin, not owner: the owner role unlocks
+ * org deletion, SAML changes and SCIM token minting, and `PATCH
+ * /api/v1/scim/settings` already caps `defaultRole` at admin for the
+ * same reason. A compromised SCIM token or identity-provider admin
+ * must not be able to promote a provisioned user to owner; owners are
+ * made by an existing owner in the console.
+ */
 export function roleForGroupName(displayName: string): Role | null {
   const n = displayName.trim().toLowerCase();
+  if (n === "owner") return "admin";
   return isRole(n) ? n : null;
 }
 
@@ -899,7 +908,7 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
       id: "Group",
       name: "Group",
       endpoint: "/Groups",
-      description: "A group; groups named owner, admin or member assign that role",
+      description: "A group; groups named admin or member assign that role (a group named owner grants admin: owners are only made in the console)",
       schema: SCHEMA_GROUP,
       meta: { resourceType: "ResourceType", location: `${scimBase()}/ResourceTypes/Group` },
     },
@@ -951,7 +960,7 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
       schemas: [SCHEMA_SCHEMA],
       id: SCHEMA_GROUP,
       name: "Group",
-      description: "Group; owner/admin/member names map to roles",
+      description: "Group; admin/member names map to roles (owner maps to admin)",
       attributes: [
         attr("displayName", "string", { required: true, uniqueness: "server" }),
         attr("externalId", "string"),
@@ -1323,7 +1332,7 @@ export async function scimAdminRoutes(app: FastifyInstance): Promise<void> {
       baseUrl: scimBase(),
       plan: org.plan,
       planAllows: !limitsEnforced() || limitsFor(org.plan).scim,
-      groupMapping: { owner: "owner", admin: "admin", member: "member" },
+      groupMapping: { owner: "admin", admin: "admin", member: "member" },
     };
   };
 

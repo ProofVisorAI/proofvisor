@@ -2225,7 +2225,11 @@ impl AppState {
             // full-audit sample slot per request.
             pre_resolved
         } else {
-            match self.resolve_identity(headers, Some(&self.config.chat_scope)) {
+            match self.authenticate(headers).and_then(|caller| {
+                let identity = caller.authorize(self, Some(&self.config.chat_scope))?;
+                self.require_signed_workflow_scope(workflow, Some(&caller))?;
+                Ok(identity)
+            }) {
                 Ok(identity) => identity,
                 Err(error) => {
                     self.audit_authentication_error(headers, &error)?;
@@ -2233,6 +2237,9 @@ impl AppState {
                 }
             }
         };
+        if caller.is_some() {
+            self.require_signed_workflow_scope(workflow, caller)?;
+        }
         self.observe_stage("identity", stage);
 
         let session = self
@@ -3533,6 +3540,7 @@ impl AppState {
     ) -> Result<(ToolVerdict, Arc<Session>), PipelineError> {
         let session_id = session_id(headers)?;
         let workflow = workflow(headers, &self.config.default_workflow)?;
+        self.require_signed_workflow_scope(workflow, Some(caller))?;
         let parsed_call = pv_sandbox::parse_tool_call(raw).ok();
         let required_scope = parsed_call
             .as_ref()
@@ -4020,6 +4028,33 @@ impl AppState {
             .authorize_session(self, session, required_scope)
     }
 
+    /// `signed_workflow_scope` gate: a token that lacks the configured
+    /// scope may not open a signed workflow. Without it the
+    /// `consequential_tools` refusal ("requires a signed workflow") is
+    /// only an audit-mode selector, since any caller can send
+    /// `X-PV-Workflow: signed`. Scope checks follow
+    /// `enforce_identity_scopes`, exactly like `chat_scope`.
+    pub(crate) fn require_signed_workflow_scope(
+        &self,
+        workflow: Workflow,
+        caller: Option<&AuthenticatedCaller>,
+    ) -> Result<(), PipelineError> {
+        if workflow != Workflow::Signed {
+            return Ok(());
+        }
+        let Some(scope) = self.config.signed_workflow_scope.as_deref() else {
+            return Ok(());
+        };
+        match caller {
+            Some(caller) => caller.authorize(self, Some(scope)).map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
+    /// Authenticate and authorize in one step. Production paths keep the
+    /// `AuthenticatedCaller` (the signed-workflow gate needs it), so this
+    /// shorthand only serves the unit tests.
+    #[cfg(test)]
     pub(crate) fn resolve_identity(
         &self,
         headers: &HeaderMap,

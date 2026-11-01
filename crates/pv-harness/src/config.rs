@@ -265,6 +265,16 @@ pub struct HarnessConfig {
     /// consequences.
     #[serde(default = "default_consequential_tools")]
     pub consequential_tools: Vec<String>,
+    /// Scope a bearer token must hold to open a signed workflow
+    /// (`X-PV-Workflow: signed`). Unset by default, in which case any
+    /// caller may choose the signed workflow and `consequential_tools`
+    /// only selects the audit mode a consequential call runs under. Set
+    /// it (for example `workflow:signed`) and a token without that scope
+    /// can neither open a signed session nor reach a consequential tool.
+    /// Checked when `enforce_identity_scopes` is on and the caller
+    /// presented a token; anonymous callers are not affected.
+    #[serde(default)]
+    pub signed_workflow_scope: Option<String>,
     /// Directory containing one JSON Schema per tool, named `<tool>.json`.
     #[serde(default = "default_tool_schema_dir")]
     pub tool_schema_dir: Option<String>,

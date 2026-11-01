@@ -18,6 +18,13 @@ import { writeAudit, resolveActor } from "../lib/audit.js";
 import { sweepRetentionForOrg } from "../lib/retention.js";
 import { refuseIfRetentionTooLong } from "../lib/entitlements.js";
 import { ipMatchesAny, tryParseCidr } from "../lib/cidr.js";
+import {
+  challengeIsPublished,
+  challengeRecordName,
+  challengeRecordValue,
+  newChallengeToken,
+  normaliseDomain,
+} from "../lib/domains.js";
 
 export async function orgRoutes(app: FastifyInstance): Promise<void> {
   // Rename the workspace. Owner-only: the name is the org's public
@@ -337,5 +344,145 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
       req.log,
     );
     return reply.send({ cidrs: updated.ipAllowlist });
+  });
+
+  // ---------------------------------------------------------------
+  // Verified email domains (SAML discovery). An organisation claims a
+  // domain, publishes the TXT record the response describes, then asks
+  // for a check. Only a verified domain takes part in anonymous SAML
+  // discovery (lib/saml.ts findConfigForEmail). Reads are admin-level
+  // like the IP allow-list; writes are owner-only because a verified
+  // domain decides where every sign-in for that domain is sent.
+  // ---------------------------------------------------------------
+  function domainWire(d: { id: string; domain: string; token: string; verifiedAt: Date | null; createdAt: Date }) {
+    return {
+      id: d.id,
+      domain: d.domain,
+      verifiedAt: d.verifiedAt,
+      createdAt: d.createdAt,
+      txtRecord: { name: challengeRecordName(d.domain), value: challengeRecordValue(d.token) },
+    };
+  }
+
+  app.get("/domains", async (req, reply) => {
+    const claims = requireSession(req, reply);
+    if (!claims) return;
+    if (claims.membershipRole === "member") {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const rows = await db.orgDomain.findMany({
+      where: { orgId: claims.orgId },
+      orderBy: { createdAt: "asc" },
+    });
+    return reply.send({ domains: rows.map(domainWire) });
+  });
+
+  app.post("/domains", {
+    config: { rateLimit: { max: 20, timeWindow: 60_000 } },
+  }, async (req, reply) => {
+    const claims = requireSession(req, reply);
+    if (!claims) return;
+    if (claims.membershipRole !== "owner") {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const body = z.object({ domain: z.string().min(3).max(253) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const domain = normaliseDomain(body.data.domain);
+    if (!domain) return reply.code(400).send({ error: "invalid_domain" });
+    const count = await db.orgDomain.count({ where: { orgId: claims.orgId } });
+    if (count >= 50) return reply.code(400).send({ error: "too_many_domains" });
+    const existing = await db.orgDomain.findUnique({ where: { domain } });
+    if (existing) {
+      // Same answer whether another org or this one holds it: a claim
+      // never reveals which organisation already uses a domain.
+      return reply.code(409).send({ error: "domain_claimed" });
+    }
+    let row;
+    try {
+      row = await db.orgDomain.create({
+        data: { orgId: claims.orgId, domain, token: newChallengeToken() },
+      });
+    } catch (err) {
+      if (err instanceof Error && "code" in err && (err as { code?: string }).code === "P2002") {
+        return reply.code(409).send({ error: "domain_claimed" });
+      }
+      throw err;
+    }
+    writeAudit(
+      {
+        orgId: claims.orgId,
+        event: "org.domain_added",
+        ...(await resolveActor(claims.sub)),
+        target: domain,
+        metadata: { domainId: row.id },
+        req,
+      },
+      req.log,
+    );
+    return reply.code(201).send({ domain: domainWire(row) });
+  });
+
+  app.post<{ Params: { id: string } }>("/domains/:id/verify", {
+    // A DNS lookup per call; keep a stuck admin from hammering resolvers.
+    config: { rateLimit: { max: 30, timeWindow: 60_000 } },
+  }, async (req, reply) => {
+    const claims = requireSession(req, reply);
+    if (!claims) return;
+    if (claims.membershipRole !== "owner") {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const row = await db.orgDomain.findFirst({
+      where: { id: req.params.id, orgId: claims.orgId },
+    });
+    if (!row) return reply.code(404).send({ error: "not_found" });
+    if (row.verifiedAt) return reply.send({ domain: domainWire(row), verified: true });
+    const published = await challengeIsPublished(row.domain, row.token);
+    if (!published) {
+      return reply.code(409).send({
+        error: "txt_record_not_found",
+        domain: domainWire(row),
+        verified: false,
+      });
+    }
+    const verified = await db.orgDomain.update({
+      where: { id: row.id },
+      data: { verifiedAt: new Date() },
+    });
+    writeAudit(
+      {
+        orgId: claims.orgId,
+        event: "org.domain_verified",
+        ...(await resolveActor(claims.sub)),
+        target: row.domain,
+        metadata: { domainId: row.id },
+        req,
+      },
+      req.log,
+    );
+    return reply.send({ domain: domainWire(verified), verified: true });
+  });
+
+  app.delete<{ Params: { id: string } }>("/domains/:id", async (req, reply) => {
+    const claims = requireSession(req, reply);
+    if (!claims) return;
+    if (claims.membershipRole !== "owner") {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const removed = await db.orgDomain.deleteMany({
+      where: { id: req.params.id, orgId: claims.orgId },
+    });
+    if (removed.count === 0) return reply.code(404).send({ error: "not_found" });
+    writeAudit(
+      {
+        orgId: claims.orgId,
+        event: "org.domain_removed",
+        ...(await resolveActor(claims.sub)),
+        target: req.params.id,
+        metadata: { domainId: req.params.id },
+        req,
+      },
+      req.log,
+    );
+    return reply.code(204).send();
   });
 }

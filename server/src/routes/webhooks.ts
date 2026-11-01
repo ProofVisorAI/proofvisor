@@ -46,6 +46,14 @@ function assertNotMember(claims: { membershipRole: string }): boolean {
   return claims.membershipRole !== "member";
 }
 
+function webhookHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
 export async function webhookRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", async (req, reply) => {
     const claims = requireSession(req, reply);
@@ -129,7 +137,9 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
         event: "webhook.created",
         ...(await resolveActor(claims.sub)),
         target: ep.name,
-        metadata: { endpointId: ep.id, url: ep.url, events: ep.events },
+        // Slack and Discord webhook URLs carry their secret in the path,
+        // and the audit log is exported and kept, so record the host only.
+        metadata: { endpointId: ep.id, host: webhookHost(ep.url), events: ep.events },
         req,
       },
       req.log,

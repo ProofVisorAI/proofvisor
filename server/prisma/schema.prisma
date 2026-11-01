@@ -166,6 +166,7 @@ model Org {
   billingEvents     BillingEvent[]
   deployments       Deployment[]
   samlConfigs       SamlConfig[]
+  domains           OrgDomain[]
   samlReplayRecords SamlReplayRecord[]
   auditEntries      AuditEntry[]
   invites           Invite[]
@@ -692,4 +693,25 @@ model BillingEvent {
 
   @@index([orgId, processedAt])
   @@map("billing_events")
+}
+
+// An email domain an organisation has proven it controls, by publishing
+// a DNS TXT record (see lib/domains.ts). Only verified domains take part
+// in anonymous SAML discovery (`GET /auth/saml/discover`): a workspace
+// owner typing another company's domain into a SAML config must not be
+// able to turn the login page into a redirect to their own "identity
+// provider". A domain belongs to at most one organisation.
+model OrgDomain {
+  id         String    @id @default(cuid())
+  orgId      String
+  domain     String    @unique // lowercase, NFC
+  token      String // random challenge the TXT record must carry
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("org_domains")
 }
