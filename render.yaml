@@ -46,7 +46,9 @@ services:
         value: "true"
       - key: ALLOWED_ORIGINS
         # Adjust for your custom domain(s). Multiple values are comma-separated.
-        value: https://agentvisorai.me
+        # proofvisor.com serves the site since 2026-11-01; the old origin
+        # stays until agentvisorai.me is forwarded to the new domain.
+        value: https://proofvisor.com,https://agentvisorai.me
       - key: JWT_ISSUER
         value: agentvisor-ai
       - key: JWT_AUDIENCE
