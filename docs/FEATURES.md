@@ -258,15 +258,27 @@ with demonstration data, which is what the public site shows by default.
 - **Still tested with stand-ins only:** a real Cloud Foundry
   foundation, cloud object storage, and identity providers other than
   Keycloak (for example Okta and Entra ID).
-- **None of this is deployed.** It is pull request
-  ProofVisorAI/proofvisor#396 (a draft until approved); the hosted API at
-  `api.agentvisorai.me` still runs the previous version.
-- **The move to proofvisor.com is not done.** The console files point at
-  `api.proofvisor.com`, which has no DNS record, and `proofvisor.com`
-  does not serve the site yet; `render.yaml` keeps the live
-  `agentvisorai.me` values. Moving needs DNS, a Render custom domain,
-  new origin and URL settings, and SAML and OAuth updates. Passkeys are
-  bound to their domain, so users register them again after the move.
+- **Deployed on 2026-11-01.** Pull request ProofVisorAI/proofvisor#396
+  is merged. The site is served from GitHub Pages at
+  `https://proofvisor.com` (own certificate, HTTP and `www` redirect to
+  it) and the API runs on Render at `https://api.proofvisor.com` (the
+  old `api.agentvisorai.me` still answers, same service). The old
+  domain `agentvisorai.me` forwards (301, front page only) to the new
+  one. Render's Auto-Deploy for this service is **off**: a merge to
+  `main` does not deploy by itself; use Manual Deploy in the Render
+  dashboard (the `render.yaml` blueprint says `autoDeploy: true`, the
+  existing service predates it).
+- **Mail still goes out from Resend's sandbox sender**
+  (`ProofVisor <onboarding@resend.dev>`), which delivers only to the
+  Resend account owner. Verification, password-reset and invitation
+  emails to anyone else need `proofvisor.com` verified as a sending
+  domain in Resend (DNS records at the registrar) and `EMAIL_FROM`
+  changed to match.
+- **No identity-provider sign-in is configured on the live API.** No
+  Google or Microsoft client is set, so only email and password (and
+  passkeys, which are bound to `proofvisor.com`) work until a client
+  id and secret are added; SAML and SCIM are built in and off by
+  default.
 - **Security review depth.** The code added on 2026-10-31 and the
   rename's compatibility were reviewed line by line; older console API
   code and the Rust daemon got spot checks only.
@@ -315,3 +327,7 @@ Added later on 2026-11-01, after a second pass over the whole chain:
 | Daemon → `pvctl console-sync` → API → console in a real browser → shared verify link → verify page | the session, its event stream, "Signature verified" and the shared link's "Trusted: key pinned by the console for deployment quickstart" all shown |
 | Policy push from the console UI to that daemon (token-rate and budget templates) | chat requests refused naming the policy; the policy page counts the hit and the block; the deployment page flips from "not pulling" to "current" |
 | `cargo fmt`, `cargo clippy --all-features --all-targets -D warnings`, the pv-cli console-sync and pv-harness policy-push unit tests, API `npm test` after these changes | clean; 20 and 3 tests passed; 100 API tests, 99 passed in the full run and the one auth-drill timeout passed alone (it waits 5 s for a container while clippy and the end-to-end script loaded the laptop) |
+| Live production checks on 2026-11-01 (after the merge, Render deploy and DNS): a throwaway account on `https://api.proofvisor.com`, a deployment, the real daemon (offline demo) uploading its session and Ed25519 receipt with `pvctl console-sync`, read back through the API | account, session cookie, `pv_live_` token, 14 events, 2 allowed and 1 blocked tool call, receipt stored and verified server-side, public key endpoint (CORS open), policies, SCIM settings (off) and billing answered; the account and its deployment were then deleted through the API. One check of my own (a `status` field the API does not return) was wrong, not the product |
+| Production build and boot reproduced locally: the merged `server/Dockerfile` image with Render's real settings over a database at the old schema | four migrations applied, `/healthz` and `/readyz` 200, new endpoints present |
+| HTTPS and redirects on the public site | `https://proofvisor.com` presents its own Let's Encrypt certificate; `http` and `www` redirect to it; `/lander` redirects to the home page; `agentvisorai.me` and its `www` forward (301, front page only) |
+| The public console in a browser over HTTPS (`live-site-smoke.mjs`) | 11 checks passed: routes, populated tabs, link and media integrity, link previews, videos, installer |

@@ -24,10 +24,10 @@ As of 2026-10-30 the hosted API runs on Render as the web service
 `agentvisor-api` (created under the product's previous name; the
 `render.yaml` blueprint in this repository would create a fresh service
 called `proofvisor-api`). It is built from `server/Dockerfile` in the Ohio
-region and is reachable at `https://agentvisor-api.onrender.com`. The custom
-domain `api.proofvisor.com` is pending DNS (a CNAME to
-`agentvisor-api.onrender.com`); until it resolves, point clients and
-monitors at the Render hostname. The database is Neon Postgres (us-east-2,
+region and is reachable at `https://api.proofvisor.com` (custom domain,
+CNAME to `agentvisor-api.onrender.com`, certificate issued by Render; the
+old `api.agentvisorai.me` and the Render hostname still answer). Auto-Deploy
+is off, so deploy with Manual Deploy in the Render dashboard. The database is Neon Postgres (us-east-2,
 direct/unpooled URL so LISTEN/NOTIFY works) and the mailer is Resend. The
 static site and console are GitHub Pages from
 `ProofVisorAI/proofvisorai.github.io` with `proofvisor.com` as the custom

@@ -16,11 +16,9 @@
 # work with SameSite=Lax and no CORS preflight is needed. Change the
 # right-hand side to point at your API host (Render, Cloud Run, Koyeb).
 #
-# DISABLED. The hosted API is live on Render
-# (https://agentvisor-api.onrender.com), but the custom domain
-# api.proofvisor.com is still pending DNS (CNAME to
-# agentvisor-api.onrender.com), and the site itself is on GitHub
-# Pages, which ignores this file anyway. On any host that honors this
+# DISABLED. The hosted API is live on Render at
+# https://api.proofvisor.com (CNAME to agentvisor-api.onrender.com), and
+# the site itself is on GitHub Pages, which ignores this file anyway. On any host that honors this
 # file the /api/* rule would also SHADOW /api/ — which on the current
 # site is the rustdoc export (a working, link-crawled page). Before
 # re-enabling both lines: confirm api.proofvisor.com resolves and

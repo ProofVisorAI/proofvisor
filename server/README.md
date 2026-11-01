@@ -10,8 +10,9 @@ uploaded fields and restricts their visibility by role.
 
 **For deployment (Render, Cloud Run, Neon, self-host) see [DEPLOY.md](./DEPLOY.md).**
 The live instance is a Render web service (`agentvisor-api`, reachable at
-`https://agentvisor-api.onrender.com`; the custom domain `api.proofvisor.com`
-is pending DNS). Nothing runs on Fly.io; `fly.toml` is an unused template.
+`https://api.proofvisor.com`, a custom domain on that service; the Render
+hostname `agentvisor-api.onrender.com` still answers). Nothing runs on Fly.io;
+`fly.toml` is an unused template.
 
 ## Architecture
 
@@ -178,9 +179,8 @@ pvctl console-sync --watch
 ```
 
 `PV_CONSOLE_URL` is the API origin only; `pvctl` appends `/api/v1/ingest`
-itself. (While `api.proofvisor.com` is pending DNS, the origin is
-`https://agentvisor-api.onrender.com`; for a self-hosted API it is that
-server's origin.) The daemon never calls the console on its own: the
+itself. (For the hosted API the origin is `https://api.proofvisor.com`; for
+a self-hosted API it is that server's origin.) The daemon never calls the console on its own: the
 uploader is this separate, opt-in command.
 
 | Method | Path | Notes |

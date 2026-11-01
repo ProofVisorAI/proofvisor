@@ -27,9 +27,10 @@ verified: 2026-10-30.
   (us-east-2, direct/unpooled URL so the LISTEN/NOTIFY bus works) and
   the Resend mailer (no verified domain yet — delivery restricted to
   the operator address until DNS records are added). The custom
-  domain `api.proofvisor.com` is **pending DNS**: the CNAME to
-  `agentvisor-api.onrender.com` is being added, and until it
-  resolves, use the Render hostname. Nothing runs on Fly.io;
+  domain `api.proofvisor.com` is **live** (CNAME to
+  `agentvisor-api.onrender.com`, certificate issued by Render, set up
+  2026-11-01; `api.agentvisorai.me` still answers). Auto-Deploy is off:
+  deploy with Manual Deploy in the Render dashboard. Nothing runs on Fly.io;
   `server/fly.toml` and the `deploy-fly` workflow job are unused. A
   `keepalive.yml` cron pings `/healthz` every 10 min to avoid
   free-tier spin-down. The SLO table below is still the launch

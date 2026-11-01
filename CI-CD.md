@@ -136,9 +136,11 @@ reproducible builds or an independently certified SLSA level.
 ## Deploying
 
 The live hosted API runs on Render as the web service `agentvisor-api`
-(`https://agentvisor-api.onrender.com`; the custom domain
-`api.proofvisor.com` is pending DNS). Render builds from `server/Dockerfile`
-on its own; the promoted GHCR digest is not what it runs today. The
+(`https://api.proofvisor.com`, a custom domain on that service). Render
+builds from `server/Dockerfile` itself, but Auto-Deploy is off for this
+service, so a merge to `main` does not deploy until someone runs Manual
+Deploy in the Render dashboard; the promoted GHCR digest is not what it
+runs today. The
 workflow's optional Fly.io deployment job is unused because nothing runs on
 Fly.io. Other container hosts can use the same OCI image. Configure the
 database, HTTPS origins, mailer, application secrets, and host networking
