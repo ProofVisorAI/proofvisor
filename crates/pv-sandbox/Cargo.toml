@@ -14,6 +14,8 @@ categories.workspace = true
 [dependencies]
 pv-core = { workspace = true }
 pv-state = { workspace = true }
+pv-redact = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

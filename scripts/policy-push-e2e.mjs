@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Console → daemon policy push, end to end with the real binaries.
 //
-// 1. A workspace on the console API gets a deployment and five policies
-//    (deny-list, budget, schema, token rate, guardrail).
+// 1. A workspace on the console API gets a deployment and six policies
+//    (deny-list, budget, schema, token rate, a guardrail with a JSON
+//    spec, and a free-text guardrail kept as documentation).
 // 2. proofvisord starts with `policy_bundle_file` and a local budget.
 // 3. `pvctl console-sync --pull-policies` pulls the bundle, the daemon
 //    applies it, and pvctl reports the daemon's own status.
@@ -90,7 +91,13 @@ const policies = {
     body: JSON.stringify({ tool: "create_purchase_order", json_schema: { type: "object", required: ["vendor"], properties: { vendor: { enum: ["Contoso", "Fabrikam"] } } } }),
   },
   rate: { name: "llm.velocity", kind: "rate", scope: "llm.request", body: '{"max_tokens_per_window":250,"window_s":3600}' },
-  guard: { name: "privacy.pii_egress", kind: "guardrail", scope: "llm.egress", body: "documentation only" },
+  guard: {
+    name: "privacy.pii_egress", kind: "guardrail", scope: "tool.*",
+    body: JSON.stringify({ applies_to: "tool.args", deny_patterns: ["\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b"], effect: "block" }),
+  },
+  // A guardrail written before the spec existed: free text, accepted,
+  // documentation only.
+  handbook: { name: "privacy.handbook", kind: "guardrail", scope: "llm.egress", body: "documentation only" },
 };
 const ids = {};
 for (const [key, policy] of Object.entries(policies)) {
@@ -98,6 +105,16 @@ for (const [key, policy] of Object.entries(policies)) {
   check(`policy ${policy.name} created`, res.status === 201, res.text);
   ids[key] = res.json.policy.id;
 }
+const created = (await api("/api/v1/policies")).json.policies;
+const guardRow = created.find((p) => p.id === ids.guard);
+const handbookRow = created.find((p) => p.id === ids.handbook);
+check("the console marks the JSON-spec guardrail enforceable, with its spec",
+  guardRow.enforceable === true && guardRow.spec && guardRow.spec.applies_to === "tool.args", JSON.stringify(guardRow));
+check("the console keeps the free-text guardrail as documentation only",
+  handbookRow.enforceable === false && handbookRow.spec === null, JSON.stringify(handbookRow));
+const badGuard = await api("/api/v1/policies", { method: "POST", body: { name: "privacy.bad", kind: "guardrail", scope: "tool.*", body: '{"applies_to":"tool.args","deny_patterns":[]}' } });
+check("a guardrail JSON object that is not a valid spec is refused with the reason",
+  badGuard.status === 400 && /at least one pattern/.test(badGuard.text), badGuard.text);
 
 // ── Local mocks and daemon ──────────────────────────────────────────
 const listen = (server) => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
@@ -208,14 +225,20 @@ const first = pull();
 check("pvctl pulls the bundle and reports the daemon's status", first.status === 0, first.stderr + first.stdout);
 check("the bundle file is owner-only", (readFileSync(bundleFile) && (await import("node:fs")).statSync(bundleFile).mode & 0o077) === 0);
 const status = JSON.parse(readFileSync(statusFile, "utf8"));
-check("the daemon applied the four enforceable policies",
-  [ids.deny, ids.budget, ids.schema, ids.rate].every((id) => status.applied.includes(id)) && status.applied.length === 4,
+check("the daemon applied the five enforceable policies",
+  [ids.deny, ids.budget, ids.schema, ids.rate, ids.guard].every((id) => status.applied.includes(id)) && status.applied.length === 5,
   JSON.stringify(status));
-check("the guardrail is neither applied nor reported unsupported", !status.applied.includes(ids.guard) && status.unsupported.length === 0);
+check("the free-text guardrail is reported unsupported with a reason",
+  status.unsupported.length === 1 && status.unsupported[0].id === ids.handbook && /no JSON spec/.test(status.unsupported[0].reason),
+  JSON.stringify(status.unsupported));
 
 const wire = await callTool("s1", "send_wire", {});
 check("send_wire is now blocked by runtime.no_wires", wire.status !== 200 || !!wire.body.error, blockedBy(wire));
 check("the refusal names the console policy", blockedBy(wire).includes("runtime.no_wires"), blockedBy(wire));
+const pii = await callTool("s1", "create_ticket", { customer: { ssn: "123-45-6789" } });
+check("a tool call carrying an SSN is blocked by privacy.pii_egress",
+  (pii.status !== 200 || !!pii.body.error) && blockedBy(pii).includes("privacy.pii_egress") && blockedBy(pii).includes("deny pattern 1 of 1 (at /customer/ssn)"), blockedBy(pii));
+check("the refusal never echoes the matched text", !blockedBy(pii).includes("6789"), blockedBy(pii));
 const badVendor = await callTool("s1", "create_purchase_order", { vendor: "Initech" });
 check("an unlisted vendor is blocked by procurement.vendors", blockedBy(badVendor).includes("procurement.vendors"), blockedBy(badVendor));
 const ok1 = await callTool("s1", "create_purchase_order", { vendor: "Contoso" });
@@ -252,6 +275,12 @@ for (let i = 0; i < 15; i++) {
 check("the console attributes the refusal to the rate policy",
   attributed.hits24h >= 1 && attributed.blocks24h >= 1, JSON.stringify({ hits: attributed.hits24h, blocks: attributed.blocks24h }));
 const listed = await api("/api/v1/policies");
+const guardHits = listed.json.policies.find((p) => p.id === ids.guard);
+check("the console shows the guardrail hit as a block attributed to privacy.pii_egress",
+  guardHits.hits24h >= 1 && guardHits.blocks24h >= 1, JSON.stringify({ hits: guardHits.hits24h, blocks: guardHits.blocks24h }));
+check("the console shows the guardrail enforced by 1 of 1 daemon and the free-text one unsupported",
+  guardHits.enforcement.applied === 1 && listed.json.policies.find((p) => p.id === ids.handbook).enforcement.unsupported === 1,
+  JSON.stringify([guardHits.enforcement, listed.json.policies.find((p) => p.id === ids.handbook).enforcement]));
 const deny = listed.json.policies.find((p) => p.id === ids.deny);
 check("the console shows the policy enforced by 1 of 1 daemon",
   deny.enforcement.deployments === 1 && deny.enforcement.applied === 1, JSON.stringify(deny.enforcement));

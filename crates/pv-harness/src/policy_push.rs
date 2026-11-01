@@ -19,11 +19,14 @@
 //! because running without rules the operator expects to be there would
 //! fail open.
 //!
-//! Kinds: `budget`, `allowlist`, `schema` (tool calls) and `rate`
-//! (per-principal token velocity on model traffic) are enforced.
-//! `guardrail` and `transform` policies document intent and attribute
-//! the daemon's own guard hits; the daemon neither enforces nor reports
-//! them. Anything else is reported unsupported.
+//! Kinds: `budget`, `allowlist`, `schema` (tool calls), `rate`
+//! (per-principal token velocity on model traffic) and `guardrail`
+//! (deny patterns over tool arguments or chat requests, when the body
+//! is the JSON spec) are enforced. A `guardrail` with a free-text body
+//! is reported unsupported with that reason. `transform` policies
+//! document intent and attribute the daemon's own guard hits; the
+//! daemon neither enforces nor reports them. Anything else is reported
+//! unsupported.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -31,7 +34,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
-use pv_sandbox::{PushedAllowlist, PushedRules, PushedSchema, Sandbox, ToolPattern};
+use pv_sandbox::{
+    GuardrailTarget, PushedAllowlist, PushedGuardrail, PushedRules, PushedSchema, Sandbox, ToolPattern,
+};
 use pv_state::{BudgetSpec, TokenVelocity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -144,7 +149,8 @@ pub fn compile(bundle: &PolicyBundle) -> CompiledBundle {
     let mut unsupported = Vec::new();
     for policy in bundle.policies.iter().filter(|policy| policy.enabled) {
         let outcome = match policy.kind.as_str() {
-            "guardrail" | "transform" => continue,
+            "transform" => continue,
+            "guardrail" => compile_guardrail(policy, &mut rules),
             "budget" => compile_budget(policy, &mut rules),
             "allowlist" => compile_allowlist(policy, &mut rules),
             "schema" => compile_schema(policy, &mut rules),
@@ -299,6 +305,59 @@ fn compile_schema(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(), 
     rules
         .schemas
         .push(PushedSchema::compile(&policy.name, tool, schema)?);
+    Ok(())
+}
+
+/// Compile a guardrail spec (docs/reference/OPERATIONS.md, "Guardrail
+/// policies"). A guardrail without a spec is free text the console
+/// stores as documentation; it is reported unsupported so the console
+/// shows it as not enforced, unlike before this spec existed, when it
+/// was silently skipped.
+fn compile_guardrail(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(), String> {
+    if policy.spec.as_ref().is_none_or(Value::is_null) {
+        return Err("guardrail policy has no JSON spec (free text is documentation only)".to_owned());
+    }
+    let spec = spec_object(policy)?;
+    refuse_unknown_fields(spec, &["applies_to", "deny_patterns", "effect"])?;
+    match spec.get("effect") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(effect)) if effect == "block" => {}
+        Some(other) => return Err(format!("effect {other} is not \"block\"")),
+    }
+    let target = spec
+        .get("applies_to")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "applies_to must be tool.args or llm.ingress".to_owned())
+        .and_then(GuardrailTarget::parse)?;
+    let scope = match target {
+        GuardrailTarget::ToolArgs => Some(
+            ToolPattern::from_scope(&policy.scope)
+                .ok_or_else(|| format!("scope {:?} does not name tools", policy.scope))?,
+        ),
+        GuardrailTarget::LlmIngress => {
+            let scope = policy.scope.trim();
+            if !matches!(scope, "llm" | "llm.*" | "llm.request" | "llm.ingress") {
+                return Err(format!(
+                    "guardrail applies to llm.ingress; scope {scope:?} is not llm.request"
+                ));
+            }
+            None
+        }
+    };
+    let patterns = match spec.get("deny_patterns") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "deny_patterns entries must be strings".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Err("deny_patterns must be a list of patterns".to_owned()),
+    };
+    rules
+        .guardrails
+        .push(PushedGuardrail::compile(&policy.name, target, scope, &patterns)?);
     Ok(())
 }
 
@@ -663,7 +722,19 @@ mod tests {
                 "llm.request",
                 json!({"max_tokens_per_window": 1000, "window_s": 60}),
             ),
-            json!({"id": "g1", "name": "p.g1", "kind": "guardrail", "scope": "llm.egress", "enabled": true, "spec": null, "body": "text"}),
+            policy(
+                "g1",
+                "guardrail",
+                "tool.*",
+                json!({"applies_to": "tool.args", "deny_patterns": [r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b"], "effect": "block"}),
+            ),
+            policy(
+                "g2",
+                "guardrail",
+                "llm.request",
+                json!({"applies_to": "llm.ingress", "deny_patterns": ["(?i)secret"]}),
+            ),
+            json!({"id": "t1", "name": "p.t1", "kind": "transform", "scope": "llm.egress", "enabled": true, "spec": null, "body": "text"}),
             policy("x1", "budget", "tool.create_payment", json!({"max_tokens": 1})),
             policy("x2", "allowlist", "llm.request", json!({"deny_tools": ["x"]})),
             policy("x3", "schema", "tool.a", json!({"tool": "b", "json_schema": {}})),
@@ -686,20 +757,72 @@ mod tests {
                 json!({"max_tokens": 1, "brand_new_field": 2}),
             ),
             policy("x7", "quota", "tool.*", json!({})),
+            // Free text: the console keeps it as documentation; the daemon
+            // says so instead of silently skipping it.
+            json!({"id": "x8", "name": "p.x8", "kind": "guardrail", "scope": "llm.egress", "enabled": true, "spec": null, "body": "documentation only"}),
+            policy(
+                "x9",
+                "guardrail",
+                "llm.egress",
+                json!({"applies_to": "llm.egress", "deny_patterns": ["x"]}),
+            ),
+            policy(
+                "x10",
+                "guardrail",
+                "tool.*",
+                json!({"applies_to": "tool.args", "deny_patterns": ["(unclosed"]}),
+            ),
+            policy(
+                "x11",
+                "guardrail",
+                "llm.request",
+                json!({"applies_to": "tool.args", "deny_patterns": ["x"]}),
+            ),
+            policy(
+                "x12",
+                "guardrail",
+                "tool.*",
+                json!({"applies_to": "llm.ingress", "deny_patterns": ["x"]}),
+            ),
+            policy(
+                "x13",
+                "guardrail",
+                "tool.*",
+                json!({"applies_to": "tool.args", "deny_patterns": ["x"], "effect": "warn"}),
+            ),
         ]));
-        assert_eq!(compiled.applied, vec!["b1", "b2", "a1", "s1", "r1"]);
+        assert_eq!(compiled.applied, vec!["b1", "b2", "a1", "s1", "r1", "g1", "g2"]);
         let refused: Vec<&str> = compiled.unsupported.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(
             refused,
-            vec!["x1", "x2", "x3", "x4", "x5", "x6", "x7"],
+            vec!["x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13"],
             "{:?}",
             compiled.unsupported
         );
         assert!(compiled.unsupported.iter().all(|u| !u.reason.is_empty()));
+        let reason = |id: &str| {
+            compiled
+                .unsupported
+                .iter()
+                .find(|u| u.id == id)
+                .map(|u| u.reason.as_str())
+                .unwrap_or_default()
+        };
+        assert!(reason("x8").contains("no JSON spec"), "{}", reason("x8"));
+        assert!(reason("x9").contains("llm.egress"), "{}", reason("x9"));
         assert!(
-            !compiled.applied.contains(&"g1".to_owned()) && !refused.contains(&"g1"),
-            "guardrails are neither"
+            reason("x10").contains("deny pattern 1 does not compile"),
+            "{}",
+            reason("x10")
         );
+        assert!(reason("x11").contains("does not name tools"), "{}", reason("x11"));
+        assert!(reason("x12").contains("llm.ingress"), "{}", reason("x12"));
+        assert!(reason("x13").contains("effect"), "{}", reason("x13"));
+        assert!(
+            !compiled.applied.contains(&"t1".to_owned()) && !refused.contains(&"t1"),
+            "transforms are neither"
+        );
+        assert_eq!(compiled.rules.guardrails.len(), 2);
         // Two budgets merge, stricter wins.
         assert_eq!(compiled.rules.budget.max_total_tool_calls, Some(5));
         assert_eq!(compiled.rules.budget.max_payout_usd_micros, Some(1_000_000));

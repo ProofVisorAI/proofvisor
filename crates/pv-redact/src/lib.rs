@@ -12,7 +12,10 @@
 
 pub mod engine;
 
-pub use engine::{RedactError, RedactionConfig, RedactionEngine};
+pub use engine::{
+    compile_pattern, RedactError, RedactionConfig, RedactionEngine, MAX_PATTERN_BYTES,
+    PATTERN_DFA_SIZE_LIMIT, PATTERN_NEST_LIMIT, PATTERN_SIZE_LIMIT,
+};
 
 #[cfg(test)]
 mod tests {
@@ -330,6 +333,34 @@ mod tests {
         assert!(s.contains("[REDACTED]"), "got: {s}");
         assert!(!s.contains("secret_token"));
         assert!(s.contains("my "));
+    }
+
+    #[test]
+    fn operator_patterns_are_compiled_under_explicit_bounds() {
+        let long = "a".repeat(MAX_PATTERN_BYTES + 1);
+        let err = compile_pattern(&long).unwrap_err();
+        assert!(
+            matches!(err, RedactError::PatternTooLong { bytes, max } if bytes == 513 && max == 512),
+            "{err}"
+        );
+        assert!(compile_pattern(&"a".repeat(MAX_PATTERN_BYTES)).is_ok());
+        // Nesting past the limit is refused rather than compiled.
+        let deep = format!("{}a{}", "(".repeat(100), ")".repeat(100));
+        assert!(matches!(
+            compile_pattern(&deep).unwrap_err(),
+            RedactError::InvalidPattern { .. }
+        ));
+        assert!(compile_pattern(r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b").is_ok());
+        // The engine applies the same bounds to `redaction_patterns`.
+        let config = RedactionConfig {
+            regex_patterns: vec![long],
+            include_builtin_patterns: false,
+            ..RedactionConfig::default()
+        };
+        assert!(matches!(
+            RedactionEngine::new(config).unwrap_err(),
+            RedactError::PatternTooLong { .. }
+        ));
     }
 
     #[test]

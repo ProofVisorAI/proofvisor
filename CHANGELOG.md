@@ -268,6 +268,24 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- Policy push: `guardrail` policies are enforced by daemons when their
+  body is the JSON spec `{"applies_to": "tool.args" | "llm.ingress",
+  "deny_patterns": [<regex>, …], "effect": "block"}` (documented in
+  `docs/reference/OPERATIONS.md`, "Guardrail policies"). The daemon
+  refuses a tool call whose arguments match a pattern at the policy
+  stage, and a chat request whose messages match at the sanitize stage,
+  naming the console policy and the pattern position (never the matched
+  text), so `pvctl console-sync` attributes the block and the console
+  counts it. Patterns are bounded the way `redaction_patterns` are
+  (`pv_redact::compile_pattern`: 512 bytes, 64 per policy, explicit
+  size and nesting limits). The console marks such a guardrail
+  enforceable and ships the parsed spec in the bundle; its "PII guard"
+  template now writes the spec. A guardrail with a free-text body is
+  still accepted and stays documentation only; daemons now report it in
+  `unsupported` ("guardrail policy has no JSON spec") instead of
+  skipping it silently. `applies_to: "llm.egress"` is reserved and
+  refused by the console until daemons inspect response bodies;
+  `transform` policies remain documentation only.
 - `docs/FEATURES.md`: the verified list of what ships today, what is
   planned, and the verification record behind it.
 - Console API: `session.blocked` and `apikey.created` webhooks are now

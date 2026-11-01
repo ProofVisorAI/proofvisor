@@ -335,12 +335,54 @@
    *   allowlist {"allow_only"?: [tools], "deny_tools"?: [tools]}   (at least one)
    *   rate      {"max_tokens_per_window": n, "window_s": n}
    *   schema    {"tool": "<name>", "json_schema": {…}}
-   * guardrail and transform keep free text: daemons cannot enforce
-   * them, they document intent and attribute events. The console
-   * validates before saving (same messages as the server) so a typo
-   * never reaches a daemon. */
+   *   guardrail {"applies_to": "tool.args"|"llm.ingress", "deny_patterns": ["<regex>", …], "effect": "block"}
+   * A guardrail is enforceable per policy: that JSON spec is pushed to
+   * daemons; a free-text body is documentation only. transform keeps
+   * free text: daemons cannot enforce it. The console validates before
+   * saving (same messages as the server) so a typo never reaches a
+   * daemon. */
   var PV_ENFORCEABLE_KINDS = ["budget", "allowlist", "rate", "schema"];
   function pvIsEnforceableKind(kind) { return PV_ENFORCEABLE_KINDS.indexOf(kind) >= 0; }
+  var PV_GUARDRAIL_APPLIES_TO = ["tool.args", "llm.ingress"];
+  var PV_GUARDRAIL_MAX_PATTERNS = 64;
+  var PV_GUARDRAIL_MAX_PATTERN_BYTES = 512;
+  // Rust regex syntax has no lookaround and no backreferences.
+  var PV_RUST_REGEX_UNSUPPORTED = /\(\?<?[=!]|\\[1-9]/;
+  function pvUtf8Bytes(str) { try { return new TextEncoder().encode(str).length; } catch (e) { return str.length; } }
+  function pvLooksLikeJsonObject(body) { var t = String(body == null ? "" : body).trim(); return t.charAt(0) === "{" && t.charAt(t.length - 1) === "}"; }
+  function pvValidateGuardrail(scope, body) {
+    if (!pvLooksLikeJsonObject(body)) return { ok: true, spec: null };
+    var parsed;
+    try { parsed = JSON.parse(body); } catch (e) { return { ok: false, detail: "guardrail body looks like a JSON spec but is not valid JSON (" + e.message + "); write free text to keep it documentation only" }; }
+    var keys = Object.keys(parsed);
+    for (var k = 0; k < keys.length; k++) if (["applies_to", "deny_patterns", "effect"].indexOf(keys[k]) < 0) return { ok: false, detail: "guardrail spec: unknown field \"" + keys[k] + "\" (allowed: applies_to, deny_patterns, effect)" };
+    if (parsed.applies_to === "llm.egress") return { ok: false, detail: "guardrail spec: llm.egress is not enforced by daemons yet; use tool.args or llm.ingress" };
+    if (PV_GUARDRAIL_APPLIES_TO.indexOf(parsed.applies_to) < 0) return { ok: false, detail: "guardrail spec: applies_to must be tool.args or llm.ingress" };
+    if (!Array.isArray(parsed.deny_patterns) || !parsed.deny_patterns.length) return { ok: false, detail: "guardrail spec: deny_patterns needs at least one pattern" };
+    if (parsed.deny_patterns.length > PV_GUARDRAIL_MAX_PATTERNS) return { ok: false, detail: "guardrail spec: deny_patterns may hold at most " + PV_GUARDRAIL_MAX_PATTERNS + " patterns" };
+    for (var i = 0; i < parsed.deny_patterns.length; i++) {
+      var pat = parsed.deny_patterns[i];
+      if (typeof pat !== "string" || !pat) return { ok: false, detail: "guardrail spec: a deny pattern must not be empty" };
+      if (pvUtf8Bytes(pat) > PV_GUARDRAIL_MAX_PATTERN_BYTES) return { ok: false, detail: "guardrail spec: a deny pattern may be at most " + PV_GUARDRAIL_MAX_PATTERN_BYTES + " bytes" };
+      if (PV_RUST_REGEX_UNSUPPORTED.test(pat)) return { ok: false, detail: "guardrail spec: deny patterns use Rust regex syntax: lookaround and backreferences are not supported" };
+    }
+    if (parsed.effect !== undefined && parsed.effect !== "block") return { ok: false, detail: "guardrail spec: effect must be \"block\"" };
+    var sc = String(scope || "").trim();
+    if (parsed.applies_to === "tool.args") {
+      if (!pvToolPattern(sc)) return { ok: false, detail: "guardrail spec applies to tool.args but the policy scope \"" + scope + "\" is not a tool scope (use tool.* or tool.<name>)" };
+    } else if (["llm", "llm.*", "llm.request", "llm.ingress"].indexOf(sc) < 0) {
+      return { ok: false, detail: "guardrail spec applies to llm.ingress but the policy scope \"" + scope + "\" is not a model scope (use llm.request)" };
+    }
+    return { ok: true, spec: parsed };
+  }
+  // True when daemons can act on this policy: an enforceable kind, or a
+  // guardrail whose body is the JSON spec.
+  function pvIsEnforceablePolicy(kind, scope, body) {
+    if (pvIsEnforceableKind(kind)) return true;
+    if (kind !== "guardrail") return false;
+    var v = pvValidateGuardrail(scope, body);
+    return v.ok && v.spec !== null;
+  }
   var PV_TOOL_NAME_RE = /^[A-Za-z0-9_.:\/-]{1,80}$/;
   function pvToolPattern(scope) {
     var m = /^tool(?:\.(.*))?$/.exec(String(scope || "").trim());
@@ -359,6 +401,7 @@
     return null;
   }
   function pvValidatePolicySpec(kind, scope, body) {
+    if (kind === "guardrail") return pvValidateGuardrail(scope, body);
     if (!pvIsEnforceableKind(kind)) return { ok: true, spec: null };
     var text = String(body == null ? "" : body);
     if (!text.trim()) return { ok: false, detail: "a " + kind + " policy needs a JSON spec in its body" };
@@ -413,6 +456,7 @@
   }
   window.pvValidatePolicySpec = pvValidatePolicySpec;
   window.pvIsEnforceableKind = pvIsEnforceableKind;
+  window.pvIsEnforceablePolicy = pvIsEnforceablePolicy;
 
   // Bundle hashes the mock daemons report. Real etags are sha256 hex of
   // the canonical policies array; these are stable stand-ins so the
@@ -546,7 +590,7 @@
   function decorateMockPolicy(p) {
     var out = Object.assign({}, p);
     var v = pvValidatePolicySpec(p.kind, p.scope, p.body);
-    out.enforceable = pvIsEnforceableKind(p.kind);
+    out.enforceable = pvIsEnforceablePolicy(p.kind, p.scope, p.body);
     out.spec = v.ok ? v.spec : null;
     var fresh = freshDeployments();
     var deps = fresh !== null ? fresh : MOCK_DEPLOYMENTS;

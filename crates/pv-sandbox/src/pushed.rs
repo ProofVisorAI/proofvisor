@@ -10,7 +10,9 @@
 //! * allowlist rules run after the local policy chain, so a call must
 //!   pass both;
 //! * schema rules run after the local schema, so arguments must satisfy
-//!   both.
+//!   both;
+//! * guardrail rules (deny patterns over tool arguments or chat
+//!   requests) run after everything local, so they can only refuse.
 //!
 //! A compromised console can therefore block calls the host allows, but
 //! it can never let through a call the host's own config refuses.
@@ -168,6 +170,182 @@ impl PushedSchema {
     }
 }
 
+/// Where a pushed guardrail's deny patterns are matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardrailTarget {
+    /// Every string value in the arguments of a tool call.
+    ToolArgs,
+    /// Every string value under `messages` of a chat request.
+    LlmIngress,
+}
+
+impl GuardrailTarget {
+    /// Parse the spec's `applies_to`. `llm.egress` is reserved (the
+    /// daemon does not inspect response bodies) and is reported as
+    /// unsupported with its own reason.
+    pub fn parse(applies_to: &str) -> Result<Self, String> {
+        match applies_to {
+            "tool.args" => Ok(Self::ToolArgs),
+            "llm.ingress" => Ok(Self::LlmIngress),
+            "llm.egress" => Err("applies_to \"llm.egress\" is not enforced by this daemon (model responses are not inspected)".to_owned()),
+            other => Err(format!("applies_to {other:?} is not tool.args or llm.ingress")),
+        }
+    }
+}
+
+/// Upper bound on patterns per guardrail (the console enforces the same).
+pub const MAX_GUARDRAIL_PATTERNS: usize = 64;
+
+/// One pushed guardrail: a set of deny patterns over the text an agent
+/// sends. Patterns are compiled with the same bounds as the daemon's own
+/// `redaction_patterns` ([`pv_redact::compile_pattern`]).
+pub struct PushedGuardrail {
+    /// Console policy name, recorded as the blocking policy.
+    pub policy: String,
+    /// What the patterns are matched against.
+    pub target: GuardrailTarget,
+    /// For [`GuardrailTarget::ToolArgs`], which tools the rule covers.
+    pub scope: Option<ToolPattern>,
+    patterns: Vec<regex::Regex>,
+}
+
+impl std::fmt::Debug for PushedGuardrail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushedGuardrail")
+            .field("policy", &self.policy)
+            .field("target", &self.target)
+            .field("scope", &self.scope)
+            .field("patterns", &self.patterns.len())
+            .finish()
+    }
+}
+
+/// Where a guardrail matched: which pattern (1-based, as the console
+/// lists them) and the JSON pointer of the value. The matched text is
+/// deliberately not recorded anywhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardrailHit {
+    /// 1-based index of the pattern in `deny_patterns`.
+    pub pattern: usize,
+    /// How many patterns the policy has.
+    pub of: usize,
+    /// JSON pointer of the string value that matched.
+    pub pointer: String,
+}
+
+impl PushedGuardrail {
+    /// Compile a guardrail. `scope` is required for `tool.args` (it names
+    /// the tools) and ignored otherwise.
+    pub fn compile(
+        policy: &str,
+        target: GuardrailTarget,
+        scope: Option<ToolPattern>,
+        deny_patterns: &[String],
+    ) -> Result<Self, String> {
+        if deny_patterns.is_empty() {
+            return Err("deny_patterns needs at least one pattern".to_owned());
+        }
+        if deny_patterns.len() > MAX_GUARDRAIL_PATTERNS {
+            return Err(format!(
+                "deny_patterns holds {} patterns; at most {MAX_GUARDRAIL_PATTERNS} are allowed",
+                deny_patterns.len()
+            ));
+        }
+        if target == GuardrailTarget::ToolArgs && scope.is_none() {
+            return Err("a tool.args guardrail needs a tool scope".to_owned());
+        }
+        let patterns = deny_patterns
+            .iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                pv_redact::compile_pattern(raw)
+                    .map_err(|error| format!("deny pattern {} does not compile: {error}", index + 1))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            policy: policy.to_owned(),
+            target,
+            scope,
+            patterns,
+        })
+    }
+
+    /// The first string value under `value` that a pattern matches.
+    /// Strings are visited depth first; keys are not matched.
+    pub fn first_hit(&self, value: &Value) -> Option<GuardrailHit> {
+        let mut pointer = String::new();
+        self.walk(value, &mut pointer)
+    }
+
+    fn walk(&self, value: &Value, pointer: &mut String) -> Option<GuardrailHit> {
+        match value {
+            Value::String(text) => self
+                .patterns
+                .iter()
+                .position(|pattern| pattern.is_match(text))
+                .map(|index| GuardrailHit {
+                    pattern: index + 1,
+                    of: self.patterns.len(),
+                    pointer: pointer.clone(),
+                }),
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    let len = pointer.len();
+                    pointer.push('/');
+                    pointer.push_str(&index.to_string());
+                    let hit = self.walk(item, pointer);
+                    pointer.truncate(len);
+                    if hit.is_some() {
+                        return hit;
+                    }
+                }
+                None
+            }
+            Value::Object(fields) => {
+                for (key, item) in fields {
+                    let len = pointer.len();
+                    pointer.push('/');
+                    // RFC 6901 escaping, so the pointer in a refusal is exact.
+                    pointer.push_str(&key.replace('~', "~0").replace('/', "~1"));
+                    let hit = self.walk(item, pointer);
+                    pointer.truncate(len);
+                    if hit.is_some() {
+                        return hit;
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// The reason a call to `tool` with `arguments` is refused, if it is.
+    pub fn refuses_tool_call(&self, tool: &str, arguments: &Value) -> Option<String> {
+        if self.target != GuardrailTarget::ToolArgs || !self.scope.as_ref()?.matches(tool) {
+            return None;
+        }
+        let hit = self.first_hit(arguments)?;
+        Some(format!(
+            "tool arguments match deny pattern {} of {} (at {})",
+            hit.pattern, hit.of, hit.pointer
+        ))
+    }
+
+    /// The reason a chat request `payload` is refused, if it is. Only
+    /// the `messages` array is inspected.
+    pub fn refuses_chat(&self, payload: &Value) -> Option<String> {
+        if self.target != GuardrailTarget::LlmIngress {
+            return None;
+        }
+        let messages = payload.get("messages")?;
+        let hit = self.first_hit(messages)?;
+        Some(format!(
+            "chat content matches deny pattern {} of {} (at /messages{})",
+            hit.pattern, hit.of, hit.pointer
+        ))
+    }
+}
+
 /// Everything the daemon applied from one console bundle.
 #[derive(Debug, Default)]
 pub struct PushedRules {
@@ -181,6 +359,8 @@ pub struct PushedRules {
     pub allowlists: Vec<PushedAllowlist>,
     /// Pushed argument schemas.
     pub schemas: Vec<PushedSchema>,
+    /// Pushed guardrails (deny patterns).
+    pub guardrails: Vec<PushedGuardrail>,
 }
 
 impl PushedRules {
@@ -302,6 +482,124 @@ mod tests {
             .refuses("payments.refund")
             .unwrap()
             .contains("not allow-listed"));
+    }
+
+    #[test]
+    fn guardrails_match_string_values_and_never_quote_them() {
+        let scope = ToolPattern::from_scope("tool.crm.*").unwrap();
+        let rule = PushedGuardrail::compile(
+            "privacy.pii_egress",
+            GuardrailTarget::ToolArgs,
+            Some(scope),
+            &[
+                r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b".to_owned(),
+                "(?i)secret".to_owned(),
+            ],
+        )
+        .unwrap();
+        let args =
+            json!({"customer": {"name": "Ann", "ssn": "123-45-6789"}, "notes": ["fine", "TOP SECRET"]});
+        let reason = rule.refuses_tool_call("crm.update", &args).unwrap();
+        assert_eq!(
+            reason,
+            "tool arguments match deny pattern 1 of 2 (at /customer/ssn)"
+        );
+        assert!(!reason.contains("6789"), "the matched text is never copied");
+        assert_eq!(
+            rule.refuses_tool_call("crm.update", &json!({"notes": ["fine", "TOP SECRET"]}))
+                .unwrap(),
+            "tool arguments match deny pattern 2 of 2 (at /notes/1)"
+        );
+        assert!(
+            rule.refuses_tool_call("search", &args).is_none(),
+            "outside the scope"
+        );
+        assert!(
+            rule.refuses_tool_call("crm.update", &json!({"ssn": 123456789}))
+                .is_none(),
+            "numbers are not text"
+        );
+        assert!(
+            rule.refuses_tool_call("crm.update", &json!({"123-45-6789": "x"}))
+                .is_none(),
+            "keys are not matched"
+        );
+        assert!(
+            rule.refuses_chat(&json!({"messages": [{"content": "123-45-6789"}]}))
+                .is_none(),
+            "a tool.args rule ignores chat"
+        );
+        // Pointer keys are escaped per RFC 6901.
+        assert_eq!(
+            rule.refuses_tool_call("crm.x", &json!({"a/b": {"c~d": "secret"}}))
+                .unwrap(),
+            "tool arguments match deny pattern 2 of 2 (at /a~1b/c~0d)"
+        );
+
+        let ingress = PushedGuardrail::compile(
+            "llm.no_cards",
+            GuardrailTarget::LlmIngress,
+            None,
+            &[r"\b(?:[0-9][ -]?){12,18}[0-9]\b".to_owned()],
+        )
+        .unwrap();
+        let chat = json!({"model": "4111 1111 1111 1111", "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "pay with 4111 1111 1111 1111"}]}
+        ]});
+        assert_eq!(
+            ingress.refuses_chat(&chat).unwrap(),
+            "chat content matches deny pattern 1 of 1 (at /messages/0/content/0/text)"
+        );
+        assert!(ingress
+            .refuses_chat(&json!({"messages": [{"content": "hello"}]}))
+            .is_none());
+        assert!(
+            ingress
+                .refuses_chat(&json!({"model": "4111 1111 1111 1111"}))
+                .is_none(),
+            "only messages are inspected"
+        );
+        assert!(
+            ingress
+                .refuses_tool_call("crm.x", &json!({"n": "4111 1111 1111 1111"}))
+                .is_none(),
+            "an ingress rule ignores tools"
+        );
+    }
+
+    #[test]
+    fn guardrails_are_bounded_at_compile_time() {
+        let scope = || ToolPattern::from_scope("tool.*");
+        let compile =
+            |patterns: &[String]| PushedGuardrail::compile("p", GuardrailTarget::ToolArgs, scope(), patterns);
+        assert!(compile(&[]).unwrap_err().contains("at least one"));
+        let many: Vec<String> = (0..=MAX_GUARDRAIL_PATTERNS).map(|i| format!("p{i}")).collect();
+        assert!(compile(&many).unwrap_err().contains("at most 64"));
+        let err = compile(&["ok".to_owned(), "a".repeat(pv_redact::MAX_PATTERN_BYTES + 1)]).unwrap_err();
+        assert!(
+            err.starts_with("deny pattern 2 does not compile") && err.contains("at most 512"),
+            "{err}"
+        );
+        let err = compile(&["(unclosed".to_owned()]).unwrap_err();
+        assert!(err.starts_with("deny pattern 1 does not compile"), "{err}");
+        assert!(
+            PushedGuardrail::compile("p", GuardrailTarget::ToolArgs, None, &["x".to_owned()])
+                .unwrap_err()
+                .contains("tool scope")
+        );
+        assert!(PushedGuardrail::compile("p", GuardrailTarget::LlmIngress, None, &["x".to_owned()]).is_ok());
+        assert_eq!(
+            GuardrailTarget::parse("tool.args").unwrap(),
+            GuardrailTarget::ToolArgs
+        );
+        assert_eq!(
+            GuardrailTarget::parse("llm.ingress").unwrap(),
+            GuardrailTarget::LlmIngress
+        );
+        assert!(GuardrailTarget::parse("llm.egress")
+            .unwrap_err()
+            .contains("not inspected"));
+        assert!(GuardrailTarget::parse("tool.result").is_err());
     }
 
     #[test]

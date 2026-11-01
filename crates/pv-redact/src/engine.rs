@@ -10,6 +10,43 @@ use std::net::Ipv4Addr;
 /// from pathological custom patterns.
 const MAX_REDACTION_PASSES: usize = 8;
 
+/// Longest pattern [`compile_pattern`] accepts, in bytes. Long enough for
+/// every recommended redaction pattern several times over; short enough
+/// that a pattern pushed from a console cannot be a program.
+pub const MAX_PATTERN_BYTES: usize = 512;
+/// Cap on the compiled size of one pattern (the regex crate's default is
+/// 10 MiB; one pattern of a few hundred bytes never needs that).
+pub const PATTERN_SIZE_LIMIT: usize = 2 * 1024 * 1024;
+/// Cap on the lazy DFA cache per pattern.
+pub const PATTERN_DFA_SIZE_LIMIT: usize = 1024 * 1024;
+/// Cap on nesting depth (the regex crate's default is 250).
+pub const PATTERN_NEST_LIMIT: u32 = 64;
+
+/// Compile one operator-supplied pattern under the bounds every
+/// operator-supplied pattern gets: [`MAX_PATTERN_BYTES`],
+/// [`PATTERN_SIZE_LIMIT`], [`PATTERN_DFA_SIZE_LIMIT`] and
+/// [`PATTERN_NEST_LIMIT`]. The redaction engine compiles
+/// `redaction_patterns` this way, and console-pushed guardrail
+/// patterns reuse it, so the two cannot drift apart. Matching stays
+/// linear in the input, as with every regex-crate pattern.
+pub fn compile_pattern(raw: &str) -> Result<Regex, RedactError> {
+    if raw.len() > MAX_PATTERN_BYTES {
+        return Err(RedactError::PatternTooLong {
+            bytes: raw.len(),
+            max: MAX_PATTERN_BYTES,
+        });
+    }
+    regex::RegexBuilder::new(raw)
+        .size_limit(PATTERN_SIZE_LIMIT)
+        .dfa_size_limit(PATTERN_DFA_SIZE_LIMIT)
+        .nest_limit(PATTERN_NEST_LIMIT)
+        .build()
+        .map_err(|source| RedactError::InvalidPattern {
+            pattern: raw.to_owned(),
+            source,
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -25,6 +62,14 @@ pub enum RedactError {
         pattern: String,
         /// The underlying regex compilation error.
         source: regex::Error,
+    },
+    /// A regex pattern string is longer than [`MAX_PATTERN_BYTES`].
+    #[error("regex pattern is {bytes} bytes; at most {max} are allowed")]
+    PatternTooLong {
+        /// Length of the pattern in bytes.
+        bytes: usize,
+        /// The limit.
+        max: usize,
     },
     /// A JSON pointer path is malformed (non-empty but does not start with `/`).
     #[error("invalid JSON pointer path {path:?}: must be empty or start with '/'")]
@@ -159,10 +204,7 @@ impl RedactionEngine {
 
         // User-supplied regex patterns -----------------------------------
         for raw in &config.regex_patterns {
-            let compiled = Regex::new(raw).map_err(|source| RedactError::InvalidPattern {
-                pattern: raw.clone(),
-                source,
-            })?;
+            let compiled = compile_pattern(raw)?;
             rules.push(RedactionRule {
                 pattern: compiled,
                 span_extractor: None,

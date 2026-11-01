@@ -3775,14 +3775,15 @@
   /* Policy kinds. The four enforceable ones carry a JSON spec that
    * daemons apply verbatim (see pvValidatePolicySpec in datasource.js
    * for the shapes — the same validation the server runs). guardrail
-   * and transform are free text: documentation and event attribution,
-   * not something a daemon can enforce. */
+   * is enforceable per policy: a JSON spec (applies_to, deny_patterns)
+   * is pushed to daemons, free text is documentation and event
+   * attribution. transform is free text only. */
   var POLICY_KIND_INFO = {
     budget: { label: "Budget", enforceable: true, blurb: "Caps on tool calls, payout and tokens for a session." },
     allowlist: { label: "Tool allowlist", enforceable: true, blurb: "Which tools an agent may (or may never) call." },
     rate: { label: "Rate limit", enforceable: true, blurb: "Token velocity per principal inside a time window." },
     schema: { label: "Tool schema", enforceable: true, blurb: "A JSON Schema every call of one tool must satisfy." },
-    guardrail: { label: "Guardrail", enforceable: false, blurb: "Documentation only — daemons do not enforce it." },
+    guardrail: { label: "Guardrail", enforceable: false, blurb: "Patterns that must not appear in tool arguments or chat requests. Enforced by daemons when the definition is the JSON spec; free text is documentation only." },
     transform: { label: "Transform", enforceable: false, blurb: "Documentation only — daemons do not enforce it." },
   };
   function kindEnforceable(kind) {
@@ -3791,6 +3792,17 @@
   function validateSpec(kind, scope, body) {
     if (window.pvValidatePolicySpec) return window.pvValidatePolicySpec(kind, scope, body);
     return { ok: true, spec: null };
+  }
+  // Whether daemons act on THIS policy: every enforceable kind, plus a
+  // guardrail whose definition is the JSON spec.
+  function policyEnforceable(kind, scope, body) {
+    if (window.pvIsEnforceablePolicy) return window.pvIsEnforceablePolicy(kind, scope, body);
+    return kindEnforceable(kind);
+  }
+  // The API's own answer when it sent one (`enforceable`), else ours.
+  function rowEnforceable(p) {
+    if (p && typeof p.enforceable === "boolean") return p.enforceable;
+    return policyEnforceable(p && p.kind, p && p.scope, p && p.body);
   }
   function parseSpec(p) {
     if (p && p.spec && typeof p.spec === "object") return p.spec;
@@ -3967,35 +3979,39 @@
     },
     {
       id: "pii_guard",
-      label: "🔒 PII egress guard",
-      hint: "Document the PII rule your daemon's local guard enforces",
+      label: "🔒 PII guard",
+      hint: "Block tool calls whose arguments carry an SSN or a card number",
       kind: "guardrail",
-      scope: "llm.egress",
+      scope: "tool.*",
       param: null,
       build: function () {
         return {
           name: "privacy.pii_egress",
-          description: "Block LLM responses that contain SSNs or payment card numbers (documentation of the local guard; daemons attribute hits to this name).",
-          body: [
-            'policy "privacy.pii_egress" {',
-            "  applies_to = llm.egress",
-            "  when { response matches pii(ssn) or response matches pii(card_number) }",
-            "  effect = block",
-            '  reason = "Response contains PII ({{match.kind}}) — blocked before egress."',
-            "}",
-          ].join("\n"),
+          description: "Block any tool call whose arguments contain a US Social Security number or a 13-19 digit payment card number, so PII never leaves the agent through a tool.",
+          spec: {
+            applies_to: "tool.args",
+            deny_patterns: [
+              "\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b",
+              "\\b(?:[0-9][ -]?){12,18}[0-9]\\b",
+            ],
+            effect: "block",
+          },
         };
       },
     },
   ];
 
-  // Human summary of how daemons treat a policy of this kind.
-  function kindNote(kind) {
+  // Human summary of how daemons treat this policy. `enforceable` is
+  // the per-policy answer (a guardrail is enforced only with a JSON spec).
+  function kindNote(kind, enforceable) {
     var info = POLICY_KIND_INFO[kind];
     if (!info) return "";
-    return info.enforceable
-      ? "Daemons that pull policies (set up on each deployment's page) enforce this spec on top of their local config. A pushed policy can only tighten the host's own limits, never loosen them."
-      : "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
+    if (enforceable === undefined) enforceable = info.enforceable;
+    if (enforceable)
+      return "Daemons that pull policies (set up on each deployment's page) enforce this spec on top of their local config. A pushed policy can only tighten the host's own limits, never loosen them.";
+    if (kind === "guardrail")
+      return "This guardrail is documentation only: its definition is free text. Daemons enforce a guardrail whose definition is the JSON spec {\"applies_to\": \"tool.args\" or \"llm.ingress\", \"deny_patterns\": [regular expressions]}; hits attributed to this name keep counting here.";
+    return "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
   }
 
   function openCreatePolicyModal() {
@@ -4065,7 +4081,7 @@
     function refresh() {
       var b = built();
       backdrop.querySelector("#polPreview").innerHTML = syntaxPolicy(b.body);
-      backdrop.querySelector("#polKindNote").textContent = "· " + (POLICY_KIND_INFO[b.template.kind] ? POLICY_KIND_INFO[b.template.kind].label : b.template.kind) + (kindEnforceable(b.template.kind) ? "" : " — not enforceable by daemons");
+      backdrop.querySelector("#polKindNote").textContent = "· " + (POLICY_KIND_INFO[b.template.kind] ? POLICY_KIND_INFO[b.template.kind].label : b.template.kind) + (policyEnforceable(b.template.kind, backdrop.querySelector("#polScope").value, b.body) ? "" : " — not enforceable by daemons");
       // A generated value is not an edit: set it as the field's default
       // too, so the unsaved-changes guard only fires for what the user
       // typed or picked (otherwise the first Escape on a fresh dialog
@@ -4106,9 +4122,9 @@
         description: b.description, body: b.body,
       }).then(function (p) {
         close();
-        var msg = kindEnforceable(p.kind)
+        var msg = rowEnforceable(p)
           ? "Policy created. Daemons that pull policies pick it up on their next sync (see a deployment's page to set this up)."
-          : "Policy saved. " + p.kind + " policies document intent — daemons do not enforce them.";
+          : "Policy saved. " + (p.kind === "guardrail" ? "A guardrail with a free-text definition documents intent — daemons do not enforce it." : p.kind + " policies document intent — daemons do not enforce them.");
         toastLink(msg, "#/policies/" + p.id, "View policy →");
         navigate("#/policies/" + p.id);
       }).catch(function (err) {
@@ -4133,7 +4149,8 @@
   // that contains this policy. `deps` (listDeployments) names the
   // stale ones; the counts come from the policy's `enforcement`.
   function policyEnforcementBadge(p, deps) {
-    if (!kindEnforceable(p.kind) || p.enforceable === false) {
+    if (!rowEnforceable(p)) {
+      if (p.kind === "guardrail") return '<span class="pill neutral enf" title="This guardrail\'s definition is free text. Daemons enforce a guardrail only when its definition is the JSON spec.">Documentation only (no JSON spec)</span>';
       return '<span class="pill neutral enf" title="Daemons cannot enforce ' + esc(p.kind) + ' policies; this entry documents the rule and attributes hits.">Not enforceable by daemons (' + esc(p.kind) + ")</span>";
     }
     var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
@@ -4260,7 +4277,7 @@
         ' <button class="btn danger" id="polDeleteBtn" title="Delete this policy — its hit history goes with it">Delete</button>' +
         ' <button class="switch ' + switchCls + '" id="polSwitch" title="Toggle enabled" aria-label="Toggle policy enabled" role="switch" aria-checked="' + (p.enabled ? "true" : "false") + '"></button>'
       : "";
-    var enforceable = kindEnforceable(p.kind) && p.enforceable !== false;
+    var enforceable = rowEnforceable(p);
     var spec = parseSpec(p);
     var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
     main.innerHTML =
@@ -4274,7 +4291,7 @@
       "</div>" +
       '<div class="card"><h2>Description</h2><p style="margin:0;color:var(--fg-2);font-size:var(--t-body)">' + esc(p.description) + '</p></div>' +
       '<div class="card" style="margin-top:12px"><h2>' + (enforceable ? "Spec daemons enforce" : "Definition") + '</h2>' +
-        '<p style="margin:0 0 10px;color:var(--fg-2);font-size:var(--t-sec)">' + esc(kindNote(p.kind)) +
+        '<p style="margin:0 0 10px;color:var(--fg-2);font-size:var(--t-sec)">' + esc(kindNote(p.kind, enforceable)) +
         (enforceable && !spec ? " This body is not a valid " + esc(p.kind) + " spec — edit it so daemons can apply it." : "") + "</p>" +
         '<pre class="policy-body">' + syntaxPolicy(spec ? specBodyText(spec) : p.body) + "</pre>" +
         (enforceable && e.deployments
@@ -4329,12 +4346,19 @@
   // sessions-fired history that hang off the policy id).
   function openEditPolicyModal(p, onSaved) {
     if (document.body.classList.contains("locked")) return;
+    // Structured fields exist for the four spec kinds; a guardrail is
+    // edited as text (the JSON spec, or free text for documentation).
     var enforceable = kindEnforceable(p.kind);
     var spec = parseSpec(p) || {};
+    var editSub = enforceable
+      ? "Changes reach every daemon on its next policy pull. The policy ID and its hit history stay put."
+      : p.kind === "guardrail"
+        ? "A definition that is the JSON spec ({\"applies_to\": \"tool.args\" or \"llm.ingress\", \"deny_patterns\": [regular expressions]}) is enforced by every daemon on its next policy pull; free text is documentation only. The policy ID and its hit history stay put."
+        : "This " + esc(p.kind) + " policy is documentation: daemons do not enforce it, but hits they attribute to its name keep counting here.";
     var backdrop = h(
       '<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal modal-wide">' +
         "<h2>Edit policy</h2>" +
-        '<p class="sub">' + (enforceable ? "Changes reach every daemon on its next policy pull. The policy ID and its hit history stay put." : "This " + esc(p.kind) + " policy is documentation: daemons do not enforce it, but hits they attribute to its name keep counting here.") + "</p>" +
+        '<p class="sub">' + editSub + "</p>" +
         '<form id="peForm">' +
           '<div class="spec-grid">' +
             '<div class="field"><label for="pe_name">Name</label><input id="pe_name" type="text" required maxlength="80" value="' + esc(p.name) + '"></div>' +
@@ -4405,7 +4429,7 @@
       try {
         await state.ds.updatePolicy(p.id, fields);
         close();
-        toast(enforceable ? "Policy updated — daemons pick it up on their next pull" : "Policy updated");
+        toast(enforceable || (v.spec && p.kind === "guardrail") ? "Policy updated — daemons pick it up on their next pull" : "Policy updated");
         if (onSaved) onSaved();
       } catch (e2) {
         btn.disabled = false;

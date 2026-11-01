@@ -246,8 +246,60 @@ the console were compromised it could block calls, but it could not
 allow a call the local config refuses. A newer bundle file the daemon
 cannot apply leaves the rules in force unchanged and records the error
 in the status file; at boot, such a file stops the daemon, so it never
-silently runs without rules it was given. `guardrail` and `transform`
-policies document intent and are not enforced by daemons.
+silently runs without rules it was given. `transform` policies document
+intent and are not enforced by daemons; `guardrail` policies are
+enforced when their body is the JSON spec below, and are documentation
+otherwise.
+
+### Guardrail policies
+
+A guardrail is a list of regular expressions that must not appear in
+what an agent sends. The console accepts two kinds of guardrail body:
+
+- **A JSON spec** (below). The console marks the policy enforceable,
+  puts the parsed spec in the bundle, and daemons enforce it.
+- **Free text** (anything that is not a JSON object). The console
+  stores it as documentation only; a daemon lists such a policy in
+  `unsupported` with the reason "guardrail policy has no JSON spec".
+  Guardrails written before this spec existed keep working this way.
+
+The spec:
+
+```json
+{
+  "applies_to": "tool.args",
+  "deny_patterns": ["\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b"],
+  "effect": "block"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `applies_to` | `tool.args`: every string value in the arguments of a tool call, for the tools the policy scope names (`tool.*`, `tool.<name>`, `tool.payments.*`). `llm.ingress`: every string value under `messages` in a chat request; the scope must be `llm`, `llm.*`, `llm.request` or `llm.ingress`. `llm.egress` (model responses) is reserved: the console refuses it until daemons inspect response bodies. |
+| `deny_patterns` | 1 to 64 regular expressions in the syntax of the Rust `regex` crate (no lookaround, no backreferences), each 1 to 512 bytes. A value that contains a match anywhere fires the rule. Daemons compile each pattern with the same bounds as `redaction_patterns` (`pv_redact::compile_pattern`): a pattern over the size or nesting limit, or one the daemon cannot compile, makes the whole policy unsupported on that daemon, with the reason shown in the console. |
+| `effect` | Optional; only `block` is accepted, and it is the default. |
+
+A JSON object that is not a valid spec is refused when the policy is
+saved, with the reason, so a mistyped spec cannot silently become
+documentation.
+
+How a daemon enforces a guardrail:
+
+- `tool.args` rules run at the policy stage, after the local policy
+  chain and the pushed allowlists, before any budget is spent. The
+  refusal is the usual JSON-RPC policy denial, naming the console
+  policy: `policy "privacy.pii_egress": tool arguments match deny
+  pattern 1 of 2 (at /customer/ssn)`.
+- `llm.ingress` rules run at the sanitize stage of a chat request,
+  before compression and before any token is charged. The refusal
+  names the policy the same way, and the stop-reason event carries it
+  in `payload.policy`, so `pvctl console-sync` uploads the refusal as a
+  block attributed to that policy.
+- The refusal, the log line and the audit event say which pattern
+  (by position) matched and where (a JSON pointer); the matched text
+  itself is never copied anywhere.
+- Like every pushed rule, a guardrail only adds a restriction: a call
+  the local config refuses stays refused.
 
 ### Releasing a quarantined session id
 

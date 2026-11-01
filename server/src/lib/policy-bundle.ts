@@ -17,7 +17,8 @@
  *
  * `policies` holds only the org's ENABLED policies, sorted by name.
  * `spec` is the parsed JSON object of `body` for the daemon-enforceable
- * kinds (budget, allowlist, rate, schema) and null otherwise. The etag
+ * kinds (budget, allowlist, rate, schema), the parsed spec of a
+ * guardrail whose body is a JSON spec, and null otherwise. The etag
  * depends on the policies array alone — not on generatedAt or on the
  * deployment id — so every daemon of an org sees the same etag for the
  * same set of rules, and a daemon can send it back as If-None-Match.
@@ -38,6 +39,18 @@ export type EnforceableKind = (typeof ENFORCEABLE_KINDS)[number];
 export function isEnforceableKind(kind: string): kind is EnforceableKind {
   return (ENFORCEABLE_KINDS as readonly string[]).includes(kind);
 }
+
+/**
+ * Guardrails are enforceable per policy, not per kind: a body that is
+ * the JSON spec (docs/reference/OPERATIONS.md, "Guardrail policies") is
+ * pushed to daemons; a free-text body is documentation only.
+ */
+export const GUARDRAIL_KIND = "guardrail";
+
+/** Where a guardrail's deny patterns are matched. `llm.egress` is reserved. */
+export const GUARDRAIL_APPLIES_TO = ["tool.args", "llm.ingress"] as const;
+export const GUARDRAIL_MAX_PATTERNS = 64;
+export const GUARDRAIL_MAX_PATTERN_BYTES = 512;
 
 // Tool names are identifiers the daemon matches against tool-call
 // names: no whitespace, no control characters, bounded.
@@ -93,6 +106,35 @@ const schemaSpec = z
       .refine((v) => !Array.isArray(v), "json_schema must be a JSON Schema object"),
   })
   .strict();
+
+// Deny patterns use the Rust `regex` crate's syntax, which has no
+// lookaround and no backreferences. Those are the constructs a JS or
+// PCRE habit most often brings in, and a daemon would report the whole
+// policy unsupported, so they are refused at write time with a reason.
+const RUST_REGEX_UNSUPPORTED = /\(\?<?[=!]|\\[1-9]/;
+
+const denyPattern = z
+  .string()
+  .min(1, "a deny pattern must not be empty")
+  .refine((p) => Buffer.byteLength(p, "utf8") <= GUARDRAIL_MAX_PATTERN_BYTES, `a deny pattern may be at most ${GUARDRAIL_MAX_PATTERN_BYTES} bytes`)
+  .refine((p) => !RUST_REGEX_UNSUPPORTED.test(p), "deny patterns use Rust regex syntax: lookaround and backreferences are not supported");
+
+const guardrailSpec = z
+  .object({
+    applies_to: z
+      .string()
+      .refine((v) => v !== "llm.egress", "llm.egress is not enforced by daemons yet; use tool.args or llm.ingress")
+      .refine((v) => (GUARDRAIL_APPLIES_TO as readonly string[]).includes(v), "applies_to must be tool.args or llm.ingress"),
+    deny_patterns: z.array(denyPattern).min(1, "deny_patterns needs at least one pattern").max(GUARDRAIL_MAX_PATTERNS),
+    effect: z.literal("block").optional(),
+  })
+  .strict();
+
+/** True when the body is a JSON object (a spec attempt, not free text). */
+function looksLikeJsonObject(body: string): boolean {
+  const text = body.trim();
+  return text.startsWith("{") && text.endsWith("}");
+}
 
 const SPEC_SCHEMAS: Record<EnforceableKind, z.ZodTypeAny> = {
   budget: budgetSpec,
@@ -168,6 +210,7 @@ function findExternalRef(node: unknown, depth = 0): string | null {
 }
 
 export function validatePolicySpec(kind: string, scope: string, body: string): SpecValidation {
+  if (kind === GUARDRAIL_KIND) return validateGuardrail(scope, body);
   if (!isEnforceableKind(kind)) return { ok: true, spec: null };
   if (!body.trim()) {
     return { ok: false, detail: `a ${kind} policy needs a JSON spec in its body` };
@@ -225,6 +268,41 @@ export function validatePolicySpec(kind: string, scope: string, body: string): S
     }
   }
   return { ok: true, spec };
+}
+
+/**
+ * A guardrail body is either the JSON spec (enforced) or free text
+ * (documentation). A body that is a JSON object must be a valid spec:
+ * refusing a mistyped spec at write time is what keeps it from quietly
+ * turning into documentation. The scope must match `applies_to` the same
+ * way allowlist scopes must cover the tools they name.
+ */
+function validateGuardrail(scope: string, body: string): SpecValidation {
+  if (!looksLikeJsonObject(body)) return { ok: true, spec: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch (e) {
+    return { ok: false, detail: `guardrail body looks like a JSON spec but is not valid JSON (${(e as Error).message}); write free text to keep it documentation only` };
+  }
+  const res = guardrailSpec.safeParse(parsed);
+  if (!res.success) return { ok: false, detail: `guardrail spec: ${firstIssue(res.error)}` };
+  const spec = res.data as Record<string, unknown>;
+  const trimmed = scope.trim();
+  if (spec.applies_to === "tool.args") {
+    if (!toolPatternFromScope(trimmed)) {
+      return { ok: false, detail: `guardrail spec applies to tool.args but the policy scope "${scope}" is not a tool scope (use tool.* or tool.<name>)` };
+    }
+  } else if (!["llm", "llm.*", "llm.request", "llm.ingress"].includes(trimmed)) {
+    return { ok: false, detail: `guardrail spec applies to llm.ingress but the policy scope "${scope}" is not a model scope (use llm.request)` };
+  }
+  return { ok: true, spec };
+}
+
+/** True when daemons can act on this policy: an enforceable kind, or a guardrail with a JSON spec. */
+export function isEnforceablePolicy(kind: string, scope: string, body: string): boolean {
+  if (isEnforceableKind(kind)) return true;
+  return kind === GUARDRAIL_KIND && parseSpecOrNull(kind, scope, body) !== null;
 }
 
 /** Parsed spec for display; null when the body is not a valid spec. */

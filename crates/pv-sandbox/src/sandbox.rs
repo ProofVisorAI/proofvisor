@@ -301,6 +301,23 @@ impl Sandbox {
             }
         }
 
+        // Gate 3c: console-pushed guardrails over the arguments, after
+        // every local gate, so they can only add a refusal.
+        for rule in &pushed.guardrails {
+            if let Some(reason) = rule.refuses_tool_call(&req.tool, &req.arguments) {
+                let reason = format!("policy {:?}: {reason}", rule.policy);
+                return ToolVerdict::Blocked {
+                    tool: req.tool.clone(),
+                    stage: "policy",
+                    policy: Some(rule.policy.clone()),
+                    denial_code: DenialCode::PolicyDenied,
+                    reason: reason.clone(),
+                    response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
+                    elapsed_us: elapsed(started),
+                };
+            }
+        }
+
         // Gate 4: budget (atomic check-and-spend).
         let payout_micros = match extract_payout_micros(&req.arguments, &self.config.payout_field) {
             Ok(m) => m,
@@ -442,13 +459,46 @@ impl Sandbox {
 
     /// Evaluate an arbitrary operation payload against the configured native
     /// and WASM policy chain. Used for chat sanitization before compression.
-    pub fn sanitize(&self, operation: &str, payload: &Value) -> Result<(), String> {
+    pub fn sanitize(&self, operation: &str, payload: &Value) -> Result<(), SanitizeDenial> {
         for policy in &self.policies {
             if let PolicyDecision::Deny { reason } = policy.evaluate(operation, payload) {
-                return Err(format!("policy {:?}: {reason}", policy.name()));
+                return Err(SanitizeDenial {
+                    policy: None,
+                    reason: format!("policy {:?}: {reason}", policy.name()),
+                });
+            }
+        }
+        // Console-pushed guardrails over chat content, after the local
+        // chain, so they can only add a refusal. They name the console
+        // policy so the refusal can be attributed to it.
+        if operation == "chat/completions" {
+            for rule in &self.pushed().guardrails {
+                if let Some(reason) = rule.refuses_chat(payload) {
+                    return Err(SanitizeDenial {
+                        policy: Some(rule.policy.clone()),
+                        reason: format!("policy {:?}: {reason}", rule.policy),
+                    });
+                }
             }
         }
         Ok(())
+    }
+}
+
+/// A non-tool payload the sandbox refused. `policy` names the console
+/// policy when a pushed rule refused it (local policies are already
+/// named inside `reason`, as they are for tool calls).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizeDenial {
+    /// Console policy name, for attribution.
+    pub policy: Option<String>,
+    /// The refusal as the client sees it.
+    pub reason: String,
+}
+
+impl std::fmt::Display for SanitizeDenial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
     }
 }
 
@@ -566,8 +616,74 @@ mod tests {
             )
             .unwrap(),
         );
+        rules.guardrails.push(
+            crate::pushed::PushedGuardrail::compile(
+                "privacy.pii_egress",
+                crate::pushed::GuardrailTarget::ToolArgs,
+                crate::pushed::ToolPattern::from_scope("tool.*"),
+                &[r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b".to_owned()],
+            )
+            .unwrap(),
+        );
+        rules.guardrails.push(
+            crate::pushed::PushedGuardrail::compile(
+                "llm.no_secrets",
+                crate::pushed::GuardrailTarget::LlmIngress,
+                None,
+                &["(?i)top secret".to_owned()],
+            )
+            .unwrap(),
+        );
         s.set_pushed(rules);
         assert_eq!(s.pushed().etag.as_deref(), Some("ab12"));
+        // A pushed guardrail refuses matching arguments at the policy
+        // stage, naming the console policy and never the matched text.
+        let pii = s.check(
+            &store,
+            "sess-g",
+            &raw_call("create_ticket", json!({"body": "ssn 123-45-6789"})),
+        );
+        assert_eq!(
+            blocked_policy(&pii),
+            (Some("privacy.pii_egress".into()), "policy")
+        );
+        if let ToolVerdict::Blocked { reason, .. } = &pii {
+            assert!(
+                reason.contains("deny pattern 1 of 1 (at /body)") && !reason.contains("6789"),
+                "{reason}"
+            );
+        }
+        assert!(s
+            .check(
+                &store,
+                "sess-g",
+                &raw_call("create_ticket", json!({"body": "no pii"}))
+            )
+            .is_allowed());
+        // The ingress guardrail refuses matching chat content with the
+        // policy name attached; the local chain still answers first.
+        let denial = s
+            .sanitize(
+                "chat/completions",
+                &json!({"messages": [{"content": "TOP SECRET plan"}]}),
+            )
+            .unwrap_err();
+        assert_eq!(denial.policy.as_deref(), Some("llm.no_secrets"));
+        assert!(
+            denial.reason.contains("llm.no_secrets") && denial.reason.contains("/messages/0/content"),
+            "{denial}"
+        );
+        assert!(s
+            .sanitize(
+                "chat/completions",
+                &json!({"messages": [{"content": "public plan"}]})
+            )
+            .is_ok());
+        assert!(
+            s.sanitize("other", &json!({"messages": [{"content": "TOP SECRET"}]}))
+                .is_ok(),
+            "only chat is inspected"
+        );
         assert_eq!(
             s.effective_budget().max_total_tool_calls,
             Some(3),

@@ -137,11 +137,11 @@ with demonstration data, which is what the public site shows by default.
 - **API keys** with a role (owner, admin, member), shown once.
 - **Policies** as an inventory with hit and block counts per policy and
   the sessions that fired each one. Budget, allow/deny-list, argument
-  schema and token-rate policies are pushed to daemons (`pvctl
-  console-sync --pull-policies`), which can only tighten their local
-  configuration and report back whether each policy was applied;
-  guardrail and transform policies stay documentation only (see
-  section 7).
+  schema, token-rate and guardrail policies are pushed to daemons
+  (`pvctl console-sync --pull-policies`), which can only tighten their
+  local configuration and report back whether each policy was applied;
+  a guardrail whose body is free text, and transform policies, stay
+  documentation only (see sections 6 and 7).
 - **Webhooks** with HMAC signatures, SSRF guards, retries and a delivery
   log; Slack, Teams and Discord payloads are formatted automatically.
   Emitted events: `policy.block`, `session.blocked`, `member.invited`,
@@ -218,6 +218,21 @@ with demonstration data, which is what the public site shows by default.
   fetch a URL or read a local file through an external `$ref` (the
   console refuses such schemas when they are saved, and the daemon
   refuses them again when it compiles them).
+- **Guardrail policies are enforced** when their body is the JSON spec
+  described in `docs/reference/OPERATIONS.md` ("Guardrail policies"):
+  `applies_to` (`tool.args` or `llm.ingress`), `deny_patterns` (1 to 64
+  bounded regular expressions) and `effect: block`. The daemon refuses
+  a tool call whose arguments match at the policy stage, and a chat
+  request whose messages match at the sanitize stage, each refusal
+  naming the console policy and the pattern position, never the matched
+  text; `pvctl console-sync` uploads the block attributed to the policy.
+  Patterns are compiled under the same bounds as `redaction_patterns`
+  (`pv_redact::compile_pattern`). A guardrail saved before this spec
+  existed keeps its free-text body: the console still accepts it, it
+  stays documentation only, and daemons now list it as unsupported with
+  the reason "guardrail policy has no JSON spec". `applies_to:
+  "llm.egress"` (model responses) is reserved and refused by the
+  console until daemons inspect response bodies.
 
 ## 7. Not yet, partial, or needs a decision
 
@@ -227,8 +242,11 @@ with demonstration data, which is what the public site shows by default.
   SCIM) were proposed during development and need a business decision
   before anyone turns them on; they contradict today's "every
   governance feature on Free" wording.
-- **Guardrail and transform policies** document intent in the console;
-  daemons do not enforce them.
+- **Transform policies** document intent in the console; daemons do
+  not enforce them. **Guardrails over model responses** (`applies_to:
+  "llm.egress"`) are not enforced either: the daemon streams response
+  bodies through without inspecting them, so the console refuses that
+  value for now.
 - **A pushed token budget that a streaming completion overflows
   mid-stream** is refused with the limit name but without the console
   policy's name; only the request-time check (prompt tokens, where a

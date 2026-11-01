@@ -2352,16 +2352,18 @@ impl AppState {
         self.observe_stage("quota", stage);
 
         let stage = Instant::now();
-        if let Err(reason) = self.sandbox.sanitize("chat/completions", &payload) {
-            let error = PipelineError::blocked(reason);
+        if let Err(denial) = self.sandbox.sanitize("chat/completions", &payload) {
+            let error = PipelineError::blocked(denial.reason);
             // No token refund needed: the budget debit happens AFTER
             // compression (below), so a sanitize block exits before
-            // anything was charged.
-            worker_permit.submit(self.failure_job(
+            // anything was charged. A console-pushed guardrail names its
+            // policy, so the stop-reason event attributes the block.
+            worker_permit.submit(self.policy_failure_job(
                 Arc::clone(&session),
                 identity.clone(),
                 StopReason::PolicyBlocked,
                 error.to_string(),
+                denial.policy,
             ));
             return Err(error);
         }

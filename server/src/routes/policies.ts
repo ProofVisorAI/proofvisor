@@ -29,7 +29,7 @@ import { writeAudit, resolveActor } from "../lib/audit.js";
 import { requireSession } from "../lib/session-middleware.js";
 import {
   enforcementFor,
-  isEnforceableKind,
+  isEnforceablePolicy,
   orgEnforcementSnapshot,
   parseSpecOrNull,
   validatePolicySpec,
@@ -105,16 +105,18 @@ async function policyCounters(
 // Counters come from the attribution aggregate when present; zero when
 // the org's daemons haven't attributed any events in the window.
 // `enforcement` counts daemons against the org's CURRENT bundle etag;
-// `enforceable` tells the console whether daemons can act on this kind
-// at all (guardrail/transform are documentation and attribution only);
-// `spec` is the parsed JSON body for enforceable kinds (null otherwise).
+// `enforceable` tells the console whether daemons can act on this policy
+// (the four enforceable kinds always; a guardrail when its body is the
+// JSON spec; transform and free-text guardrails are documentation and
+// attribution only); `spec` is the parsed JSON body when enforceable
+// (null otherwise).
 function toWire(
   p: { id: string; name: string; kind: string; scope: string; body: string } & Record<string, unknown>,
   counters?: Map<string, { hits: number; blocks: number }>,
   snap?: OrgEnforcementSnapshot,
 ) {
   const c = counters?.get(p.name);
-  const enforceable = isEnforceableKind(p.kind);
+  const enforceable = isEnforceablePolicy(p.kind, p.scope, p.body);
   return {
     ...p,
     hits24h: c?.hits ?? 0,
