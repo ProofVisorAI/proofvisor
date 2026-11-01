@@ -199,7 +199,10 @@ with demonstration data, which is what the public site shows by default.
   verified mark when it changes an email; daemon authentication bounds
   argon2 work per address and in total; demo deployments refuse daemon
   traffic; the Kafka client no longer decodes zstd (four RustSec
-  advisories).
+  advisories); a pushed schema policy can no longer make the daemon
+  fetch a URL or read a local file through an external `$ref` (the
+  console refuses such schemas when they are saved, and the daemon
+  refuses them again when it compiles them).
 
 ## 7. Not yet, partial, or needs a decision
 
