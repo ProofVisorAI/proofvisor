@@ -55,7 +55,13 @@ MAX_RESPONSE = 1024 * 1024
 
 
 def daemon_shaped_request(subject, action, tool, resource_type, resource_id):
-    """The exact field layout `authzen::evaluation_request` produces."""
+    """The field layout `authzen::evaluation_request` produces, except the
+    resource: the daemon always sends {"type": "tool", "id": <tool>}, and
+    the Cerbos demo policy only models "todo" resources, so this script
+    sends the Todo scenario's resource to test format conformance. The
+    daemon's own client, with its real resource, is exercised against
+    Topaz by `authzen_against_the_public_topaz_interop_pdp` in
+    crates/pv-harness/tests/e2e_identity_and_policy.rs."""
     return {
         "subject": {
             "type": "user",

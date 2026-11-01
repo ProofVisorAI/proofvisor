@@ -1,7 +1,7 @@
 # ProofVisor — what exists today
 
-Dated 2026-10-31. Every item below was exercised on this date on a
-laptop against the local `integration/all` branch (the rename branch
+Dated 2026-10-31, rechecked on 2026-11-01. Every item below was
+exercised on a laptop against the local `integration/all` branch (the rename branch
 plus the native-provider, policy-push, SCIM and billing, and interop
 work): the Rust test suites, the API and console test suites, the
 browser drills, the real-binary drills and the interop tests all
@@ -136,8 +136,12 @@ with demonstration data, which is what the public site shows by default.
   `pvctl console-sync --watch`.
 - **API keys** with a role (owner, admin, member), shown once.
 - **Policies** as an inventory with hit and block counts per policy and
-  the sessions that fired each one. Daemons enforce their local policy
-  files; the console does not push policies to daemons yet.
+  the sessions that fired each one. Budget, allow/deny-list, argument
+  schema and token-rate policies are pushed to daemons (`pvctl
+  console-sync --pull-policies`), which can only tighten their local
+  configuration and report back whether each policy was applied;
+  guardrail and transform policies stay documentation only (see
+  section 7).
 - **Webhooks** with HMAC signatures, SSRF guards, retries and a delivery
   log; Slack, Teams and Discord payloads are formatted automatically.
   Emitted events: `policy.block`, `session.blocked`, `member.invited`,
@@ -181,8 +185,9 @@ with demonstration data, which is what the public site shows by default.
   attack"**, with demo rows labelled and removable.
 - **Interoperability verified** against a third-party MCP server and the
   official MCP SDK client, Keycloak 26.8.1 (OIDC and SAML login in a
-  real browser), and the daemon's AuthZEN request format against two
-  public interop decision servers.
+  real browser), the daemon's AuthZEN request format against two public
+  interop decision servers, and the daemon's own AuthZEN client against
+  the public Topaz server.
 - **Windows**: the daemon and CLI compile for Windows x64, and CI and
   the release workflow build them there.
 - **The rename keeps existing deployments working.** Signed and hashed
@@ -225,8 +230,13 @@ with demonstration data, which is what the public site shows by default.
   API needs real keys and makes a few paid requests
   (`scripts/provider-smoke.py --allow-live-request --provider anthropic`
   or `gemini`).
-- **The daemon's own AuthZEN client** has not been run against a public
-  decision server; only its request format has.
+- **AuthZEN resource modelling.** The daemon's own AuthZEN client was
+  run against the public Topaz interop server and decided correctly
+  (allow and deny). The daemon always describes the resource as
+  `{"type": "tool", "id": <tool name>}`, so a decision server's policies
+  must model resources of type `tool`; the Cerbos demo policy, which
+  only models `todo` resources, denies every such request. A per-tool
+  resource mapping does not exist yet.
 - **Still tested with stand-ins only:** a real Cloud Foundry
   foundation, cloud object storage, and identity providers other than
   Keycloak (for example Okta and Entra ID).
@@ -247,8 +257,9 @@ with demonstration data, which is what the public site shows by default.
 
 All on the merged `integration/all` branch. Every row was rerun on
 2026-11-01, after the rename compatibility work, the pushed-schema fix
-and the three CI fixes, except three: the Windows compile check, and
-Keycloak and AuthZEN, which were run on 2026-10-31.
+and the three CI fixes, except two that were run on 2026-10-31: the
+Windows compile check, and Keycloak (which CI's keycloak-interop job
+passed on 2026-11-01).
 
 | Suite | Result |
 |---|---|
@@ -274,3 +285,4 @@ Keycloak and AuthZEN, which were run on 2026-10-31.
 | Third-party MCP server / official MCP SDK client | 14 / 12 checks passed |
 | Keycloak 26.8.1 OIDC and SAML login | 22 checks passed |
 | The daemon's AuthZEN request format, sent by a test script to public interop PDPs (Cerbos, Aserto Topaz) | allow and deny as expected |
+| The daemon's own AuthZEN client against the public Topaz PDP | allow and deny as expected |

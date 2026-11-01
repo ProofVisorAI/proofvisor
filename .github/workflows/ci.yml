@@ -429,6 +429,9 @@ jobs:
           # Offline runners may skip locally; CI must reach the PDPs.
           AUTHZEN_INTEROP_REQUIRE_NETWORK: "1"
         run: python3 scripts/authzen-interop-test.py --output "${{ runner.temp }}/interop/authzen.json"
+      - name: The daemon's own AuthZEN client against the public Topaz PDP
+        timeout-minutes: 15
+        run: cargo test -p pv-harness --test e2e_identity_and_policy authzen_against_the_public_topaz_interop_pdp -- --ignored --exact
       - name: Retain interop evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

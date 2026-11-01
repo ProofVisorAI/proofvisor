@@ -484,6 +484,37 @@ async fn authzen_permits_denies_and_receives_the_documented_request_shape() {
     );
 }
 
+/// The daemon's own AuthZEN client against the public Topaz interop PDP
+/// (the "Todo" scenario of https://authzen-interop.net). Rick (admin) may
+/// create a todo, Beth (viewer) may not. Needs network access, so it runs
+/// only with `--ignored`.
+#[tokio::test]
+#[ignore = "needs network access to topaz-todo-proxy.authzen-interop.net"]
+async fn authzen_against_the_public_topaz_interop_pdp() {
+    let upstream = common::MockBackend::start().await;
+    let (state, _dir) = gateway(vec![backend("todo", &upstream.url, &["create_todo"])], |config| {
+        config
+            .intent_map
+            .insert("create_todo".into(), "can_create_todo".into());
+        let mut pdp = authzen("https://topaz-todo-proxy.authzen-interop.net", false);
+        pdp.timeout_ms = 10_000;
+        config.authzen = Some(pdp);
+    });
+    let rick = token(&state, "rick@the-citadel.com", "inst-rick", &["tool:*"], "j-rick");
+    let beth = token(&state, "beth@the-smiths.com", "inst-beth", &["tool:*"], "j-beth");
+
+    let allowed = send(&state, tool_call(&rick, "topaz-1", "create_todo", 1)).await;
+    assert_eq!(allowed.status, 200, "{}", allowed.json);
+    let denied = send(&state, tool_call(&beth, "topaz-2", "create_todo", 2)).await;
+    assert_eq!(denied.status, 403, "{}", denied.json);
+    assert_eq!(denied.json["error"]["data"]["code"], "PDP_DENIED");
+    assert_eq!(
+        upstream.tool_calls().len(),
+        1,
+        "only the permitted call reaches the backend"
+    );
+}
+
 #[tokio::test]
 async fn an_unreachable_authzen_pdp_fails_closed() {
     let base = start_pdp(Pdp {
