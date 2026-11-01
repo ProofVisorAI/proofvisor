@@ -1150,7 +1150,10 @@ impl ConsoleClient {
             .client
             .get(&url)
             .bearer_auth(&self.token)
-            .header("X-PV-Deployment", &self.deployment);
+            .header("X-PV-Deployment", &self.deployment)
+            // A console that still runs the pre-rename API reads only
+            // the old header name, so both are sent.
+            .header("X-AV-Deployment", &self.deployment);
         if let Some(etag) = etag {
             request = request.header(reqwest::header::IF_NONE_MATCH, format!("\"{etag}\""));
         }
@@ -1194,6 +1197,7 @@ impl ConsoleClient {
                 .post(&url)
                 .bearer_auth(&self.token)
                 .header("X-PV-Deployment", &self.deployment)
+                .header("X-AV-Deployment", &self.deployment)
                 .json(payload)
                 .send()
                 .await
@@ -2824,6 +2828,8 @@ mod tests {
                                 "Bearer private-ingest-token"
                             );
                             assert_eq!(headers.get("x-pv-deployment").unwrap(), "private-deployment");
+                            // The pre-rename console reads only this name.
+                            assert_eq!(headers.get("x-av-deployment").unwrap(), "private-deployment");
                             assert_eq!(body["evidence"], "private captured content");
                             originals.fetch_add(1, Ordering::SeqCst);
                             (
