@@ -117,13 +117,18 @@ test("a transform JSON spec is accepted and parsed", () => {
   for (const scope of ["llm", "llm.*", "llm.request", "llm.ingress"]) {
     assert.deepEqual(transform(scope, chat), { ok: true, spec: chat }, scope);
   }
+  const egress = { applies_to: "llm.egress", redact_patterns: ["TCK-[0-9]{4}"], replacement: "[ticket]" };
+  for (const scope of ["llm", "llm.*", "llm.response", "llm.egress"]) {
+    assert.deepEqual(transform(scope, egress), { ok: true, spec: egress }, scope);
+  }
+  assert.match(transform("llm.request", egress).detail, /not a response scope/);
   assert.equal(isEnforceablePolicy("transform", "tool.*", JSON.stringify(tool)), true);
   assert.equal(isEnforceablePolicy("transform", "tool.*", "free text"), false);
 });
 
 test("a transform JSON object that is not a valid spec is refused with the reason", () => {
   for (const [body, reason] of [
-    [{ applies_to: "llm.egress", redact_patterns: ["x"] }, /tool\.args or llm\.ingress/],
+    [{ applies_to: "tool.result", redact_patterns: ["x"] }, /tool\.args, llm\.ingress or llm\.egress/],
     [{ applies_to: "tool.args", redact_patterns: [] }, /at least one/],
     [{ applies_to: "tool.args", redact_patterns: ["(?<=a)b"] }, /lookaround/],
     [{ applies_to: "tool.args", redact_patterns: ["x"], replacement: "" }, /replacement/],

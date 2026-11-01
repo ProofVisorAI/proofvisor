@@ -256,6 +256,22 @@ with demonstration data, which is what the public site shows by default.
 - **A pushed token budget that a completion overflows** is refused
   naming the console policy, as the admission-time check already did,
   and the stop-reason event carries the policy name.
+- **Transforms over model responses** (`applies_to: "llm.egress"`,
+  scope `llm.egress`, added late on 2026-11-01). A buffered response is
+  rewritten before it is journaled and before it is relayed, in its
+  content, reasoning and tool-call arguments; the capture lists the
+  transforms that fired with their replacement counts. A streamed
+  response is held until it is complete and then relayed rewritten,
+  with the provider's frame count, finish reason and usage intact (the
+  first content frame carries the whole rewritten text). The console
+  validates the spec and offers a "Redact in answers" template.
+- **Egress guardrails scan every part of a response**: the text, the
+  reasoning content and tool-call arguments, each named in the
+  refusal ("model reasoning matches deny pattern 1 of 1").
+- **Per-tool resource mapping for AuthZEN** (`[authzen.resources]` in
+  the daemon config): a tool name or pattern maps to the resource type,
+  id and properties a decision server's policies model; unmapped tools
+  keep the default `{"type": "tool", "id": <tool>}`.
 
 ## 7. Not yet, partial, or needs a decision
 
@@ -265,9 +281,6 @@ with demonstration data, which is what the public site shows by default.
   SCIM) were proposed during development and need a business decision
   before anyone turns them on; they contradict today's "every
   governance feature on Free" wording.
-- **Transforms do not rewrite model responses**, and guardrails do not
-  inspect reasoning content or tool calls in a response; only the
-  response text is scanned.
 - **Budget policies written before this release have no spec.** The
   pre-rename console stored budget policies as text only, so a daemon
   reports such a policy as unsupported ("budget policy has no JSON
@@ -285,13 +298,13 @@ with demonstration data, which is what the public site shows by default.
   API needs real keys and makes a few paid requests
   (`scripts/provider-smoke.py --allow-live-request --provider anthropic`
   or `gemini`).
-- **AuthZEN resource modelling.** The daemon's own AuthZEN client was
-  run against the public Topaz interop server and decided correctly
-  (allow and deny). The daemon always describes the resource as
-  `{"type": "tool", "id": <tool name>}`, so a decision server's policies
-  must model resources of type `tool`; the Cerbos demo policy, which
-  only models `todo` resources, denies every such request. A per-tool
-  resource mapping does not exist yet.
+- **AuthZEN against other public decision servers.** The daemon's own
+  AuthZEN client was run against the public Topaz interop server and
+  decided correctly (allow and deny). With `[authzen.resources]` a tool
+  can now be described as the resource type a server's policies model
+  (see section 6), but only Topaz has been exercised; the Cerbos demo
+  policy, which models `todo` resources, has not been re-run with a
+  mapping.
 - **Still tested with stand-ins only:** a real Cloud Foundry
   foundation, cloud object storage, and identity providers other than
   Keycloak (for example Okta and Entra ID).
@@ -391,6 +404,9 @@ every push to `main`.
 | `scripts/policy-push-e2e.mjs` ran only by hand | a step in the Console + API workflow (`console-api.yml`), after the daemon crash drill, with the same API and built binaries; the script now honours a signup `Retry-After` once | 36 of 36 locally |
 | Guardrails over model responses (`llm.egress`, previously refused by the console) | `crates/pv-harness/tests/e2e_policy_egress_and_transforms.rs`: a buffered response that matches is refused with 403 naming the policy and the matched text never reaches the client; a streamed match in the first frame is refused the same way; a later match ends the stream with an error frame, the completing frame withheld; each refusal is attested with the policy name. `scripts/policy-push-e2e.mjs`: a real daemon refuses a model response naming `privacy.no_codenames`, a clean response on the same session passes, and the console counts the block | 3 of 3; script 51 of 51 |
 | Transform policies (documentation only before) | same Rust file: an `llm.ingress` transform rewrites the chat request before the model sees it and the compression record names it with the replacement count; a `tool.args` transform rewrites the arguments before the backend sees them, leaves tools outside its scope alone, and leaves a body the strict parser refuses alone. Script: a real daemon forwards a rewritten tool call and the console shows the transform enforced. `server/ci/policy-spec.test.mjs`: the spec and its refusals | 2 of 2; script 51 of 51; 10 of 10 |
+| Transforms did not rewrite model responses | `crates/pv-harness/tests/e2e_policy_egress_transforms.rs`: a buffered response reaches the client with its ticket numbers replaced and the capture names the transform with two replacements; a streamed response is held and relayed rewritten with five frames, the finish reason and usage intact and no original text anywhere. `scripts/policy-push-e2e.mjs`: a real daemon relays a rewritten answer and the console shows the transform enforced | 2 of 2; script 55 of 55 |
+| Egress guardrails ignored reasoning and tool calls | same Rust file: a response whose reasoning names the codename is refused naming "model reasoning"; one whose tool-call arguments name it is refused naming "model tool call"; a clean response still passes | 1 of 1 |
+| No per-tool AuthZEN resource mapping | `crates/pv-harness/tests/e2e_identity_and_policy.rs`: an exact mapping sets type, id and properties, a pattern mapping sets the type and keeps the tool name as id, an unmapped tool keeps the documented default; the config validator refuses empty types and non-table properties | 1 of 1 |
 | Mid-stream budget refusal without the policy name | same Rust file: a completion that overflows a pushed `max_tokens` is refused with `policy "llm.token_cap": max_tokens exceeded (cap 120)` and the stop-reason event carries the policy | 1 of 1 |
 | Audit-log CSV export (tested only by the scheduled console-smoke drill) | `server/ci/e2e.mjs`: status and download headers, the `id,at,event,…` header row, the org's own `deployment.create` entry and actor email, no formula-leading cells, and the `audit.exported_csv` breadcrumb in the JSON audit log | 146 of 146 (was 141) |
 
@@ -422,3 +438,11 @@ script 51 of 51 against a locally booted API with the real daemon and
 `pvctl`; the 17-drill console battery 17 of 17 (the IP allow-list drill
 first hit the per-IP invitation rate limit left by the two invite drills
 before it, and passed on its own).
+
+After response transforms, part-aware egress guardrails and the AuthZEN
+resource mapping landed, on the same laptop: Rust workspace 1,762 tests
+passed, 0 failed, 3 ignored; `cargo fmt --check` and `cargo clippy
+--workspace --all-targets --all-features -D warnings` clean; API tests
+108 of 108 and the type check clean; contract suite 146 of 146;
+policy-push script 55 of 55 against a locally booted API with the real
+daemon and `pvctl`.

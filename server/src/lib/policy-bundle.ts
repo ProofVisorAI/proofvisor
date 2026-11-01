@@ -59,7 +59,7 @@ export const GUARDRAIL_MAX_PATTERN_BYTES = 512;
  * forwarded; a free-text body is documentation only.
  */
 export const TRANSFORM_KIND = "transform";
-export const TRANSFORM_APPLIES_TO = ["tool.args", "llm.ingress"] as const;
+export const TRANSFORM_APPLIES_TO = ["tool.args", "llm.ingress", "llm.egress"] as const;
 export const TRANSFORM_MAX_PATTERNS = 64;
 export const TRANSFORM_MAX_REPLACEMENT_BYTES = 64;
 
@@ -150,7 +150,7 @@ const transformSpec = z
   .object({
     applies_to: z
       .string()
-      .refine((v) => (TRANSFORM_APPLIES_TO as readonly string[]).includes(v), "applies_to must be tool.args or llm.ingress"),
+      .refine((v) => (TRANSFORM_APPLIES_TO as readonly string[]).includes(v), "applies_to must be tool.args, llm.ingress or llm.egress"),
     redact_patterns: z.array(redactPattern).min(1, "redact_patterns needs at least one pattern").max(TRANSFORM_MAX_PATTERNS),
     replacement: z
       .string()
@@ -355,6 +355,10 @@ function validateTransform(scope: string, body: string): SpecValidation {
   if (spec.applies_to === "tool.args") {
     if (!toolPatternFromScope(trimmed)) {
       return { ok: false, detail: `transform spec applies to tool.args but the policy scope "${scope}" is not a tool scope (use tool.* or tool.<name>)` };
+    }
+  } else if (spec.applies_to === "llm.egress") {
+    if (!["llm", "llm.*", "llm.response", "llm.egress"].includes(trimmed)) {
+      return { ok: false, detail: `transform spec applies to llm.egress but the policy scope "${scope}" is not a response scope (use llm.egress)` };
     }
   } else if (!["llm", "llm.*", "llm.request", "llm.ingress"].includes(trimmed)) {
     return { ok: false, detail: `transform spec applies to llm.ingress but the policy scope "${scope}" is not a model scope (use llm.request)` };

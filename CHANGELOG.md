@@ -311,6 +311,23 @@ exercised against release binaries in CI on every push
   has no JSON spec"). The console validates the spec on save, marks
   such a policy enforceable, and offers a "Redact before sending"
   template.
+- **Transforms over model responses.** A `transform` policy may set
+  `applies_to: "llm.egress"` (scope `llm.egress`). A buffered response
+  is rewritten in its content, reasoning and tool-call arguments before
+  it is journaled or relayed, and the capture lists the transforms that
+  fired (`payload.transforms`). A streamed response is held until it is
+  complete and relayed rewritten with the provider's own frames (first
+  content frame carries the whole text; ids, finish reason, usage and
+  `[DONE]` unchanged). The console validates the spec and offers a
+  "Redact in answers" template.
+- **Egress guardrails scan reasoning and tool calls** as well as the
+  response text, and the refusal names the part ("model reasoning
+  matches deny pattern 1 of 2").
+- **`[authzen.resources]`** maps a tool name or pattern to the resource
+  type, id and properties a decision server's policies model
+  (`{"type": "todo", "id": "todo"}` for `create_todo`); unmapped tools
+  keep the default `{"type": "tool", "id": <tool>}`. The backend and,
+  for mapped tools, the tool name are recorded in `properties`.
 - A pushed token budget that a provider's completion overflows is now
   refused naming the console policy (`policy "<name>": max_tokens
   exceeded (cap N)`), and the stop-reason event carries

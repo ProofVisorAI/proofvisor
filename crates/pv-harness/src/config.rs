@@ -864,6 +864,38 @@ pub struct AuthzenConfig {
     /// A timeout or error refuses the call with 503 (fail closed).
     #[serde(default = "default_authzen_timeout_ms")]
     pub timeout_ms: u64,
+    /// How tools are described to the decision point as resources,
+    /// keyed by tool name (`create_todo`) or tool pattern (`payments.*`).
+    /// A tool without an entry is `{"type": "tool", "id": "<tool>"}`.
+    /// An exact name wins over a pattern; patterns apply in key order.
+    ///
+    /// ```toml
+    /// [authzen.resources."create_todo"]
+    /// type = "todo"
+    /// id = "todo"
+    /// [authzen.resources."payments.*"]
+    /// type = "ledger"
+    /// properties = { region = "eu" }
+    /// ```
+    #[serde(default)]
+    pub resources: std::collections::BTreeMap<String, AuthzenResourceConfig>,
+}
+
+/// One entry of `[authzen.resources]`: the AuthZEN resource a tool maps
+/// to. The backend serving the tool is always added to `properties`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthzenResourceConfig {
+    /// Resource type the decision point's policies model (`todo`,
+    /// `ledger`). Required, 1 to 80 characters.
+    #[serde(rename = "type")]
+    pub resource_type: String,
+    /// Resource id; the tool name when absent.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Extra resource properties merged into the request.
+    #[serde(default)]
+    pub properties: Option<serde_json::Value>,
 }
 
 fn default_authzen_timeout_ms() -> u64 {
@@ -2480,6 +2512,27 @@ impl HarnessConfig {
                 .is_some_and(|path| path.trim().is_empty())
             {
                 errors.push("authzen.auth_file must not be empty".into());
+            }
+            for (key, resource) in &authzen.resources {
+                if key.trim().is_empty() || key.len() > 80 {
+                    errors.push("authzen.resources keys must be 1 to 80 characters".into());
+                }
+                let kind = resource.resource_type.trim();
+                if kind.is_empty() || kind.len() > 80 {
+                    errors.push(format!(
+                        "authzen.resources.{key:?}.type must be 1 to 80 characters"
+                    ));
+                }
+                if resource.id.as_deref().is_some_and(|id| id.trim().is_empty()) {
+                    errors.push(format!("authzen.resources.{key:?}.id must not be empty"));
+                }
+                if resource
+                    .properties
+                    .as_ref()
+                    .is_some_and(|properties| !properties.is_object())
+                {
+                    errors.push(format!("authzen.resources.{key:?}.properties must be a table"));
+                }
             }
         }
         if let Some(ref mission) = self.mission {

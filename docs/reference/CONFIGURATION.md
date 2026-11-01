@@ -452,6 +452,7 @@ echoes the request `id` and carries the machine-readable code in
 | `evaluations_endpoint` | none | Access Evaluations (batch) endpoint, used to filter `tools/list` in one request. Without it, `tools/list` sends one evaluation per tool. |
 | `auth_file` | none | File holding a bearer token for the PDP (owner-only permissions enforced). |
 | `timeout_ms` | `1000` | Per-request timeout, 1 to 10 000 ms. |
+| `resources` | none | How tools are described to the PDP as resources, keyed by tool name or pattern: `[authzen.resources."create_todo"]` with `type = "todo"`, optional `id` (the tool name when absent) and optional `properties` (a table merged into the request). An exact name wins over a pattern (`"payments.*"`); patterns apply in key order. A tool without an entry is sent as `{"type": "tool", "id": "<tool>"}`. The backend serving the tool is always added to `properties`, and the tool name too for mapped resources. |
 
 When `[authzen]` is set, every tool call that the intent map and missions
 permit is also evaluated by the PDP, before any budget is charged. The

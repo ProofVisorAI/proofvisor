@@ -306,8 +306,9 @@ How a daemon enforces a guardrail:
   "guardrail"`) naming the policy, and the frame that completed the
   match is never relayed. Either way the turn is attested as "Policy
   Blocked" with `payload.policy`, so the console counts the block.
-  Only the response text is scanned, not reasoning content or tool
-  calls.
+  The response text, the reasoning content and tool-call arguments are
+  all scanned; the refusal names the part that matched ("model
+  reasoning matches deny pattern 1 of 2").
 - The refusal, the log line and the audit event say which pattern
   (by position) matched and where (a JSON pointer); the matched text
   itself is never copied anywhere.
@@ -332,7 +333,7 @@ the reason "transform policy has no JSON spec").
 
 | Field | Meaning |
 | --- | --- |
-| `applies_to` | `tool.args`: every string value in the arguments of a tool call, for the tools the policy scope names. `llm.ingress`: every string value under `messages` in a chat request; the scope must be `llm`, `llm.*`, `llm.request` or `llm.ingress`. Model responses are not rewritten. |
+| `applies_to` | `tool.args`: every string value in the arguments of a tool call, for the tools the policy scope names. `llm.ingress`: every string value under `messages` in a chat request; the scope must be `llm`, `llm.*`, `llm.request` or `llm.ingress`. `llm.egress`: the text, reasoning content and tool-call arguments of every choice of a model response; the scope must be `llm`, `llm.*`, `llm.response` or `llm.egress`. |
 | `redact_patterns` | 1 to 64 regular expressions, with the same syntax and bounds as a guardrail's `deny_patterns`. Every match of every pattern is replaced. |
 | `replacement` | Optional; the text each match becomes, 1 to 64 bytes, no control characters. `[REDACTED]` when omitted. `$` is literal, never a group reference. |
 
@@ -348,6 +349,18 @@ How a daemon enforces a transform:
   budget and dispatch. The compression record for the turn lists the
   transforms that fired as `payload.transforms` (policy name and the
   number of replacements); the matched text is stored nowhere.
+- `llm.egress` rules run once the response is complete, after the
+  egress guardrails have seen the original text. A buffered response is
+  rewritten in its captured text and in the body before either is used,
+  so the journal and the client see the same rewritten text, and the
+  capture lists the transforms that fired (`payload.transforms`). A
+  streamed response is held (nothing is relayed while it arrives) and
+  then relayed with the provider's own frames: the first frame that
+  carried a choice's content carries the whole rewritten text and later
+  content deltas are empty; reasoning and tool-call argument deltas are
+  handled the same way, and ids, finish reasons, usage and `[DONE]` are
+  as the provider sent them. Streaming latency is therefore lost for
+  the deployments that push such a rule.
 - Every rewrite is logged with the policy name and counted in
   `pv_pushed_transform_rewrites_total`.
 - A transform never widens anything: it only removes text, and every

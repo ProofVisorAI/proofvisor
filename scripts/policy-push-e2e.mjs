@@ -102,7 +102,7 @@ const policies = {
     name: "procurement.vendors", kind: "schema", scope: "tool.create_purchase_order",
     body: JSON.stringify({ tool: "create_purchase_order", json_schema: { type: "object", required: ["vendor"], properties: { vendor: { enum: ["Contoso", "Fabrikam"] } } } }),
   },
-  rate: { name: "llm.velocity", kind: "rate", scope: "llm.request", body: '{"max_tokens_per_window":250,"window_s":3600}' },
+  rate: { name: "llm.velocity", kind: "rate", scope: "llm.request", body: '{"max_tokens_per_window":450,"window_s":3600}' },
   guard: {
     name: "privacy.pii_egress", kind: "guardrail", scope: "tool.*",
     body: JSON.stringify({ applies_to: "tool.args", deny_patterns: ["\\b[0-9]{3}-[0-9]{2}-[0-9]{4}\\b"], effect: "block" }),
@@ -112,6 +112,7 @@ const policies = {
   handbook: { name: "privacy.handbook", kind: "guardrail", scope: "llm.egress", body: "documentation only" },
   egress: { name: "privacy.no_codenames", kind: "guardrail", scope: "llm.egress", body: JSON.stringify({ applies_to: "llm.egress", deny_patterns: ["(?i)project\\s+nightjar"], effect: "block" }) },
   redact: { name: "privacy.redact_tickets", kind: "transform", scope: "tool.create_*", body: JSON.stringify({ applies_to: "tool.args", redact_patterns: ["TCK-[0-9]{4}"], replacement: "[ticket]" }) },
+  answers: { name: "privacy.redact_answers", kind: "transform", scope: "llm.egress", body: JSON.stringify({ applies_to: "llm.egress", redact_patterns: ["INV-[0-9]{4}"], replacement: "[invoice]" }) },
 };
 const ids = {};
 for (const [key, policy] of Object.entries(policies)) {
@@ -138,7 +139,7 @@ const llm = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
-    const content = /codename/.test(body) ? "The codename is Project Nightjar." : "ok";
+    const content = /codename/.test(body) ? "The codename is Project Nightjar." : /invoice/.test(body) ? "Invoice INV-2048 is overdue." : "ok";
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ id: "cc", object: "chat.completion", created: 1, model: "m", choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }], usage: { prompt_tokens: 40, completion_tokens: 10, total_tokens: 50 } }));
   });
@@ -245,8 +246,8 @@ const first = pull();
 check("pvctl pulls the bundle and reports the daemon's status", first.status === 0, first.stderr + first.stdout);
 check("the bundle file is owner-only", (readFileSync(bundleFile) && (await import("node:fs")).statSync(bundleFile).mode & 0o077) === 0);
 const status = JSON.parse(readFileSync(statusFile, "utf8"));
-check("the daemon applied the seven enforceable policies",
-  [ids.deny, ids.budget, ids.schema, ids.rate, ids.guard, ids.egress, ids.redact].every((id) => status.applied.includes(id)) && status.applied.length === 7,
+check("the daemon applied the eight enforceable policies",
+  [ids.deny, ids.budget, ids.schema, ids.rate, ids.guard, ids.egress, ids.redact, ids.answers].every((id) => status.applied.includes(id)) && status.applied.length === 8,
   JSON.stringify(status));
 check("the free-text guardrail is reported unsupported with a reason",
   status.unsupported.length === 1 && status.unsupported[0].id === ids.handbook && /no JSON spec/.test(status.unsupported[0].reason),
@@ -268,6 +269,9 @@ check("a model response matching privacy.no_codenames is refused before it reach
   leak.status === 403 && leak.text.includes("privacy.no_codenames") && !leak.text.includes("Nightjar"), leak.status + " " + leak.text.slice(0, 200));
 const clean = await chat("chat-egress", "hello");
 check("a clean response on the same session still passes", clean.status === 200 && clean.text.includes("\"ok\""), clean.status + " " + clean.text.slice(0, 120));
+const rewritten = await chat("chat-answers", "which invoice is overdue?");
+check("a model response covered by privacy.redact_answers reaches the agent rewritten",
+  rewritten.status === 200 && rewritten.text.includes("[invoice]") && !rewritten.text.includes("INV-2048"), rewritten.status + " " + rewritten.text.slice(0, 200));
 const badVendor = await callTool("s1", "create_purchase_order", { vendor: "Initech" });
 check("an unlisted vendor is blocked by procurement.vendors", blockedBy(badVendor).includes("procurement.vendors"), blockedBy(badVendor));
 const ok1 = await callTool("s1", "create_purchase_order", { vendor: "Contoso" });
@@ -317,6 +321,9 @@ check("the console shows the refused response as a block attributed to privacy.n
 check("the console shows the transform enforced by 1 of 1 daemon",
   listed.json.policies.find((p) => p.id === ids.redact).enforcement.applied === 1,
   JSON.stringify(listed.json.policies.find((p) => p.id === ids.redact).enforcement));
+check("the console shows the response transform enforced by 1 of 1 daemon",
+  listed.json.policies.find((p) => p.id === ids.answers).enforcement.applied === 1,
+  JSON.stringify(listed.json.policies.find((p) => p.id === ids.answers).enforcement));
 const deny = listed.json.policies.find((p) => p.id === ids.deny);
 check("the console shows the policy enforced by 1 of 1 daemon",
   deny.enforcement.deployments === 1 && deny.enforcement.applied === 1, JSON.stringify(deny.enforcement));

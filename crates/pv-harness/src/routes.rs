@@ -802,6 +802,11 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         failure_policy: None,
         emitted_any: false,
         egress_scanned: std::collections::BTreeMap::new(),
+        egress_scanned_reasoning: std::collections::BTreeMap::new(),
+        egress_scanned_tools: std::collections::BTreeMap::new(),
+        hold_stream: false,
+        held_frames: Vec::new(),
+        egress_transforms: Vec::new(),
         finalizer: state.finalizer.clone(),
         _lease: lease,
         response_marker,
@@ -832,6 +837,11 @@ async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, bod
         // id was generated server-side this request.
         ephemeral: !headers.contains_key(crate::pipeline::SESSION_HEADER),
     };
+    let mut stream = stream;
+    // A pushed transform over model responses needs the whole text
+    // before it can rewrite it: hold a streamed response until it is
+    // complete and relay it rewritten (see `hold_stream`).
+    stream.hold_stream = is_sse && stream.pushed.rewrites_responses();
     let mut response = if is_sse {
         // Peek the FIRST item before committing the response head: when
         // the first poll fails (empty 200 body, first frame invalid
@@ -1549,6 +1559,7 @@ async fn mcp_call_inner(
                     backend,
                     session,
                     &missions,
+                    authzen.resources(),
                 );
                 match authzen.evaluate(&evaluation).await {
                     Ok(crate::authzen::AuthzenDecision::Permit) => {
@@ -3677,6 +3688,19 @@ struct AbortFinalizingStream {
     /// Bytes of each choice's content the egress guardrails already
     /// scanned, so a streamed response is scanned incrementally.
     egress_scanned: std::collections::BTreeMap<u64, usize>,
+    /// Same, for each choice's reasoning text.
+    egress_scanned_reasoning: std::collections::BTreeMap<u64, usize>,
+    /// Same, for each tool call's arguments, by `(choice, call)`.
+    egress_scanned_tools: std::collections::BTreeMap<(u64, u64), usize>,
+    /// True when a console-pushed `llm.egress` transform is in force on
+    /// a streamed response: frames are held and relayed, rewritten,
+    /// once the response is complete (a match may straddle frames).
+    hold_stream: bool,
+    /// The frames held back while `hold_stream` is set, verbatim.
+    held_frames: Vec<String>,
+    /// `(policy, replacements)` for every egress transform that rewrote
+    /// this response, recorded in the capture payload.
+    egress_transforms: Vec<(String, usize)>,
     finalizer: crate::reconciler::Finalizer,
     _lease: crate::session::SessionLease,
     response_marker: Option<String>,
@@ -3802,6 +3826,9 @@ impl AbortFinalizingStream {
                 Ok(frame) => frame,
                 Err(error) => break Err(format!("provider SSE frame is not UTF-8: {error}")),
             };
+            if self.hold_stream {
+                self.held_frames.push(frame.to_owned());
+            }
             match self.absorb_frame(frame) {
                 Ok(delta) => match budget_delta.checked_add(delta) {
                     Some(total) => budget_delta = total,
@@ -3860,6 +3887,9 @@ impl AbortFinalizingStream {
         let frame = std::mem::take(&mut self.protocol_buffer);
         let frame = std::str::from_utf8(&frame)
             .map_err(|error| format!("provider response is not UTF-8: {error}"))?;
+        if self.hold_stream {
+            self.held_frames.push(frame.to_owned());
+        }
         self.absorb_frame(frame)
     }
 
@@ -4345,7 +4375,21 @@ impl AbortFinalizingStream {
                 session: Arc::clone(&self.session),
                 identity: self.identity.clone(),
                 class,
-                payload,
+                payload: {
+                    let mut payload = payload;
+                    if let (false, Some(object)) = (self.egress_transforms.is_empty(), payload.as_object_mut()) {
+                        object.insert(
+                            "transforms".to_owned(),
+                            Value::Array(
+                                self.egress_transforms
+                                    .iter()
+                                    .map(|(policy, replacements)| json!({"policy": policy, "replacements": replacements}))
+                                    .collect(),
+                            ),
+                        );
+                    }
+                    payload
+                },
                 text: analysis_text,
                 analyze_loop,
                 status,
@@ -4390,6 +4434,8 @@ enum BudgetContinuation {
     ContinueNonSse,
     FinishSse,
     FinishNonSse,
+    /// A held stream: keep reading, relay nothing yet.
+    Hold,
 }
 
 struct PendingBudget {
@@ -4626,6 +4672,17 @@ impl AbortFinalizingStream {
 /// caught by the full rescan at the end of the body.
 const EGRESS_SCAN_OVERLAP: usize = 1024;
 
+/// The part of `text` an incremental egress scan looks at: everything
+/// from [`EGRESS_SCAN_OVERLAP`] bytes before the already-scanned length,
+/// on a character boundary.
+fn scan_window(text: &str, scanned: usize) -> &str {
+    let mut start = scanned.saturating_sub(EGRESS_SCAN_OVERLAP).min(text.len());
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    text.get(start..).unwrap_or_default()
+}
+
 impl AbortFinalizingStream {
     /// The first console-pushed egress guardrail that refuses the text
     /// captured so far, as `(policy, reason)`. Scans only what arrived
@@ -4653,7 +4710,254 @@ impl AbortFinalizingStream {
             }
             self.egress_scanned.insert(*index, capture.content.len());
         }
+        // Reasoning text and tool-call arguments are scanned the same
+        // way: a model can leak through either.
+        for (index, capture) in &self.response_choices {
+            let scanned = if full {
+                0
+            } else {
+                self.egress_scanned_reasoning.get(index).copied().unwrap_or(0)
+            };
+            let window = scan_window(&capture.reasoning, scanned);
+            if let Some(hit) = self.pushed.refuses_response_part(window, "reasoning") {
+                return Some(hit);
+            }
+            self.egress_scanned_reasoning
+                .insert(*index, capture.reasoning.len());
+        }
+        for (key, call) in &self.response_tool_calls {
+            let scanned = if full {
+                0
+            } else {
+                self.egress_scanned_tools.get(key).copied().unwrap_or(0)
+            };
+            let window = scan_window(&call.arguments, scanned);
+            if let Some(hit) = self.pushed.refuses_response_part(window, "tool call") {
+                return Some(hit);
+            }
+            self.egress_scanned_tools.insert(*key, call.arguments.len());
+        }
         None
+    }
+
+    /// Apply the console-pushed `llm.egress` transforms to the captured
+    /// response (content, reasoning, tool-call arguments) and to the
+    /// bytes about to be relayed, so the journal and the client see the
+    /// same rewritten text. Called once, when the response is complete.
+    fn apply_egress_transforms(&mut self) {
+        if !self.pushed.rewrites_responses() {
+            return;
+        }
+        let mut applied: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut note = |hits: Vec<(String, usize)>| {
+            for (policy, count) in hits {
+                *applied.entry(policy).or_insert(0) += count;
+            }
+        };
+        for capture in self.response_choices.values_mut() {
+            note(self.pushed.rewrite_response_text(&mut capture.content));
+            note(self.pushed.rewrite_response_text(&mut capture.reasoning));
+        }
+        for call in self.response_tool_calls.values_mut() {
+            note(self.pushed.rewrite_response_text(&mut call.arguments));
+        }
+        if applied.is_empty() {
+            return;
+        }
+        self.egress_transforms = applied.into_iter().collect();
+        for (policy, replacements) in &self.egress_transforms {
+            tracing::info!(
+                session = %self.session.id,
+                %policy,
+                replacements,
+                "model response rewritten by a console-pushed transform"
+            );
+        }
+        if self.is_sse {
+            self.rewrite_held_frames();
+        } else {
+            self.rewrite_buffered_body();
+        }
+    }
+
+    /// Rewrite the buffered (non-streaming) body held in
+    /// `pending_output` with the rewritten captures.
+    fn rewrite_buffered_body(&mut self) {
+        let mut raw = Vec::new();
+        for chunk in &self.pending_output {
+            raw.extend_from_slice(chunk);
+        }
+        let Ok(mut body) = serde_json::from_slice::<Value>(&raw) else {
+            return;
+        };
+        let Some(choices) = body.get_mut("choices").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for (position, choice) in choices.iter_mut().enumerate() {
+            let index = choice
+                .get("index")
+                .and_then(Value::as_u64)
+                .or_else(|| u64::try_from(position).ok())
+                .unwrap_or(u64::MAX);
+            let Some(capture) = self.response_choices.get(&index) else {
+                continue;
+            };
+            if let Some(content) = choice.pointer_mut("/message/content") {
+                if content.is_string() {
+                    *content = Value::String(capture.content.clone());
+                } else if let Some(parts) = content.as_array_mut() {
+                    for part in parts {
+                        if let Some(text) = part.get_mut("text").and_then(|t| t.as_str().map(str::to_owned)) {
+                            let mut text = text;
+                            self.pushed.rewrite_response_text(&mut text);
+                            part["text"] = Value::String(text);
+                        }
+                    }
+                }
+            }
+            if let Some(reasoning) = choice.pointer_mut("/message/reasoning_content") {
+                if reasoning.is_string() {
+                    *reasoning = Value::String(capture.reasoning.clone());
+                }
+            }
+            if let Some(calls) = choice
+                .pointer_mut("/message/tool_calls")
+                .and_then(Value::as_array_mut)
+            {
+                for (call_position, call) in calls.iter_mut().enumerate() {
+                    let call_index = call
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .or_else(|| u64::try_from(call_position).ok())
+                        .unwrap_or(u64::MAX);
+                    let rewritten = self
+                        .response_tool_calls
+                        .get(&(index, call_index))
+                        .map(|partial| partial.arguments.clone());
+                    if let (Some(rewritten), Some(arguments)) =
+                        (rewritten, call.pointer_mut("/function/arguments"))
+                    {
+                        if arguments.is_string() {
+                            *arguments = Value::String(rewritten);
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(bytes) = serde_json::to_vec(&body) {
+            self.pending_output.clear();
+            self.pending_output.push_back(Bytes::from(bytes));
+        }
+    }
+
+    /// Replace the held SSE frames with rewritten ones: the first frame
+    /// that carries a choice's content gets the whole rewritten text and
+    /// later content deltas become empty, so frame count, ids, finish
+    /// reasons and usage stay as the provider sent them. Reasoning and
+    /// tool-call arguments are handled the same way.
+    fn rewrite_held_frames(&mut self) {
+        let frames = std::mem::take(&mut self.held_frames);
+        let mut content_done: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut reasoning_done: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut tools_done: std::collections::BTreeSet<(u64, u64)> = std::collections::BTreeSet::new();
+        self.pending_output.clear();
+        for frame in frames {
+            let rewritten =
+                self.rewrite_frame(&frame, &mut content_done, &mut reasoning_done, &mut tools_done);
+            self.pending_output.push_back(Bytes::from(rewritten));
+        }
+    }
+
+    fn rewrite_frame(
+        &self,
+        frame: &str,
+        content_done: &mut std::collections::BTreeSet<u64>,
+        reasoning_done: &mut std::collections::BTreeSet<u64>,
+        tools_done: &mut std::collections::BTreeSet<(u64, u64)>,
+    ) -> String {
+        // Only `data:` frames carrying a JSON object with choices are
+        // rewritten; everything else (`[DONE]`, comments, usage-only
+        // frames) is relayed verbatim.
+        let mut data_lines = Vec::new();
+        let mut other_lines = Vec::new();
+        for line in frame.lines() {
+            match line.strip_prefix("data:") {
+                Some(rest) => data_lines.push(rest.trim_start().to_owned()),
+                None => other_lines.push(line.to_owned()),
+            }
+        }
+        if data_lines.is_empty() {
+            return frame.to_owned();
+        }
+        let joined = data_lines.join("\n");
+        let Ok(mut value) = serde_json::from_str::<Value>(&joined) else {
+            return frame.to_owned();
+        };
+        let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) else {
+            return frame.to_owned();
+        };
+        for (position, choice) in choices.iter_mut().enumerate() {
+            let index = choice
+                .get("index")
+                .and_then(Value::as_u64)
+                .or_else(|| u64::try_from(position).ok())
+                .unwrap_or(u64::MAX);
+            if let Some(content) = choice.pointer_mut("/delta/content") {
+                if content.as_str().is_some_and(|text| !text.is_empty()) {
+                    *content = Value::String(if content_done.insert(index) {
+                        self.response_choices
+                            .get(&index)
+                            .map(|c| c.content.clone())
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    });
+                }
+            }
+            if let Some(reasoning) = choice.pointer_mut("/delta/reasoning_content") {
+                if reasoning.as_str().is_some_and(|text| !text.is_empty()) {
+                    *reasoning = Value::String(if reasoning_done.insert(index) {
+                        self.response_choices
+                            .get(&index)
+                            .map(|c| c.reasoning.clone())
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    });
+                }
+            }
+            if let Some(calls) = choice
+                .pointer_mut("/delta/tool_calls")
+                .and_then(Value::as_array_mut)
+            {
+                for call in calls.iter_mut() {
+                    let Some(call_index) = call.get("index").and_then(Value::as_u64) else {
+                        continue;
+                    };
+                    if let Some(arguments) = call.pointer_mut("/function/arguments") {
+                        if arguments.as_str().is_some_and(|text| !text.is_empty()) {
+                            *arguments = Value::String(if tools_done.insert((index, call_index)) {
+                                self.response_tool_calls
+                                    .get(&(index, call_index))
+                                    .map(|partial| partial.arguments.clone())
+                                    .unwrap_or_default()
+                            } else {
+                                String::new()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = String::new();
+        for line in other_lines {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out.push_str("data: ");
+        out.push_str(&value.to_string());
+        out.push_str("\n\n");
+        out
     }
 
     /// Refuse the response for an egress guardrail hit: attest the turn
@@ -4813,7 +5117,11 @@ impl Stream for AbortFinalizingStream {
                         )))));
                     }
                     self.completed = true;
-                    return Poll::Ready(None);
+                    return Poll::Ready(self.pending_output.pop_front().map(Ok));
+                }
+                BudgetContinuation::Hold => {
+                    context.waker().wake_by_ref();
+                    return Poll::Pending;
                 }
                 BudgetContinuation::FinishNonSse => {
                     if let Err(error) = self.submit_response_capture(None) {
@@ -4878,6 +5186,7 @@ impl Stream for AbortFinalizingStream {
                             let error = self.refuse_egress(policy, reason);
                             return Poll::Ready(Some(Err(error)));
                         }
+                        self.apply_egress_transforms();
                         if delta > 0 {
                             self.begin_budget_check(delta, BudgetContinuation::FinishNonSse);
                             context.waker().wake_by_ref();
@@ -4921,15 +5230,25 @@ impl Stream for AbortFinalizingStream {
         }
 
         if self.completed {
-            // An egress refusal mid-stream ended the body with an error
-            // frame; nothing more is relayed.
-            return Poll::Ready(None);
+            // After an egress refusal mid-stream (error frame sent) or a
+            // held stream relayed at the end, drain what is queued, then
+            // end.
+            return Poll::Ready(self.pending_output.pop_front().map(Ok));
         }
         match self.inner.as_mut().poll_next(context) {
             Poll::Ready(Some(Ok(bytes))) => match self.absorb_network_chunk(&bytes) {
                 Ok(delta) => {
                     if let Some((policy, reason)) = self.egress_refusal(false) {
                         return self.refuse_sse_egress(policy, reason);
+                    }
+                    if self.hold_stream {
+                        // Frames are kept in `held_frames`; nothing is
+                        // relayed until the response is complete.
+                        if delta > 0 {
+                            self.begin_budget_check(delta, BudgetContinuation::Hold);
+                        }
+                        context.waker().wake_by_ref();
+                        return Poll::Pending;
                     }
                     if delta == 0 {
                         self.emitted_any = true;
@@ -4964,6 +5283,17 @@ impl Stream for AbortFinalizingStream {
                 if let Some((policy, reason)) = self.egress_refusal(true) {
                     return self.refuse_sse_egress(policy, reason);
                 }
+                if self.hold_stream {
+                    // Relay the held frames now, rewritten where a
+                    // transform matched (verbatim otherwise).
+                    self.apply_egress_transforms();
+                    if self.pending_output.is_empty() {
+                        let frames = std::mem::take(&mut self.held_frames);
+                        for frame in frames {
+                            self.pending_output.push_back(Bytes::from(frame));
+                        }
+                    }
+                }
                 if delta > 0 {
                     self.begin_budget_check(delta, BudgetContinuation::FinishSse);
                     context.waker().wake_by_ref();
@@ -4990,7 +5320,7 @@ impl Stream for AbortFinalizingStream {
                     )))));
                 }
                 self.completed = true;
-                Poll::Ready(None)
+                Poll::Ready(self.pending_output.pop_front().map(Ok))
             }
         }
     }
@@ -7821,6 +8151,11 @@ mod tests {
             failure_policy: None,
             emitted_any: false,
             egress_scanned: std::collections::BTreeMap::new(),
+            egress_scanned_reasoning: std::collections::BTreeMap::new(),
+            egress_scanned_tools: std::collections::BTreeMap::new(),
+            hold_stream: false,
+            held_frames: Vec::new(),
+            egress_transforms: Vec::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -7924,6 +8259,11 @@ mod tests {
             failure_policy: None,
             emitted_any: false,
             egress_scanned: std::collections::BTreeMap::new(),
+            egress_scanned_reasoning: std::collections::BTreeMap::new(),
+            egress_scanned_tools: std::collections::BTreeMap::new(),
+            hold_stream: false,
+            held_frames: Vec::new(),
+            egress_transforms: Vec::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -8017,6 +8357,11 @@ mod tests {
             failure_policy: None,
             emitted_any: false,
             egress_scanned: std::collections::BTreeMap::new(),
+            egress_scanned_reasoning: std::collections::BTreeMap::new(),
+            egress_scanned_tools: std::collections::BTreeMap::new(),
+            hold_stream: false,
+            held_frames: Vec::new(),
+            egress_transforms: Vec::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),
@@ -8094,6 +8439,11 @@ mod tests {
             failure_policy: None,
             emitted_any: false,
             egress_scanned: std::collections::BTreeMap::new(),
+            egress_scanned_reasoning: std::collections::BTreeMap::new(),
+            egress_scanned_tools: std::collections::BTreeMap::new(),
+            hold_stream: false,
+            held_frames: Vec::new(),
+            egress_transforms: Vec::new(),
             billed_prompt_tokens: 0,
             principal_budget: None,
             finalizer: state.finalizer.clone(),

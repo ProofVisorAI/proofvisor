@@ -363,12 +363,19 @@ impl PushedGuardrail {
     /// refused, if it is. Only the pattern position is reported, never
     /// the matched text.
     pub fn refuses_response(&self, text: &str) -> Option<String> {
+        self.refuses_response_part(text, "response")
+    }
+
+    /// Like [`Self::refuses_response`] for one part of a response:
+    /// `what` names it in the reason (`response`, `reasoning`,
+    /// `tool call`).
+    pub fn refuses_response_part(&self, text: &str, what: &str) -> Option<String> {
         if self.target != GuardrailTarget::LlmEgress {
             return None;
         }
         let index = self.patterns.iter().position(|pattern| pattern.is_match(text))?;
         Some(format!(
-            "model response matches deny pattern {} of {}",
+            "model {what} matches deny pattern {} of {}",
             index + 1,
             self.patterns.len()
         ))
@@ -382,6 +389,10 @@ pub enum TransformTarget {
     ToolArgs,
     /// Every string value under `messages` of a chat request.
     LlmIngress,
+    /// The text of a model response: every choice's content, reasoning
+    /// and tool-call arguments, rewritten before the response is
+    /// journaled or relayed.
+    LlmEgress,
 }
 
 impl TransformTarget {
@@ -390,7 +401,10 @@ impl TransformTarget {
         match applies_to {
             "tool.args" => Ok(Self::ToolArgs),
             "llm.ingress" => Ok(Self::LlmIngress),
-            other => Err(format!("applies_to {other:?} is not tool.args or llm.ingress")),
+            "llm.egress" => Ok(Self::LlmEgress),
+            other => Err(format!(
+                "applies_to {other:?} is not tool.args, llm.ingress or llm.egress"
+            )),
         }
     }
 }
@@ -523,6 +537,25 @@ impl PushedTransform {
             None => 0,
         }
     }
+
+    /// True for a rule over model responses.
+    pub fn rewrites_responses(&self) -> bool {
+        self.target == TransformTarget::LlmEgress
+    }
+
+    /// Rewrite one piece of response text in place. Returns how many
+    /// matches were replaced.
+    pub fn apply_to_response_text(&self, text: &mut String) -> usize {
+        if self.target != TransformTarget::LlmEgress {
+            return 0;
+        }
+        let mut value = Value::String(std::mem::take(text));
+        let replaced = self.rewrite(&mut value);
+        if let Value::String(rewritten) = value {
+            *text = rewritten;
+        }
+        replaced
+    }
 }
 
 /// Everything the daemon applied from one console bundle.
@@ -554,10 +587,35 @@ impl PushedRules {
     /// The first egress guardrail that refuses a response whose captured
     /// text is `text`, as `(policy name, reason)`.
     pub fn refuses_response(&self, text: &str) -> Option<(String, String)> {
+        self.refuses_response_part(text, "response")
+    }
+
+    /// Like [`Self::refuses_response`] for one part of a response
+    /// (`response`, `reasoning`, `tool call`).
+    pub fn refuses_response_part(&self, text: &str, what: &str) -> Option<(String, String)> {
         self.guardrails.iter().find_map(|rule| {
-            rule.refuses_response(text)
+            rule.refuses_response_part(text, what)
                 .map(|reason| (rule.policy.clone(), format!("policy {:?}: {reason}", rule.policy)))
         })
+    }
+
+    /// True when any transform rewrites model responses, so a relay can
+    /// skip the rewrite (and keep streaming) otherwise.
+    pub fn rewrites_responses(&self) -> bool {
+        self.transforms.iter().any(PushedTransform::rewrites_responses)
+    }
+
+    /// Apply every `llm.egress` transform to one piece of response text,
+    /// in bundle order. Returns `(policy, replacements)` for each rule
+    /// that replaced something.
+    pub fn rewrite_response_text(&self, text: &mut String) -> Vec<(String, usize)> {
+        self.transforms
+            .iter()
+            .filter_map(|rule| {
+                let replacements = rule.apply_to_response_text(text);
+                (replacements > 0).then(|| (rule.policy.clone(), replacements))
+            })
+            .collect()
     }
 
     /// Which pushed budget policy set the cap a refusal hit, when the
@@ -795,10 +853,68 @@ mod tests {
         let many: Vec<String> = (0..=MAX_TRANSFORM_PATTERNS).map(|i| format!("p{i}")).collect();
         let err = PushedTransform::compile("p", TransformTarget::LlmIngress, None, &many, None).unwrap_err();
         assert!(err.contains("at most 64"), "{err}");
-        assert!(TransformTarget::parse("llm.egress").is_err());
+        assert_eq!(
+            TransformTarget::parse("llm.egress").unwrap(),
+            TransformTarget::LlmEgress
+        );
+        assert!(TransformTarget::parse("tool.result").is_err());
         assert_eq!(
             GuardrailTarget::parse("llm.egress").unwrap(),
             GuardrailTarget::LlmEgress
+        );
+    }
+
+    #[test]
+    fn egress_transforms_rewrite_response_text_only() {
+        let rule = PushedTransform::compile(
+            "privacy.redact_answers",
+            TransformTarget::LlmEgress,
+            None,
+            &["TCK-[0-9]{4}".to_owned()],
+            Some("[ticket]"),
+        )
+        .unwrap();
+        assert!(rule.rewrites_responses());
+        let mut text = "see TCK-1234 and TCK-9999".to_owned();
+        assert_eq!(rule.apply_to_response_text(&mut text), 2);
+        assert_eq!(text, "see [ticket] and [ticket]");
+        assert_eq!(rule.apply_to_response_text(&mut text), 0);
+        // Not a request rule: chat and tool payloads are untouched.
+        let mut payload = json!({"messages": [{"content": "TCK-1234"}]});
+        assert_eq!(rule.apply_to_chat(&mut payload), 0);
+        let mut arguments = json!({"a": "TCK-1234"});
+        assert_eq!(rule.apply_to_tool_call("create_ticket", &mut arguments), 0);
+
+        let mut rules = PushedRules::default();
+        assert!(!rules.rewrites_responses());
+        rules.transforms.push(rule);
+        rules.transforms.push(
+            PushedTransform::compile(
+                "privacy.redact_codenames",
+                TransformTarget::LlmEgress,
+                None,
+                &["(?i)nightjar".to_owned()],
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(rules.rewrites_responses());
+        let mut answer = "TCK-0001 is part of Nightjar".to_owned();
+        assert_eq!(
+            rules.rewrite_response_text(&mut answer),
+            vec![
+                ("privacy.redact_answers".to_owned(), 1),
+                ("privacy.redact_codenames".to_owned(), 1)
+            ]
+        );
+        assert_eq!(answer, "[ticket] is part of [REDACTED]");
+        assert!(rules.rewrite_response_text(&mut String::new()).is_empty());
+        // Guardrail reasons name the part that matched.
+        let guard =
+            PushedGuardrail::compile("g", GuardrailTarget::LlmEgress, None, &["x".to_owned()]).unwrap();
+        assert_eq!(
+            guard.refuses_response_part("x", "reasoning").as_deref(),
+            Some("model reasoning matches deny pattern 1 of 1")
         );
     }
 

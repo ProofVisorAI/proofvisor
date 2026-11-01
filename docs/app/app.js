@@ -3783,7 +3783,7 @@
     rate: { label: "Rate limit", enforceable: true, blurb: "Token velocity per principal inside a time window." },
     schema: { label: "Tool schema", enforceable: true, blurb: "A JSON Schema every call of one tool must satisfy." },
     guardrail: { label: "Guardrail", enforceable: false, blurb: "Patterns that must not appear in tool arguments, chat requests or model responses. Enforced by daemons when the definition is the JSON spec; free text is documentation only." },
-    transform: { label: "Transform", enforceable: false, blurb: "Patterns replaced in tool arguments or chat requests before the call is journaled or forwarded. Enforced by daemons when the definition is the JSON spec; free text is documentation only." },
+    transform: { label: "Transform", enforceable: false, blurb: "Patterns replaced in tool arguments, chat requests or model answers before they are journaled or forwarded. Enforced by daemons when the definition is the JSON spec; free text is documentation only." },
   };
   function kindEnforceable(kind) {
     return window.pvIsEnforceableKind ? window.pvIsEnforceableKind(kind) : !!(POLICY_KIND_INFO[kind] && POLICY_KIND_INFO[kind].enforceable);
@@ -4018,6 +4018,25 @@
       },
     },
     {
+      id: "redact_answers",
+      label: "✂️ Redact in answers",
+      hint: "Replace ticket numbers in model answers before the agent sees them",
+      kind: "transform",
+      scope: "llm.egress",
+      param: null,
+      build: function () {
+        return {
+          name: "privacy.redact_answers",
+          description: "Replace every internal ticket number in a model answer with [ticket] before the answer is journaled or relayed to the agent. A streamed answer is held and relayed once it is complete.",
+          spec: {
+            applies_to: "llm.egress",
+            redact_patterns: ["\\bTCK-[0-9]{4,}\\b"],
+            replacement: "[ticket]",
+          },
+        };
+      },
+    },
+    {
       id: "redact_emails",
       label: "✂️ Redact before sending",
       hint: "Replace e-mail addresses in prompts before they reach the model",
@@ -4049,7 +4068,7 @@
     if (kind === "guardrail")
       return "This guardrail is documentation only: its definition is free text. Daemons enforce a guardrail whose definition is the JSON spec {\"applies_to\": \"tool.args\", \"llm.ingress\" or \"llm.egress\", \"deny_patterns\": [regular expressions]}; hits attributed to this name keep counting here.";
     if (kind === "transform")
-      return "This transform is documentation only: its definition is free text. Daemons enforce a transform whose definition is the JSON spec {\"applies_to\": \"tool.args\" or \"llm.ingress\", \"redact_patterns\": [regular expressions], \"replacement\": text}; every match is replaced before the call is journaled or forwarded.";
+      return "This transform is documentation only: its definition is free text. Daemons enforce a transform whose definition is the JSON spec {\"applies_to\": \"tool.args\", \"llm.ingress\" or \"llm.egress\", \"redact_patterns\": [regular expressions], \"replacement\": text}; every match is replaced before the call or answer is journaled or forwarded.";
     return "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
   }
 
@@ -4394,7 +4413,7 @@
       : p.kind === "guardrail"
         ? "A definition that is the JSON spec ({\"applies_to\": \"tool.args\", \"llm.ingress\" or \"llm.egress\", \"deny_patterns\": [regular expressions]}) is enforced by every daemon on its next policy pull; free text is documentation only. The policy ID and its hit history stay put."
         : p.kind === "transform"
-          ? "A definition that is the JSON spec ({\"applies_to\": \"tool.args\" or \"llm.ingress\", \"redact_patterns\": [regular expressions], \"replacement\": text}) is enforced by every daemon on its next policy pull; free text is documentation only. The policy ID and its hit history stay put."
+          ? "A definition that is the JSON spec ({\"applies_to\": \"tool.args\", \"llm.ingress\" or \"llm.egress\", \"redact_patterns\": [regular expressions], \"replacement\": text}) is enforced by every daemon on its next policy pull; free text is documentation only. The policy ID and its hit history stay put."
           : "This " + esc(p.kind) + " policy is documentation: daemons do not enforce it, but hits they attribute to its name keep counting here.";
     var backdrop = h(
       '<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal modal-wide">' +

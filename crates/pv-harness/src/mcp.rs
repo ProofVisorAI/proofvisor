@@ -721,6 +721,7 @@ async fn list_tools(
                 backend.as_deref(),
                 agent_session,
                 &missions,
+                authzen.resources(),
             )
         })
         .collect();

@@ -43,6 +43,69 @@ pub struct AuthzenClient {
     evaluations_endpoint: Option<String>,
     authorization: Option<HeaderValue>,
     timeout: std::time::Duration,
+    /// `[authzen.resources]`, compiled: exact names and patterns.
+    resources: ResourceMap,
+}
+
+/// The compiled `[authzen.resources]` table.
+#[derive(Debug, Clone, Default)]
+pub struct ResourceMap {
+    exact: std::collections::BTreeMap<String, crate::config::AuthzenResourceConfig>,
+    patterns: Vec<(pv_sandbox::ToolPattern, crate::config::AuthzenResourceConfig)>,
+}
+
+impl ResourceMap {
+    /// Compile the configured table. Keys with `*` become patterns.
+    pub fn from_config(
+        resources: &std::collections::BTreeMap<String, crate::config::AuthzenResourceConfig>,
+    ) -> Self {
+        let mut map = Self::default();
+        for (key, resource) in resources {
+            if key.contains('*') {
+                if let Some(pattern) = pv_sandbox::ToolPattern::from_scope(&format!("tool.{key}")) {
+                    map.patterns.push((pattern, resource.clone()));
+                }
+            } else {
+                map.exact.insert(key.clone(), resource.clone());
+            }
+        }
+        map
+    }
+
+    /// The resource description for `tool`: the mapped entry, or the
+    /// default `{"type": "tool", "id": <tool>}`. `backend` is always
+    /// recorded in `properties`.
+    pub fn resource_for(&self, tool: &str, backend: Option<&str>) -> AuthzResource {
+        let mapped = self.exact.get(tool).or_else(|| {
+            self.patterns
+                .iter()
+                .find(|(pattern, _)| pattern.matches(tool))
+                .map(|(_, resource)| resource)
+        });
+        let mut properties = match mapped.and_then(|resource| resource.properties.clone()) {
+            Some(Value::Object(fields)) => fields,
+            _ => serde_json::Map::new(),
+        };
+        properties
+            .entry("backend".to_owned())
+            .or_insert_with(|| json!(backend));
+        // A mapped resource may carry an id that is not the tool name, so
+        // the tool is named in the properties; an unmapped tool keeps the
+        // documented default shape exactly.
+        if mapped.is_some() {
+            properties
+                .entry("tool".to_owned())
+                .or_insert_with(|| Value::String(tool.to_owned()));
+        }
+        AuthzResource {
+            id: mapped
+                .and_then(|resource| resource.id.clone())
+                .unwrap_or_else(|| tool.to_owned()),
+            resource_type: mapped
+                .map_or_else(|| "tool".to_owned(), |resource| resource.resource_type.clone()),
+            properties: Some(Value::Object(properties)),
+        }
+    }
 }
 
 impl AuthzenClient {
@@ -66,7 +129,13 @@ impl AuthzenClient {
             evaluations_endpoint: config.evaluations_endpoint.clone(),
             authorization,
             timeout: std::time::Duration::from_millis(config.timeout_ms),
+            resources: ResourceMap::from_config(&config.resources),
         })
+    }
+
+    /// The compiled `[authzen.resources]` table.
+    pub fn resources(&self) -> &ResourceMap {
+        &self.resources
     }
 
     async fn post(&self, endpoint: &str, body: &Value) -> Result<Value, String> {
@@ -210,6 +279,7 @@ pub(crate) fn evaluation_request(
     backend: Option<&str>,
     session: Option<&str>,
     missions: &[String],
+    resources: &ResourceMap,
 ) -> AuthzEvalRequest {
     let (subject_type, subject_id, properties) = match &caller.validated {
         Some(validated) => (
@@ -243,11 +313,7 @@ pub(crate) fn evaluation_request(
             name: intent.to_owned(),
             properties: Some(json!({"tool": tool})),
         },
-        resource: AuthzResource {
-            id: tool.to_owned(),
-            resource_type: "tool".to_owned(),
-            properties: Some(json!({"backend": backend})),
-        },
+        resource: resources.resource_for(tool, backend),
         context: Some(json!({
             "session_id": session,
             "missions": missions,
@@ -461,6 +527,7 @@ mod tests {
                 evaluations_endpoint: batch.then(|| format!("{base}/access/v1/evaluations")),
                 auth_file: None,
                 timeout_ms: 2_000,
+                resources: Default::default(),
             },
             reqwest::Client::new(),
         )

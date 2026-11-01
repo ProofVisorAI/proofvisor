@@ -434,6 +434,7 @@ fn authzen(base: &str, batch: bool) -> AuthzenConfig {
         evaluations_endpoint: batch.then(|| format!("{base}/access/v1/evaluations")),
         auth_file: None,
         timeout_ms: 2_000,
+        resources: Default::default(),
     }
 }
 
@@ -515,6 +516,78 @@ async fn authzen_against_the_public_topaz_interop_pdp() {
     );
 }
 
+/// `[authzen.resources]` maps a tool to the resource type and id the
+/// decision point's policies model: an exact name, a pattern, or the
+/// documented default when neither matches.
+#[tokio::test]
+async fn authzen_resources_map_tools_to_the_pdp_resource_model() {
+    let pdp = Pdp::default();
+    let base = start_pdp(pdp.clone()).await;
+    let upstream = common::MockBackend::start().await;
+    let (state, _dir) = gateway(
+        vec![backend(
+            "svc",
+            &upstream.url,
+            &["create_todo", "pay_invoice", "read"],
+        )],
+        |config| {
+            let mut authzen = authzen(&base, false);
+            authzen.resources.insert(
+                "create_todo".into(),
+                pv_harness::config::AuthzenResourceConfig {
+                    resource_type: "todo".into(),
+                    id: Some("todo".into()),
+                    properties: Some(json!({"team": "ops"})),
+                },
+            );
+            authzen.resources.insert(
+                "pay_*".into(),
+                pv_harness::config::AuthzenResourceConfig {
+                    resource_type: "ledger".into(),
+                    id: None,
+                    properties: None,
+                },
+            );
+            config.authzen = Some(authzen);
+        },
+    );
+    let bearer = token(&state, "user:ana@acme.io", "inst-a", &["tool:*"], "j-map");
+
+    assert_eq!(
+        send(&state, tool_call(&bearer, "m-1", "create_todo", 1))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        send(&state, tool_call(&bearer, "m-2", "pay_invoice", 2))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        send(&state, tool_call(&bearer, "m-3", "read", 3)).await.status,
+        200
+    );
+    let requests = pdp.requests.lock().clone();
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert_eq!(
+        requests[0].1["resource"],
+        json!({"type": "todo", "id": "todo", "properties": {"team": "ops", "backend": "svc", "tool": "create_todo"}}),
+        "an exact mapping sets the type, the id and extra properties"
+    );
+    assert_eq!(
+        requests[1].1["resource"],
+        json!({"type": "ledger", "id": "pay_invoice", "properties": {"backend": "svc", "tool": "pay_invoice"}}),
+        "a pattern mapping keeps the tool name as the id"
+    );
+    assert_eq!(
+        requests[2].1["resource"],
+        json!({"type": "tool", "id": "read", "properties": {"backend": "svc"}}),
+        "an unmapped tool keeps the documented default"
+    );
+}
+
 #[tokio::test]
 async fn an_unreachable_authzen_pdp_fails_closed() {
     let base = start_pdp(Pdp {
@@ -578,6 +651,7 @@ fn authzen_configuration_is_validated() {
         evaluations_endpoint: None,
         auth_file: None,
         timeout_ms: 0,
+        resources: Default::default(),
     });
     let error = config.validate().unwrap_err();
     assert!(error.contains("authzen.evaluation_endpoint"), "{error}");

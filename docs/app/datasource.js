@@ -336,7 +336,7 @@
    *   rate      {"max_tokens_per_window": n, "window_s": n}
    *   schema    {"tool": "<name>", "json_schema": {…}}
    *   guardrail {"applies_to": "tool.args"|"llm.ingress"|"llm.egress", "deny_patterns": ["<regex>", …], "effect": "block"}
-   *   transform {"applies_to": "tool.args"|"llm.ingress", "redact_patterns": ["<regex>", …], "replacement": "<text>"}
+   *   transform {"applies_to": "tool.args"|"llm.ingress"|"llm.egress", "redact_patterns": ["<regex>", …], "replacement": "<text>"}
    * A guardrail or transform is enforceable per policy: that JSON spec
    * is pushed to daemons; a free-text body is documentation only. The
    * console validates before saving (same messages as the server) so a
@@ -346,7 +346,7 @@
   var PV_GUARDRAIL_APPLIES_TO = ["tool.args", "llm.ingress", "llm.egress"];
   var PV_GUARDRAIL_MAX_PATTERNS = 64;
   var PV_GUARDRAIL_MAX_PATTERN_BYTES = 512;
-  var PV_TRANSFORM_APPLIES_TO = ["tool.args", "llm.ingress"];
+  var PV_TRANSFORM_APPLIES_TO = ["tool.args", "llm.ingress", "llm.egress"];
   var PV_TRANSFORM_MAX_PATTERNS = 64;
   var PV_TRANSFORM_MAX_REPLACEMENT_BYTES = 64;
   // Rust regex syntax has no lookaround and no backreferences.
@@ -385,7 +385,7 @@
     try { parsed = JSON.parse(body); } catch (e) { return { ok: false, detail: "transform body looks like a JSON spec but is not valid JSON (" + e.message + "); write free text to keep it documentation only" }; }
     var keys = Object.keys(parsed);
     for (var k = 0; k < keys.length; k++) if (["applies_to", "redact_patterns", "replacement"].indexOf(keys[k]) < 0) return { ok: false, detail: "transform spec: unknown field \"" + keys[k] + "\" (allowed: applies_to, redact_patterns, replacement)" };
-    if (PV_TRANSFORM_APPLIES_TO.indexOf(parsed.applies_to) < 0) return { ok: false, detail: "transform spec: applies_to must be tool.args or llm.ingress" };
+    if (PV_TRANSFORM_APPLIES_TO.indexOf(parsed.applies_to) < 0) return { ok: false, detail: "transform spec: applies_to must be tool.args, llm.ingress or llm.egress" };
     if (!Array.isArray(parsed.redact_patterns) || !parsed.redact_patterns.length) return { ok: false, detail: "transform spec: redact_patterns needs at least one pattern" };
     if (parsed.redact_patterns.length > PV_TRANSFORM_MAX_PATTERNS) return { ok: false, detail: "transform spec: redact_patterns may hold at most " + PV_TRANSFORM_MAX_PATTERNS + " patterns" };
     for (var i = 0; i < parsed.redact_patterns.length; i++) {
@@ -402,6 +402,8 @@
     var sc = String(scope || "").trim();
     if (parsed.applies_to === "tool.args") {
       if (!pvToolPattern(sc)) return { ok: false, detail: "transform spec applies to tool.args but the policy scope \"" + scope + "\" is not a tool scope (use tool.* or tool.<name>)" };
+    } else if (parsed.applies_to === "llm.egress") {
+      if (["llm", "llm.*", "llm.response", "llm.egress"].indexOf(sc) < 0) return { ok: false, detail: "transform spec applies to llm.egress but the policy scope \"" + scope + "\" is not a response scope (use llm.egress)" };
     } else if (["llm", "llm.*", "llm.request", "llm.ingress"].indexOf(sc) < 0) {
       return { ok: false, detail: "transform spec applies to llm.ingress but the policy scope \"" + scope + "\" is not a model scope (use llm.request)" };
     }

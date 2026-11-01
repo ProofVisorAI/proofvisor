@@ -22,8 +22,8 @@
 //! Kinds: `budget`, `allowlist`, `schema` (tool calls), `rate`
 //! (per-principal token velocity on model traffic), `guardrail` (deny
 //! patterns over tool arguments, chat requests or model responses) and
-//! `transform` (redaction of tool arguments or chat requests before
-//! forwarding) are enforced when the body is the JSON spec. A
+//! `transform` (redaction of tool arguments, chat requests or model
+//! responses) are enforced when the body is the JSON spec. A
 //! `guardrail` or `transform` with a free-text body is reported
 //! unsupported with that reason. Anything else is reported unsupported.
 
@@ -383,7 +383,7 @@ fn compile_transform(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(
     let target = spec
         .get("applies_to")
         .and_then(Value::as_str)
-        .ok_or_else(|| "applies_to must be tool.args or llm.ingress".to_owned())
+        .ok_or_else(|| "applies_to must be tool.args, llm.ingress or llm.egress".to_owned())
         .and_then(TransformTarget::parse)?;
     let scope = match target {
         TransformTarget::ToolArgs => Some(
@@ -395,6 +395,15 @@ fn compile_transform(policy: &BundlePolicy, rules: &mut PushedRules) -> Result<(
             if !matches!(scope, "llm" | "llm.*" | "llm.request" | "llm.ingress") {
                 return Err(format!(
                     "transform applies to llm.ingress; scope {scope:?} is not llm.request"
+                ));
+            }
+            None
+        }
+        TransformTarget::LlmEgress => {
+            let scope = policy.scope.trim();
+            if !matches!(scope, "llm" | "llm.*" | "llm.response" | "llm.egress") {
+                return Err(format!(
+                    "transform applies to llm.egress; scope {scope:?} is not llm.egress"
                 ));
             }
             None
@@ -844,6 +853,12 @@ mod tests {
                 json!({"applies_to": "llm.ingress", "redact_patterns": ["(?i)nightjar"]}),
             ),
             policy(
+                "tr3",
+                "transform",
+                "llm.egress",
+                json!({"applies_to": "llm.egress", "redact_patterns": ["TCK-[0-9]+"], "replacement": "[ticket]"}),
+            ),
+            policy(
                 "x9",
                 "guardrail",
                 "tool.*",
@@ -900,7 +915,7 @@ mod tests {
         ]));
         assert_eq!(
             compiled.applied,
-            vec!["b1", "b2", "a1", "s1", "r1", "g1", "g2", "g3", "tr1", "tr2"]
+            vec!["b1", "b2", "a1", "s1", "r1", "g1", "g2", "g3", "tr1", "tr2", "tr3"]
         );
         let refused: Vec<&str> = compiled.unsupported.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(
@@ -929,11 +944,7 @@ mod tests {
         );
         assert!(reason("x9").contains("is not llm.egress"), "{}", reason("x9"));
         assert!(reason("x14").contains("does not name tools"), "{}", reason("x14"));
-        assert!(
-            reason("x15").contains("not tool.args or llm.ingress"),
-            "{}",
-            reason("x15")
-        );
+        assert!(reason("x15").contains("is not llm.egress"), "{}", reason("x15"));
         assert!(reason("x16").contains("is not a string"), "{}", reason("x16"));
         assert!(
             reason("x17").contains("redact pattern 1 does not compile"),
@@ -950,7 +961,8 @@ mod tests {
         assert!(reason("x13").contains("effect"), "{}", reason("x13"));
         assert_eq!(compiled.rules.guardrails.len(), 3);
         assert!(compiled.rules.inspects_responses());
-        assert_eq!(compiled.rules.transforms.len(), 2);
+        assert_eq!(compiled.rules.transforms.len(), 3);
+        assert!(compiled.rules.rewrites_responses());
         // Two budgets merge, stricter wins.
         assert_eq!(compiled.rules.budget.max_total_tool_calls, Some(5));
         assert_eq!(compiled.rules.budget.max_payout_usd_micros, Some(1_000_000));
