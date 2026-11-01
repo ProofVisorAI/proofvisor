@@ -1445,6 +1445,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tpl-chip .tpl-label { font-size: var(--t-body); font-weight: 600; color: var(--fg); }
 .tpl-chip .tpl-hint { font-size: 11.5px; color: var(--fg-3); line-height: 1.35; }
 .tpl-chip input:checked + .tpl-body { border-color: var(--accent); background: var(--accent-bg); }
+/* On the tinted (checked) chip the hint's muted grey drops under 4.5:1 in
+   the light theme; use the next darker tone there (axe color-contrast). */
+.tpl-chip input:checked + .tpl-body .tpl-hint { color: var(--fg-2); }
 .tpl-chip input:focus-visible + .tpl-body { outline: 2px solid var(--accent); outline-offset: 2px; }
 .policy-preview { margin: 0; max-height: 180px; overflow: auto; }
 @media (max-width: 640px) { .tpl-row { grid-template-columns: 1fr; } }
