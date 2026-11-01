@@ -261,7 +261,7 @@ def run(args):
                 raise RuntimeError("Owned daemon did not become ready")
             time.sleep(0.05)
         now = int(time.time())
-        claims = {"iss": "expiry-fixture", "aud": "proofvisor", "sub": "fixture-user",
+        claims = {"iss": "expiry-fixture", "aud": "agentvisor-ai", "sub": "fixture-user",
                   "jti": uuid.uuid4().hex, "iat": now, "exp": now + 600,
                   "instance_uid": "fixture-instance", "version": "1", "charter": "test",
                   "scopes": ["tool:read"]}

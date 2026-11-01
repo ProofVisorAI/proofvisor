@@ -93,7 +93,7 @@ function mint(secret, scopes) {
   const now = Math.floor(Date.now() / 1000);
   const header = b64(JSON.stringify({ alg: "HS256", typ: "JWT", kid: "dev-hmac" }));
   const claims = b64(JSON.stringify({
-    iss: "mcp-client-interop", aud: "proofvisor", sub: "user:sdk@example.test",
+    iss: "mcp-client-interop", aud: "agentvisor-ai", sub: "user:sdk@example.test",
     jti: crypto.randomUUID(), iat: now, exp: now + 600,
     instance_uid: "agent-sdk-1", version: "1", charter: "interop", scopes,
   }));

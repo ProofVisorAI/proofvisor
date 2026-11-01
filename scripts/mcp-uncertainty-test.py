@@ -59,7 +59,7 @@ def mint(secret, identity):
     def encode(value):
         return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
     now = int(time.time())
-    claims = {"iss": "mcp-uncertainty-test", "aud": "proofvisor", "sub": identity,
+    claims = {"iss": "mcp-uncertainty-test", "aud": "agentvisor-ai", "sub": identity,
               "jti": uuid.uuid4().hex, "iat": now, "exp": now + 600,
               "instance_uid": identity, "version": "1", "charter": "test",
               "scopes": ["tool:read", "session:close", "session:promote"]}

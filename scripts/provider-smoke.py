@@ -66,7 +66,7 @@ def mint(secret, subject):
         return base64.urlsafe_b64encode(value).rstrip(b'=').decode()
     now = int(time.time())
     header = {'alg': 'HS256', 'typ': 'JWT', 'kid': 'dev-hmac'}
-    claims = {'sub': subject, 'iss': 'provider-smoke', 'aud': 'proofvisor',
+    claims = {'sub': subject, 'iss': 'provider-smoke', 'aud': 'agentvisor-ai',
               'iat': now, 'exp': now + 300, 'jti': str(uuid.uuid4()),
               'instance_uid': subject, 'charter': 'validation', 'version': '1.0',
               'scopes': ['*']}

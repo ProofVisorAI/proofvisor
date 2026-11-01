@@ -93,7 +93,7 @@ def mint(secret, identity, scopes):
     def encode(value):
         return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
     now = int(time.time())
-    claims = {"iss": "mcp-interop-test", "aud": "proofvisor", "sub": "user:interop@example.test",
+    claims = {"iss": "mcp-interop-test", "aud": "agentvisor-ai", "sub": "user:interop@example.test",
               "jti": uuid.uuid4().hex, "iat": now, "exp": now + 600,
               "instance_uid": identity, "version": "1", "charter": "interop",
               "scopes": scopes}

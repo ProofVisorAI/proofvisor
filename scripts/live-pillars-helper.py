@@ -39,7 +39,7 @@ def b64(data):
 
 def mint(secret, run_id, scopes, jti=None, now=None):
     now = int(time.time()) if now is None else now
-    claims = {"sub": "user:live-" + run_id, "iss": "live-check", "aud": "proofvisor",
+    claims = {"sub": "user:live-" + run_id, "iss": "live-check", "aud": "agentvisor-ai",
               "iat": now, "exp": now + 600, "jti": jti or str(uuid.uuid4()),
               "instance_uid": "inst-" + run_id, "charter": "support", "version": "1.0",
               "scopes": scopes}

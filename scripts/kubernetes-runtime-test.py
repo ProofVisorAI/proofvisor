@@ -66,7 +66,7 @@ def b64(value):
 
 def mint(secret, subject, scopes):
     now = int(time.time())
-    claims = {"iss": ISSUER, "sub": subject, "aud": "proofvisor", "iat": now,
+    claims = {"iss": ISSUER, "sub": subject, "aud": "agentvisor-ai", "iat": now,
               "exp": now + 900, "jti": str(uuid.uuid4()), "instance_uid": subject,
               "charter": "staging", "version": "1.0", "scopes": scopes}
     content = b64(json.dumps({"alg": "HS256", "typ": "JWT", "kid": "dev-hmac"}).encode())
