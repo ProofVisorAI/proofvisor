@@ -54,7 +54,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented** · **⚠�
 | 2.11 | Cursor pagination on `/sessions` (O(log N)) | ✅ | [server/src/routes/read.ts](server/src/routes/read.ts) |
 | 2.12 | Streaming NDJSON export (bounded memory on huge orgs) | ✅ | [server/src/routes/auth.ts](server/src/routes/auth.ts) |
 | 2.13 | Session.orgId denormalized + compound indexes | ✅ | [server/prisma/schema.prisma](server/prisma/schema.prisma) |
-| 2.14 | Render + Fly.io + Koyeb deploy manifests keyed off `/readyz` (only Render is in use; the live service is `agentvisor-api`, and `fly.toml` is an unused template) | ✅ | [render.yaml](render.yaml) · [server/fly.toml](server/fly.toml) |
+| 2.14 | Render + Fly.io + Koyeb deploy manifests keyed off `/readyz` (only Render is in use; the live service is `proofvisor-api`, and `fly.toml` is an unused template) | ✅ | [render.yaml](render.yaml) · [server/fly.toml](server/fly.toml) |
 | 2.15 | Console image validation, main-only GHCR promotion, and deployment by digest | 🟢 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) · [Validation scope](docs/PRODUCTION-VALIDATION.md#container-security-review) |
 | 2.16 | Runbook covers 7 pre-launch drills | ✅ | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 

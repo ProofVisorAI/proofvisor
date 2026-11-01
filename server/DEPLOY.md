@@ -21,9 +21,9 @@ and nothing runs on Fly.io. The live hosted API is a Render web service
 ## Current production deployment
 
 As of 2026-10-30 the hosted API runs on Render as the web service
-`agentvisor-api` (created under the product's previous name; the
-`render.yaml` blueprint in this repository would create a fresh service
-called `proofvisor-api`). It is built from `server/Dockerfile` in the Ohio
+`proofvisor-api` (created as `agentvisor-api` and renamed on 2026-11-01;
+Render keeps its original hostname `agentvisor-api.onrender.com`, and the
+`render.yaml` blueprint now carries the new name). It is built from `server/Dockerfile` in the Ohio
 region and is reachable at `https://api.proofvisor.com` (custom domain,
 CNAME to `agentvisor-api.onrender.com`, certificate issued by Render; the
 old `api.agentvisorai.me` and the Render hostname still answer). Auto-Deploy

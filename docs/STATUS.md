@@ -21,7 +21,7 @@ verified: 2026-10-30.
   `github.com/ProofVisorAI/proofvisor`) — nominal, exercised nightly
   by the `public-consumer` workflow
 - **Hosted API** — **live** on the free-tier stack from
-  `server/DEPLOY.md`: a Render web service named `agentvisor-api`
+  `server/DEPLOY.md`: a Render web service named `proofvisor-api` (created as `agentvisor-api`)
   (Ohio, Docker image from `server/Dockerfile`), reachable today at
   `https://agentvisor-api.onrender.com`, plus Neon Postgres
   (us-east-2, direct/unpooled URL so the LISTEN/NOTIFY bus works) and

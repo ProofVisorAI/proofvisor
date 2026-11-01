@@ -3,7 +3,7 @@
 One page. Grep for the failure, do the fix, move on. Kept short on purpose.
 
 > **Scope note:** the hosted API is live on Render as the web service
-> `agentvisor-api` (`https://api.proofvisor.com`; the Render hostname
+> `proofvisor-api` (`https://api.proofvisor.com`; the Render hostname
 > `https://agentvisor-api.onrender.com` still answers). Nothing runs on
 > Fly.io. The `fly …` commands below were written for a Fly deployment
 > and are kept as a template: on Render, do the equivalent step from the

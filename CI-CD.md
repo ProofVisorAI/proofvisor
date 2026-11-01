@@ -135,7 +135,7 @@ reproducible builds or an independently certified SLSA level.
 
 ## Deploying
 
-The live hosted API runs on Render as the web service `agentvisor-api`
+The live hosted API runs on Render as the web service `proofvisor-api`
 (`https://api.proofvisor.com`, a custom domain on that service). Render
 builds from `server/Dockerfile` itself, but Auto-Deploy is off for this
 service, so a merge to `main` does not deploy until someone runs Manual

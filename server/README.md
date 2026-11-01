@@ -9,7 +9,7 @@ tool payloads after the daemon's configured redaction; this API stores those
 uploaded fields and restricts their visibility by role.
 
 **For deployment (Render, Cloud Run, Neon, self-host) see [DEPLOY.md](./DEPLOY.md).**
-The live instance is a Render web service (`agentvisor-api`, reachable at
+The live instance is a Render web service (`proofvisor-api`, reachable at
 `https://api.proofvisor.com`, a custom domain on that service; the Render
 hostname `agentvisor-api.onrender.com` still answers). Nothing runs on Fly.io;
 `fly.toml` is an unused template.

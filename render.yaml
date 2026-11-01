@@ -1,11 +1,12 @@
 # Render blueprint — one-click deploy for the ProofVisor API + Postgres.
 #
-# The service, database and domain names below are still the AgentVisor
-# ones on purpose: they are what production runs today. Renaming the
-# service or database here would make a blueprint sync create new, empty
-# resources, and changing the domains moves the passkey relying party,
-# SAML SP endpoints and OAuth redirects. Move to proofvisor.com as its own
-# planned step (DNS, Render custom domain, IdP and OAuth app updates).
+# The service is named proofvisor-api (renamed in the Render dashboard on
+# 2026-11-01; its onrender.com hostname is still agentvisor-api.onrender.com
+# because Render fixes the hostname at creation). The database name and
+# the agentvisorai.me values below are what the existing deployment was
+# created with: changing the database name here would make a blueprint
+# sync create a new, empty database. The public domains are
+# proofvisor.com and api.proofvisor.com.
 #
 # https://render.com/docs/blueprint-spec
 #
@@ -23,14 +24,14 @@
 #   4. Deploy. First boot runs `prisma migrate deploy` before serving traffic.
 #
 # To move OFF Render later:
-#   docker build -t agentvisor-api server/
-#   docker push $REG/agentvisor-api
+#   docker build -t proofvisor-api server/
+#   docker push $REG/proofvisor-api
 #   pg_dump $OLD_DB | psql $NEW_DB
 #   # redeploy the image + point DATABASE_URL at the new DB. Done.
 
 services:
   - type: web
-    name: agentvisor-api
+    name: proofvisor-api
     runtime: docker
     dockerfilePath: ./server/Dockerfile
     dockerContext: ./server
