@@ -243,19 +243,25 @@ with demonstration data, which is what the public site shows by default.
   rename's compatibility were reviewed line by line; older console API
   code and the Rust daemon got spot checks only.
 
-## 8. Verification record for 2026-10-31
+## 8. Verification record for 2026-10-31 and 2026-11-01
 
-All on the merged `integration/all` branch.
+All on the merged `integration/all` branch. Every row except the last
+two (Keycloak and AuthZEN, run on 2026-10-31) was rerun on 2026-11-01,
+after the rename compatibility work, the pushed-schema fix and the
+three CI fixes.
 
 | Suite | Result |
 |---|---|
-| Rust workspace, all features | 1,827 tests passed, 0 failed |
+| Rust workspace, default features | 1,733 tests passed, 0 failed (9 restart tests timed out during a disk stall and passed when rerun alone; the all-features run is left to CI) |
+| Rust 1.95 build check (the new minimum version) | builds |
 | `cargo fmt`, `cargo clippy -D warnings`, `cargo deny` advisories, schema check | clean |
-| Windows x64 compile check (daemon and CLI, all targets) | no errors |
+| Windows x64 compile check (daemon and CLI, all targets) | no errors on 2026-10-31; the folder-flush fix for the Windows unit tests is checked only by CI |
 | Provider contracts with the real daemon against local stand-ins of the OpenAI, Anthropic and Gemini wire formats (`n = 2` included) | 14 of 14 |
+| Introspection expiry with Redis / MCP uncertainty | 11 of 11 / passed |
+| Crash recovery reaching the console (`daemon-console-drill`) | 15 of 15 |
 | Policy push end to end with the real API, daemon and pvctl | 32 checks passed |
-| Live pillars (identity, exchange, revocation, receipts, end to end) | 84 checks passed |
-| API unit and recovery tests, including SCIM and billing (`npm test`) | 82 passed |
+| Live pillars (identity, exchange, revocation, receipts, end to end) | 84 checks passed in memory, 115 with Redis |
+| API unit and recovery tests, including SCIM, billing, rename compatibility and schema references (`npm test`) | 100 passed |
 | API smoke suite | passed |
 | API contract suite (`ci/e2e.mjs`) | 141 of 141 |
 | Browser end-to-end against the real API (live tour, checklist, simulated attack) | all passed |
