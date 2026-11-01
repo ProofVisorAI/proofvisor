@@ -228,7 +228,11 @@ with demonstration data, which is what the public site shows by default.
   before anyone turns them on; they contradict today's "every
   governance feature on Free" wording.
 - **Guardrail and transform policies** document intent in the console;
-  daemons do not enforce them.
+  daemons do not enforce them. Their body is free text (the console's
+  template writes a policy-language sketch, not a JSON spec), so
+  enforcing them means first deciding what a guardrail spec looks like
+  and how a daemon reports a guardrail hit. That is a product decision,
+  not a test gap, and it is still open.
 - **A pushed token budget that a streaming completion overflows
   mid-stream** is refused with the limit name but without the console
   policy's name; only the request-time check (prompt tokens, where a
@@ -334,3 +338,39 @@ Added later on 2026-11-01, after a second pass over the whole chain:
 | Production build and boot reproduced locally: the merged `server/Dockerfile` image with Render's real settings over a database at the old schema | four migrations applied, `/healthz` and `/readyz` 200, new endpoints present |
 | HTTPS and redirects on the public site | `https://proofvisor.com` presents its own Let's Encrypt certificate; `http` and `www` redirect to it; `/lander` redirects to the home page; `agentvisorai.me` and its `www` forward (301, front page only) |
 | The public console in a browser over HTTPS (`live-site-smoke.mjs`) | 11 checks passed: routes, populated tabs, link and media integrity, link previews, videos, installer |
+
+## 9. Blind spots closed on 2026-11-01 (evening)
+
+A review of the verification record against the code found features
+that were implemented and unit-tested but never driven end to end, and
+one end-to-end script that no workflow ran. Each is now covered on
+every push to `main`.
+
+| Blind spot | Now covered by | Result |
+|---|---|---|
+| Context compression on the chat path (every real-binary drill ran with it off) | `crates/pv-harness/tests/e2e_proxy_contracts.rs`: a forty-turn repetitive history reaches the upstream with its repeated turns replaced by `[pruned: …]` stubs, at less than half the bytes, the system prompt and protected tail intact, and an `agent.compression` record with `changed: true` on the bus; with `compression_enabled = false` the history is forwarded verbatim | 2 of 2 |
+| `consequential_tools` require a signed session | same file: `payout` on an unsigned session is refused with "requires a signed workflow" before the backend is contacted; a non-consequential tool runs unsigned; the same `payout` runs on a signed session | 1 of 1 |
+| Provider key headers stripped from upstream responses | same file: `Authorization`, the configured key header, `Set-Cookie`, `Server` and `X-Powered-By` echoed by the upstream never reach the client; `ETag`, `Cache-Control` and vendor request ids pass; `nosniff` is pinned | 1 of 1 |
+| Operator dashboard | same file: page, stylesheet, script and the three JSON endpoints answer when `dashboard_enabled = true`, reflect a live session, and all return 404 when it is off | 1 of 1 |
+| `pvctl console-sync --watch` (no test at all) | `crates/pv-cli/tests/e2e_console_sync_watch.rs` runs the real binary in watch mode against a loopback console: a trajectory written while watching is uploaded on the next pass, event batches go out once, the policy bundle is written owner-only and re-checked with `If-None-Match` (304), the daemon's status file is reported once without its private `error` field, Ctrl-C exits 0 without warnings; `--interval 0` and `--pull-policies` without a bundle file are refused | 2 of 2 |
+| `pvctl sidecar` (unit-tested in-process only) | `crates/pv-cli/tests/e2e_sidecar.rs` runs the real binary from a settings file: buffered and streamed chat and an MCP call pass through, every forwarded request carries the token from the credential file and never the application's own bearer, a non-loopback listen address and a missing gateway are refused, SIGTERM exits 0 | 3 of 3 |
+| The CLI help contract listed ten of the twenty-one subcommands | `e2e_cli_contract.rs` now checks all twenty-one in `--help` and each one's own help | 22 of 22 |
+| `scripts/policy-push-e2e.mjs` ran only by hand | a step in the Console + API workflow (`console-api.yml`), after the daemon crash drill, with the same API and built binaries; the script now honours a signup `Retry-After` once | 36 of 36 locally |
+| Audit-log CSV export (tested only by the scheduled console-smoke drill) | `server/ci/e2e.mjs`: status and download headers, the `id,at,event,…` header row, the org's own `deployment.create` entry and actor email, no formula-leading cells, and the `audit.exported_csv` breadcrumb in the JSON audit log | 146 of 146 (was 141) |
+
+Not closed, and why:
+
+- **Guardrail and transform policy enforcement** needs a spec design
+  first (section 7).
+- **Live Anthropic and Gemini runs** need real keys; none are available
+  on the verification laptop.
+- **Windows hardware, a real Cloud Foundry foundation, Okta and Entra
+  ID, cloud object storage, a live Stripe account and a crates.io
+  release** need resources or approvals this checkout does not have.
+
+After these additions, on the same laptop: Rust workspace 1,744 tests
+passed, 0 failed, 3 ignored (ten new); `cargo fmt --check` and `cargo
+clippy --workspace --all-targets --all-features -D warnings` clean; API
+unit tests 100 of 100; contract suite 146 of 146 and the policy-push
+script 36 of 36 against a locally booted API with the real daemon and
+`pvctl`.

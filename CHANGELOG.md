@@ -268,6 +268,31 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- End-to-end coverage for the behaviours that until now had unit tests
+  only. `crates/pv-harness/tests/e2e_proxy_contracts.rs` drives the live
+  router for context compression (a repetitive history reaches the
+  upstream stubbed and smaller, the audit trail records it, and
+  `compression_enabled = false` forwards verbatim), the signed-session
+  requirement for `consequential_tools`, the stripping of
+  secret-bearing upstream response headers, and the operator dashboard
+  (page, assets and JSON API present only when enabled).
+  `crates/pv-cli/tests/e2e_console_sync_watch.rs` runs the real `pvctl
+  console-sync --watch --pull-policies` against a loopback console: a
+  trajectory written while watching is uploaded on the next pass, the
+  bundle is written owner-only and re-requested with `If-None-Match`,
+  the daemon's status file is reported once, and Ctrl-C exits cleanly.
+  `crates/pv-cli/tests/e2e_sidecar.rs` runs the real `pvctl sidecar`
+  from a settings file: the application's bearer token never reaches
+  the gateway, the token from the credential file does, streams pass
+  through, a non-loopback listen address is refused, and SIGTERM stops
+  it. The CLI help contract now lists all twenty-one subcommands.
+- CI: `scripts/policy-push-e2e.mjs` (console → daemon policy push with
+  the real binaries, 36 checks) runs in the Console + API workflow on
+  every push; it was previously run only by hand. The script honours a
+  signup `Retry-After` once, since it shares one API and one IP with the
+  other suites. The contract suite (`server/ci/e2e.mjs`) now covers the
+  audit-log CSV export: headers, header row, the org's own entries,
+  formula-cell neutralisation, and the `audit.exported_csv` breadcrumb.
 - `docs/FEATURES.md`: the verified list of what ships today, what is
   planned, and the verification record behind it.
 - Console API: `session.blocked` and `apikey.created` webhooks are now

@@ -291,6 +291,25 @@ try {
   const polsAfterDel = await ds.listPolicies();
   check("policy delete removes", !polsAfterDel.some(x => x.id === secondPol.id));
 
+  // Audit log CSV export: the bulk download an auditor takes away. The
+  // JSON audit endpoint is covered by the console drills; the CSV route
+  // streams through a hijacked reply and sets its headers on the raw
+  // response, so a regression there is invisible to the JSON path.
+  {
+    const csvRes = await fetch(`${API_BASE}/api/v1/audit.csv`, { headers: { Origin: SPA_ORIGIN }, redirect: "manual" });
+    const csvType = csvRes.headers.get("content-type") || "";
+    const csvDisposition = csvRes.headers.get("content-disposition") || "";
+    const csvText = await csvRes.text();
+    const csvLines = csvText.split(/\r?\n/).filter(Boolean);
+    check("audit csv is served as a download", csvRes.status === 200 && /^text\/csv/.test(csvType) && /^attachment; filename="proofvisor-audit-/.test(csvDisposition), `${csvRes.status} ${csvType} ${csvDisposition}`);
+    check("audit csv has a header row and the org's entries", csvLines.length >= 3 && /^id,at,event,/.test(csvLines[0]), csvLines[0]);
+    check("audit csv carries this session's actions", csvText.includes("deployment.create") && csvText.includes(email), csvText.slice(0, 200));
+    check("audit csv formula cells are neutralised", !csvLines.slice(1).some((line) => line.split(",").some((cell) => /^[=+@]/.test(cell))), csvText.slice(0, 200));
+    const auditAfterCsv = await ds.listAudit({ limit: 50 });
+    const auditRows = Array.isArray(auditAfterCsv) ? auditAfterCsv : (auditAfterCsv.entries || []);
+    check("audit csv export is itself audited", auditRows.some((row) => row.event === "audit.exported_csv"), JSON.stringify(auditAfterCsv).slice(0, 120));
+  }
+
   // Policy push contract: the daemon bundle, 304, the status report and
   // the enforcement counts the console reads back.
   {
