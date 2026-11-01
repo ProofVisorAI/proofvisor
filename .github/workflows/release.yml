@@ -77,6 +77,10 @@ jobs:
         # Default features only: no live backends, no ONNX, no cross-compile
         # tooling required. Users who need kafka/nats/redis/onnx/qdrant/otel
         # can build from source with `--features full`.
+        # bash on every runner: Windows defaults to PowerShell, where the
+        # backslash line continuation below is an error ("unexpected
+        # argument '\'"), which failed the rc.6 Windows build.
+        shell: bash
         env:
           CARGO_PROFILE_RELEASE_STRIP: symbols
           # cc/ring need the musl wrapper for the musl targets (native
