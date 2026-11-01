@@ -38,7 +38,9 @@ exercised against release binaries in CI on every push
     verify.
   - **Both names sent.** Webhook deliveries carry `X-ProofVisor-*` and the
     deprecated `X-AgentVisor-*` headers with the same values; Kafka records
-    carry `proofvisor-event-uid` and `agentvisor-event-uid`.
+    carry `proofvisor-event-uid` and `agentvisor-event-uid`; `pvctl
+    console-sync` sends `X-PV-Deployment` and `X-AV-Deployment`, so a new
+    `pvctl` still uploads to a console that runs the pre-rename API.
   - **Changed without a fallback:** the session cookie (`pv_session`),
     so everyone is signed out once when the new API is deployed, and
     sign-ins in progress at that moment must restart; Prometheus metric
@@ -450,6 +452,23 @@ exercised against release binaries in CI on every push
 
 ### Fixed
 
+- Policy push: the console counted every daemon on the current bundle as
+  enforcing every policy, so a policy a daemon had reported unsupported
+  still read "Enforced by 1 of 1". `enforcement.applied` now counts the
+  daemons that listed that policy as applied, and a new
+  `enforcement.current` carries the old org-wide count for the console's
+  "has not pulled yet" arithmetic.
+- Policy push: a chat request refused by a console-pushed token budget
+  said only `max_tokens exceeded (cap N)`; it now names the policy, as
+  tool refusals and token-rate refusals already did. The daemon also
+  names the policy in the stop-reason event (`payload.policy`), and
+  `pvctl console-sync` uploads such a refusal as a block attributed to
+  that policy, so the policy's hit and block counters count refused chat
+  requests, not only refused tool calls.
+- `pvctl console-sync` got 401 from a console running the pre-rename API
+  because it sent only the new deployment header name; it now sends both.
+- Rustdoc: a public doc comment linked to a private type, which failed
+  CI's documentation build.
 - Windows: the daemon's journal, tool-intent claim and intent release
   flushed their folder by opening it as a file, which Windows refuses
   ("Access is denied"), so the journal stopped and tool calls failed.

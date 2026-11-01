@@ -172,7 +172,11 @@ with demonstration data, which is what the public site shows by default.
   daemon applies the bundle on top of its local config (a pushed
   policy can only tighten it), survives restarts with it, reports what
   it actually enforces, and the console shows "Enforced by N of M
-  daemons". Refusals name the console policy.
+  daemons" (N counts the daemons that applied that policy, not every
+  daemon on the current bundle). Refusals name the console policy,
+  for tool calls and for chat requests a pushed token-rate or budget
+  rule refuses, and the console attributes each refusal to the policy
+  in its hit and block counts.
 - **SCIM 2.0 provisioning** for Okta, Entra ID and other identity
   providers: users and groups, deactivation, role mapping by group, the
   last owner protected.
@@ -195,8 +199,14 @@ with demonstration data, which is what the public site shows by default.
   types and claims, the default audience) keep their pre-rename bytes,
   so receipts and state written by `agentvisord` verify and load. The
   API accepts `av_srv_` keys and the old `X-AV-*` headers, webhooks and
-  Kafka records carry both header names, and the daemon and `pvctl`
+  Kafka records carry both header names, `pvctl console-sync` sends
+  both deployment header names (so a new `pvctl` uploads to a console
+  that still runs the pre-rename API), and the daemon and `pvctl`
   adopt `AV_*` variables and find `agentvisor.toml` and `~/.agentvisor/`.
+  A database written by the pre-rename API upgrades in place: the four
+  new migrations ran on a copy holding its accounts, deployment,
+  pinned key, sessions, receipt, `av_srv_` key, policy, webhook and
+  invitation, and every one of them still worked through the new API.
   `CHANGELOG.md` lists what still changes (one sign-out on deploy,
   metric, tracing, OCSF and `/health` names).
 - **Second security pass** on the code added here: SCIM can re-address
@@ -219,6 +229,14 @@ with demonstration data, which is what the public site shows by default.
   governance feature on Free" wording.
 - **Guardrail and transform policies** document intent in the console;
   daemons do not enforce them.
+- **A pushed token budget that a streaming completion overflows
+  mid-stream** is refused with the limit name but without the console
+  policy's name; only the request-time check (prompt tokens, where a
+  pushed cap normally binds) names the policy.
+- **Budget policies written before this release have no spec.** The
+  pre-rename console stored budget policies as text only, so a daemon
+  reports such a policy as unsupported ("budget policy has no JSON
+  spec") until an administrator re-saves it from a template.
 - **Windows** has not been run on Windows hardware yet, and its CI job
   runs only after a push, so it is a Tier-2 platform.
 - **Release state.** The latest release is the pre-release
@@ -270,7 +288,7 @@ passed on 2026-11-01).
 | Provider contracts with the real daemon against local stand-ins of the OpenAI, Anthropic and Gemini wire formats (`n = 2` included) | 14 of 14 |
 | Introspection expiry with Redis / MCP uncertainty | 11 of 11 / passed |
 | Crash recovery reaching the console (`daemon-console-drill`) | 15 of 15 |
-| Policy push end to end with the real API, daemon and pvctl | 32 checks passed |
+| Policy push end to end with the real API, daemon and pvctl (now also checks that a refused chat request is attributed to its policy on the console) | 35 checks passed |
 | Live pillars (identity, exchange, revocation, receipts, end to end) | 84 checks passed in memory, 115 with Redis |
 | API unit and recovery tests, including SCIM, billing, rename compatibility and schema references (`npm test`) | 100 passed |
 | API smoke suite | passed |
@@ -286,3 +304,14 @@ passed on 2026-11-01).
 | Keycloak 26.8.1 OIDC and SAML login | 22 checks passed |
 | The daemon's AuthZEN request format, sent by a test script to public interop PDPs (Cerbos, Aserto Topaz) | allow and deny as expected |
 | The daemon's own AuthZEN client against the public Topaz PDP | allow and deny as expected |
+
+Added later on 2026-11-01, after a second pass over the whole chain:
+
+| Check | Result |
+|---|---|
+| Upgrade in place: a database at the pre-rename schema, filled through the pre-rename API (owner, deployment, pinned key, sessions, a real daemon receipt, `av_srv_` key, policy, webhook, invitation), then the four new migrations and the new API | migrations applied; 21 of 21 checks (login, old key, old ingest token with either header name, policy pull, receipt, public key endpoint, invitation, free plan, SCIM off); smoke suite and 141 of 141 contract checks against the upgraded database |
+| New `pvctl console-sync` against the pre-rename API | failed with 401 before the fix (one header name); uploads session, events and receipt after it |
+| README quickstart with the real binaries (`pvctl init --preset openai`, `doctor`, `proofvisord`, chat with and without streaming, session close, `pubkey`, `receipt-verify` in hex and base64, `event-tail`, `/health`, `/livez`, `/readyz`, `/metrics`, `/dashboard`, JWKS, MCP refusal without schemas) and the no-config start (`PV_UPSTREAM_URL` only, `close` then `promote`) | all as documented; the client's own bearer token never reached the upstream |
+| Daemon → `pvctl console-sync` → API → console in a real browser → shared verify link → verify page | the session, its event stream, "Signature verified" and the shared link's "Trusted: key pinned by the console for deployment quickstart" all shown |
+| Policy push from the console UI to that daemon (token-rate and budget templates) | chat requests refused naming the policy; the policy page counts the hit and the block; the deployment page flips from "not pulling" to "current" |
+| `cargo fmt`, `cargo clippy --all-features --all-targets -D warnings`, the pv-cli console-sync and pv-harness policy-push unit tests, API `npm test` after these changes | clean; 20 and 3 tests passed; 100 API tests, 99 passed in the full run and the one auth-drill timeout passed alone (it waits 5 s for a container while clippy and the end-to-end script loaded the laptop) |
