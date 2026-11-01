@@ -14,7 +14,7 @@
  *                                       Creates a user + membership if new,
  *                                       or just adds membership if the
  *                                       email already has an account, then
- *                                       mints an av_session.
+ *                                       mints an pv_session.
  *
  * Invite tokens are argon2-hashed. Plaintext is emailed once; the row
  * only stores the hash. A 7-day TTL is enforced at accept time.
@@ -35,6 +35,7 @@ import {
   verifyPassword,
 } from "../lib/auth.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
+import { planUsage, refuseIfOverLimit } from "../lib/entitlements.js";
 import { dispatchEvent } from "../lib/webhooks.js";
 import { getMailer, inviteMail, adminMfaResetMail } from "../lib/mail.js";
 import { perIpCookieOnly } from "../lib/rate-limit.js";
@@ -306,7 +307,7 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
           // still bears their pre-change role. session-middleware's
           // API-key auth path synthesizes membershipRole from
           // ApiKey.role WITHOUT consulting Membership.role — so a
-          // demoted admin whose plaintext av_srv_ token is still
+          // demoted admin whose plaintext pv_srv_ token is still
           // known continues to authenticate at the prior privilege
           // level, indefinitely. R90 F1 closes the JWT-cookie
           // vector; this closes the sibling API-key vector.
@@ -428,7 +429,7 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
           // WITHOUT consulting Membership.role — the cookie path
           // correctly fails on memberships.length === 0, but the
           // API-key path has NO membership check, so an
-          // ex-member's still-known av_srv_ token continues to
+          // ex-member's still-known pv_srv_ token continues to
           // authenticate at the prior privilege level. Sibling
           // of R90 F1's JWT invalidation. Revoke ALL keys the
           // user created (not just above-rank) since they no
@@ -523,6 +524,20 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
     });
     if (existingUser?.memberships.length) {
       return reply.code(409).send({ error: "already_a_member" });
+    }
+
+    // Plan seat limit: active members + pending invites. Re-sending an
+    // invite to an address that already has a pending row does not
+    // consume a new seat.
+    const pendingForEmail = await db.invite.findUnique({
+      where: { orgId_email: { orgId: claims.orgId, email: body.data.email } },
+      select: { acceptedAt: true, revokedAt: true, expiresAt: true },
+    });
+    const isResend =
+      !!pendingForEmail && !pendingForEmail.acceptedAt && !pendingForEmail.revokedAt && pendingForEmail.expiresAt > new Date();
+    if (!isResend) {
+      const usage = await planUsage(claims.orgId);
+      if (refuseIfOverLimit(req, reply, org.plan, "members", usage.members)) return;
     }
 
     // R122 F1: rung parity on the UPSERT PATH. R83 F1 above only
@@ -871,7 +886,7 @@ export async function memberRoutes(app: FastifyInstance): Promise<void> {
     // /webauthn/authenticate/verify → session for target's HOME
     // org. Same defeat-of-passkey class R120 F2 just closed on
     // OAuth, but this variant needs only an attacker-controlled
-    // AV account. Fix: refuse the cookie mint on the existing-
+    // PV account. Fix: refuse the cookie mint on the existing-
     // user branch. Consume the invite (membership grant is still
     // legitimate — a real invitee can complete the flow via
     // /login with their existing password) and return

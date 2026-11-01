@@ -15,7 +15,7 @@
  *      exit 1 after tampering the signed body.
  *
  * Proves the whole "any auditor can verify offline with no
- * AgentVisor dependency" pitch is real, end-to-end.
+ * ProofVisor dependency" pitch is real, end-to-end.
  */
 import { chromium } from "playwright";
 import { execSync } from "node:child_process";
@@ -25,7 +25,7 @@ import { dirname, resolve, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const VERIFIER = resolve(__dirname, "verify-receipt.mjs");
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/app/";
 
 function fail(m) { console.log("❌", m); process.exit(1); }
 async function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -38,7 +38,7 @@ const context = await browser.newContext({
 const page = await context.newPage();
 
 // Login (mock)
-await page.addInitScript(() => { try { localStorage.setItem("av_mock_signed_out", "1"); } catch {} });
+await page.addInitScript(() => { try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {} });
 await page.goto(SITE + "#/login", { waitUntil: "networkidle" });
 await page.waitForSelector('input#email', { timeout: 15000 });
 await page.locator('input#email').fill("olivia.tan@northwind.com");
@@ -68,14 +68,14 @@ const [download] = await Promise.all([
   page.waitForEvent("download"),
   dlBtn.click(),
 ]);
-const bundlePath = "/tmp/av-receipt-" + Math.random().toString(36).slice(2, 8) + ".json";
+const bundlePath = "/tmp/pv-receipt-" + Math.random().toString(36).slice(2, 8) + ".json";
 await download.saveAs(bundlePath);
 if (!existsSync(bundlePath)) fail("download not saved");
 console.log("✅ Receipt downloaded:", bundlePath);
 
 // Inspect the bundle
 const bundle = JSON.parse(readFileSync(bundlePath, "utf8"));
-if (bundle.format !== "agentvisor.receipt.v1") fail("bad format: " + bundle.format);
+if (bundle.format !== "proofvisor.receipt.v1") fail("bad format: " + bundle.format);
 if (!bundle.receipt?.rawBody) fail("no rawBody");
 if (!bundle.receipt?.rawSignatureB64) fail("no signature");
 if (!bundle.publicKey?.hex) fail("no publicKey.hex");
@@ -192,7 +192,7 @@ if (!/INTERNALLY CONSISTENT/i.test(forgedAcked)) fail("forged-ack didn't say INT
 console.log("✅ fresh-keypair forgery WITH --allow-untrusted-key -> INTERNALLY CONSISTENT (exit 0, not TRUSTED)");
 
 // Raw daemon receipt (spool/atif/receipts/*.json shape): the file
-// agentvisord writes is the flattened ReceiptBody + signature_b64 —
+// proofvisord writes is the flattened ReceiptBody + signature_b64 —
 // no bundle envelope. verify-receipt.mjs adapts it (same as the
 // /verify page): JCS(body minus signature_b64) is the signed
 // message, pubkey comes from body.public_key_b64. Assert the

@@ -5,13 +5,14 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    project = "av-secrets-test-" + uuid.uuid4().hex[:12]
+    project = "pv-secrets-test-" + uuid.uuid4().hex[:12]
     # Home directories are shared into common desktop Docker VMs; host /tmp
     # frequently is not. Never mount actual operator secrets into this fixture.
     work = Path(tempfile.mkdtemp(prefix=project + "-", dir=Path.home()))
@@ -26,6 +27,21 @@ def main():
         if (result.returncode == 0) != (expected == 0):
             raise RuntimeError("Unexpected result for {}: {}{}".format(args[:5], result.stdout, result.stderr))
         return result
+
+    def expect_rejection(phrase, reason):
+        # Desktop Docker VMs (macOS, Windows) serve bind-mounted file
+        # metadata from a cache that lags a host chmod/truncate by a few
+        # seconds, so the installer can briefly see the previous case's
+        # mode or size. Retry until the installer reports the expected
+        # reason; on Linux the first attempt is the only one.
+        last = ""
+        for _ in range(6):
+            result = run(command + ["run", "--rm", "install-secrets"], expected=1)
+            last = result.stdout + result.stderr
+            if phrase in last:
+                return
+            time.sleep(2)
+        raise RuntimeError(reason + ": " + last.strip())
 
     print("Compose secret test logs: " + str(work), flush=True)
     model = json.loads(run(["docker", "compose", "-f", str(ROOT / "docker/docker-compose.yml"),
@@ -82,15 +98,11 @@ printf 'verified private runtime secrets\\n'
         run(command + ["run", "--rm", "install-secrets"])
         print("PASS: installer safely repeats against the existing private volume", flush=True)
         (work / "identity_hmac").chmod(0o644)
-        result = run(command + ["run", "--rm", "install-secrets"], expected=1)
-        if "must be owner-only" not in result.stdout + result.stderr:
-            raise RuntimeError("Public source secret was rejected for an unrelated reason")
+        expect_rejection("must be owner-only", "Public source secret was rejected for an unrelated reason")
         print("PASS: world-readable source secret is refused", flush=True)
         (work / "identity_hmac").chmod(0o600)
         (work / "identity_hmac").write_text("")
-        result = run(command + ["run", "--rm", "install-secrets"], expected=1)
-        if "is empty" not in result.stdout + result.stderr:
-            raise RuntimeError("Empty source secret was rejected for an unrelated reason")
+        expect_rejection("is empty", "Empty source secret was rejected for an unrelated reason")
         print("PASS: empty source secret is refused", flush=True)
     finally:
         try:

@@ -2,7 +2,7 @@
 --
 -- session-middleware.ts:40-50 fires
 --   db.apiKey.findMany({ where: { tokenHint: <hint>, revokedAt: null } })
--- on EVERY request carrying an `Authorization: Bearer av_srv_…`
+-- on EVERY request carrying an `Authorization: Bearer pv_srv_…`
 -- header (CI runners, dashboards, webhook consumers, cron jobs).
 -- The ApiKey model previously declared only `@@index([orgId])`,
 -- so Postgres seq-scanned `api_keys` per authenticated request.

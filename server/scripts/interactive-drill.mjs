@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 
 // Accept the target as SITE env or first positional arg — a passed-but-
 // ignored argument once silently ran this whole drill against production.
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/app/";
 
 function fail(m) { console.log("❌", m); process.exit(1); }
 
@@ -55,7 +55,7 @@ page.on("pageerror", (e) => jsErrors.push(e.message));
 
 // ── 1. Guided tour ────────────────────────────────────────────────
 await page.goto(SITE + "?tour=1#/overview", { waitUntil: "domcontentloaded" });
-await page.waitForSelector(".av-tour-card", { timeout: 15000 });
+await page.waitForSelector(".pv-tour-card", { timeout: 15000 });
 {
   // Overlay must absorb background clicks (audit D1).
   const hashBefore = await page.evaluate(() => location.hash);
@@ -66,7 +66,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     const el = document.elementFromPoint(r.left + 4, r.top + 4);
     return el ? (el.id || el.className || el.tagName).toString() : "none";
   });
-  if (topmost !== "no-link" && !/avTour/.test(topmost)) fail("tour overlay does not absorb background clicks; topmost=" + topmost);
+  if (topmost !== "no-link" && !/pvTour/.test(topmost)) fail("tour overlay does not absorb background clicks; topmost=" + topmost);
   if ((await page.evaluate(() => location.hash)) !== hashBefore) fail("hash moved under the tour");
   console.log("✅ tour overlay absorbs background clicks");
 
@@ -74,20 +74,20 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   for (let i = 0; i < 6; i++) {
     await page.waitForTimeout(1300);
     const s = await page.evaluate(() => ({
-      step: document.querySelector(".av-tour-step").textContent,
-      title: document.querySelector(".av-tour-card h3").textContent,
-      holeVisible: getComputedStyle(document.querySelector(".av-tour-hole")).display !== "none",
-      centered: document.querySelector(".av-tour-card").classList.contains("centered"),
+      step: document.querySelector(".pv-tour-step").textContent,
+      title: document.querySelector(".pv-tour-card h3").textContent,
+      holeVisible: getComputedStyle(document.querySelector(".pv-tour-hole")).display !== "none",
+      centered: document.querySelector(".pv-tour-card").classList.contains("centered"),
     }));
     if (!s.step.includes(`${i + 1} of 6`)) fail(`tour step ${i + 1}: got "${s.step}"`);
     if (!expects[i].test(s.title)) fail(`tour step ${i + 1} title unexpected: "${s.title}"`);
     if (i < 5 && !s.holeVisible) fail(`tour step ${i + 1}: spotlight hole missing`);
     if (i === 5 && !s.centered) fail("tour finale should be a centered card");
-    if (i < 5) await page.evaluate(() => document.querySelector(".av-tour-next").click());
+    if (i < 5) await page.evaluate(() => document.querySelector(".pv-tour-next").click());
   }
-  const cta = await page.evaluate(() => document.querySelector(".av-tour-next").textContent);
+  const cta = await page.evaluate(() => document.querySelector(".pv-tour-next").textContent);
   if (!/verifier/i.test(cta)) fail("tour finale CTA is not the verifier: " + cta);
-  await page.evaluate(() => document.querySelector(".av-tour-skip").click());
+  await page.evaluate(() => document.querySelector(".pv-tour-skip").click());
   console.log("✅ guided tour: 6 steps, targets anchored, verifier finale");
 }
 
@@ -185,7 +185,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 
 // ── 4. Onboarding checklist + signup identity ─────────────────────
 {
-  await page.evaluate(() => { localStorage.setItem("av_mock_signed_out", "1"); });
+  await page.evaluate(() => { localStorage.setItem("pv_mock_signed_out", "1"); });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector("input#email", { timeout: 10000 });
   await page.evaluate(() => { location.hash = "#/signup"; });
@@ -211,7 +211,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   const kept = await page.evaluate(() => document.querySelector(".org-switcher").textContent);
   if (!kept.includes("Drill Robotics")) fail("identity reverted on reload (audit D4)");
   // Live tick: advance the sim clock past the blocked-session arrival.
-  await page.evaluate(() => { localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 27500)); });
+  await page.evaluate(() => { localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 27500)); });
   await page.waitForTimeout(4500);
   const done = await page.evaluate(() => (document.querySelector(".ob-count") || {}).textContent || "");
   if (!done.startsWith("4 of")) fail("checklist did not tick to 4 of 4: " + done);
@@ -249,19 +249,23 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   console.log("✅ reset demo data: pristine Northwind restored");
 }
 
-// ── 7. Policy creation: template → live DSL → enforcing ──────────
+// ── 7. Policy creation: template → live JSON spec → enforcing ────
 {
   // Check 6's reload kept ?tour=1 in the query string, so the tour
   // auto-restarted and its overlay would swallow our clicks.
-  await page.evaluate(() => window.AVTour && window.AVTour.stop());
+  await page.evaluate(() => window.PVTour && window.PVTour.stop());
   await page.evaluate(() => { location.hash = "#/policies"; });
   await page.waitForSelector("#addPol", { timeout: 10000 });
   await page.click("#addPol");
   await page.waitForSelector(".modal-wide #polPreview", { timeout: 5000 });
   await page.fill("#polParam", "1250");
   await page.waitForTimeout(200);
-  const dsl = await page.evaluate(() => document.querySelector("#polPreview").textContent);
-  if (!dsl.includes("arg.amount_usd > 1250")) fail("policy preview not live: " + dsl.slice(0, 80));
+  // The spend-cap template is a daemon-enforceable budget: the preview
+  // is the JSON spec the daemon will pull, and it follows the field.
+  const preview = await page.evaluate(() => document.querySelector("#polPreview").textContent);
+  let spec = null;
+  try { spec = JSON.parse(preview); } catch { spec = null; }
+  if (!spec || spec.max_payout_usd_micros !== 1250 * 1e6) fail("policy preview not live: " + preview.slice(0, 80));
   await page.click('button:has-text("Create & enable")');
   await page.waitForSelector("#polSwitch", { timeout: 10000 });
   const pol = await page.evaluate(() => ({
@@ -269,9 +273,9 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     name: document.querySelector("h1").textContent,
     enabled: document.querySelector("#polSwitch").getAttribute("aria-checked"),
   }));
-  if (!pol.hash.startsWith("#/policies/pol_") || pol.name !== "finance.payment_cap_usd:1250" || pol.enabled !== "true")
+  if (!pol.hash.startsWith("#/policies/pol_") || pol.name !== "finance.payout_cap_usd:1250" || pol.enabled !== "true")
     fail("policy creation broken: " + JSON.stringify(pol));
-  console.log("✅ policy creation: spend-cap template → live DSL → enabled detail page");
+  console.log("✅ policy creation: spend-cap template → live JSON spec → enabled detail page");
 }
 
 // ── 8. Table action buttons are actually hittable ─────────────────
@@ -333,13 +337,13 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 // self-heal instead.
 {
   for (const kv of [
-    { av_mock_fresh_identity: "42", av_mock_fresh_t0: String(Date.now()) },
-    { av_mock_fresh_identity: '{"user":{"email":"x@y.z"}}', av_mock_fresh_t0: String(Date.now()) },
-    { av_mock_fresh_t0: "not-a-number" },
-    // every av_* key garbage at once — incl. the pre-paint theme
-    // whitelist in config.js (av_theme "banana" must not become
+    { pv_mock_fresh_identity: "42", pv_mock_fresh_t0: String(Date.now()) },
+    { pv_mock_fresh_identity: '{"user":{"email":"x@y.z"}}', pv_mock_fresh_t0: String(Date.now()) },
+    { pv_mock_fresh_t0: "not-a-number" },
+    // every pv_* key garbage at once — incl. the pre-paint theme
+    // whitelist in config.js (pv_theme "banana" must not become
     // data-theme="banana")
-    { av_theme: "banana", av_mock_fresh_t0: "not-a-number", av_mock_fresh_identity: "{broken", av_mock_bigdata: "yes{}", av_signed_in_at: "🦄", av_mock_fastload: "{}" },
+    { pv_theme: "banana", pv_mock_fresh_t0: "not-a-number", pv_mock_fresh_identity: "{broken", pv_mock_bigdata: "yes{}", pv_signed_in_at: "🦄", pv_mock_fastload: "{}" },
   ]) {
     await page.evaluate((k) => { localStorage.clear(); for (const [a, b2] of Object.entries(k)) localStorage.setItem(a, b2); }, kv);
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -350,7 +354,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
       theme: document.documentElement.getAttribute("data-theme"),
     }));
     if (!st.shell || st.len < 30) fail("corrupted storage bricked the app: " + JSON.stringify(kv) + " → " + JSON.stringify(st));
-    if (kv.av_theme && st.theme === kv.av_theme) fail("theme whitelist leaked a garbage value: " + st.theme);
+    if (kv.pv_theme && st.theme === kv.pv_theme) fail("theme whitelist leaked a garbage value: " + st.theme);
   }
   // Stored-identity XSS: a hostile displayName/org.name persisted in
   // localStorage (the one write an attacker with storage access
@@ -359,8 +363,8 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   {
     await page.evaluate(() => {
       localStorage.clear();
-      localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 60000));
-      localStorage.setItem("av_mock_fresh_identity", JSON.stringify({
+      localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 60000));
+      localStorage.setItem("pv_mock_fresh_identity", JSON.stringify({
         user: { id: "u", email: "x@y.dev", displayName: "<img src=x onerror=window.__xss1=1>", role: "owner" },
         org: { id: "o", name: "<svg onload=window.__xss2=1>", slug: "s", createdAt: new Date().toISOString(), role: "owner" },
       }));
@@ -457,10 +461,10 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 
 // ── 10. Pagination under the big-data mode ─────────────────────────
 // The 32-session fixture fits one page, so Load more / cursor
-// paging / sort-across-pages only execute with av_mock_bigdata on.
+// paging / sort-across-pages only execute with pv_mock_bigdata on.
 // This shipped untested once; keep it exercised.
 {
-  await page.evaluate(() => localStorage.setItem("av_mock_bigdata", "1"));
+  await page.evaluate(() => localStorage.setItem("pv_mock_bigdata", "1"));
   // goto a clean URL (no ?tour=1): the drill boots with the tour param,
   // which survives page.reload() and re-arms the tour autostart — the
   // tour's start() then yanks the hash to #/overview mid-check.
@@ -521,7 +525,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   if (!missToast) fail("nonexistent ?evt deep link gave no feedback");
   await page.waitForTimeout(300);
   if (await page.evaluate(() => /evt=99999/.test(location.hash))) fail("dead ?evt param not cleaned from the URL");
-  await page.evaluate(() => localStorage.removeItem("av_mock_bigdata"));
+  await page.evaluate(() => localStorage.removeItem("pv_mock_bigdata"));
   console.log("✅ pagination: sessions 50→100 + sort; events 500→700 with selection kept; ?evt=600 auto-pages; dead ?evt explains itself");
 }
 
@@ -590,7 +594,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await noClip.close();
   if (clipErrs.length) fail("copy without clipboard API threw: " + clipErrs.join("; "));
   // Copy-payload truth: no copy affordance may carry a redacted/
-  // truncated placeholder (the ingest-token HINT "av_live_9HpD…" once
+  // truncated placeholder (the ingest-token HINT "pv_live_9HpD…" once
   // had a copy button — pasting it anywhere yields garbage).
   const cpPage = await context.newPage();
   await cpPage.goto(SITE + "#/deployments", { waitUntil: "domcontentloaded" });
@@ -755,28 +759,28 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await tabB.waitForSelector("tr[data-clickable], input#email", { timeout: 15000 });
   // another-tab sign-out (what signOut() writes, minus the modal walk)
   await tabB.evaluate(() => {
-    localStorage.setItem("av_mock_signed_out", "1");
-    localStorage.setItem("av_signed_out_at", String(Date.now()));
+    localStorage.setItem("pv_mock_signed_out", "1");
+    localStorage.setItem("pv_signed_out_at", String(Date.now()));
   });
   await page.waitForSelector("input#email", { timeout: 8000 }).catch(() => fail("tab did not react to a cross-tab sign-out"));
   // another-tab sign-IN lets the stranded login tab back in
   await tabB.evaluate(async () => {
-    await window.dataSource.login({ email: "demo@agentvisor.ai", password: "drill-pass-1" });
-    localStorage.setItem("av_signed_in_at", String(Date.now()));
+    await window.dataSource.login({ email: "demo@proofvisor.com", password: "drill-pass-1" });
+    localStorage.setItem("pv_signed_in_at", String(Date.now()));
   });
   await page.waitForSelector(".stat", { timeout: 8000 }).catch(() => fail("login tab stayed stranded after a cross-tab sign-in"));
   // explicit theme toggle in one tab follows in the other
-  await tabB.evaluate(() => localStorage.setItem("av_theme", "dark"));
+  await tabB.evaluate(() => localStorage.setItem("pv_theme", "dark"));
   await page.waitForFunction(() => document.documentElement.getAttribute("data-theme") === "dark", { timeout: 5000 })
     .catch(() => fail("theme toggle did not sync across tabs"));
-  await tabB.evaluate(() => localStorage.setItem("av_theme", "light"));
+  await tabB.evaluate(() => localStorage.setItem("pv_theme", "light"));
   await page.waitForFunction(() => document.documentElement.getAttribute("data-theme") === "light", { timeout: 5000 });
   await tabB.close();
   // No dark-mode FOUC: with an explicit theme saved, config.js applies
   // data-theme BEFORE first paint (a dark chooser on a light-OS
   // machine used to get a white flash every load). Assert the first
   // painted frame is already dark.
-  await page.evaluate(() => localStorage.setItem("av_theme", "dark"));
+  await page.evaluate(() => localStorage.setItem("pv_theme", "dark"));
   const foucPage = await context.newPage();
   await foucPage.addInitScript(() => {
     window.__firstFrame = null;
@@ -790,7 +794,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   const firstFrame = await foucPage.evaluate(() => window.__firstFrame);
   await foucPage.close();
   if (firstFrame !== "dark") fail("dark-mode FOUC: first painted frame theme was " + firstFrame);
-  await page.evaluate(() => localStorage.removeItem("av_theme"));
+  await page.evaluate(() => localStorage.removeItem("pv_theme"));
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.querySelector(".stat")?.textContent.trim().length > 0, { timeout: 15000 });
   console.log("✅ cross-tab sync: sign-out bounces, sign-in un-strands the login tab, theme follows; no dark-mode FOUC");
@@ -1032,13 +1036,13 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   const toasts = await page.evaluate(() => document.querySelectorAll(".toast").length);
   if (toasts > 4) fail("toast flood not capped: " + toasts + " visible");
   // Unbroken-token containment: a message carrying a 120-char token
-  // (copy-failure echoing av_live_…) once stretched a toast to ~885px,
+  // (copy-failure echoing pv_live_…) once stretched a toast to ~885px,
   // off the left edge of a phone.
   const wide = await page.evaluate(() => {
     const stack = document.querySelector("#toastStack") || document.body;
     const el = document.createElement("div");
     el.className = "toast";
-    el.textContent = "av_live_" + "x".repeat(120);
+    el.textContent = "pv_live_" + "x".repeat(120);
     stack.appendChild(el);
     const r = el.getBoundingClientRect();
     const bad = r.width > Math.min(430, innerWidth) || r.left < -1;
@@ -1078,7 +1082,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 // status=blocked, dep, composition, and per-column sort monotonicity.
 // This logic graduates into the real product's list views.
 {
-  await page.evaluate(() => localStorage.setItem("av_mock_bigdata", "1"));
+  await page.evaluate(() => localStorage.setItem("pv_mock_bigdata", "1"));
   await page.goto(SITE + "#/sessions?range=720", { waitUntil: "domcontentloaded" });
   await page.waitForSelector("tr[data-clickable]", { timeout: 15000 });
   const all = await page.evaluate(async () => {
@@ -1142,7 +1146,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   }));
   if (race.q || race.box !== "" || race.rows !== 50) fail("stale filter fetch painted over the newer one: " + JSON.stringify(race));
   await page.evaluate(() => { window.dataSource.listSessions = window.dataSource.__origListRace; });
-  await page.evaluate(() => localStorage.removeItem("av_mock_bigdata"));
+  await page.evaluate(() => localStorage.removeItem("pv_mock_bigdata"));
   await page.evaluate(() => { location.hash = "#/overview"; });
   await page.waitForTimeout(500);
   console.log("✅ filter/sort semantics: q (case-insens), blocked, composition all match ground truth; cost sort monotone; stale fetch never paints");
@@ -1241,7 +1245,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     return problems;
   });
   if (chartProblems.length) fail("chart vs ground truth: " + chartProblems.join("; "));
-  await page.evaluate(() => localStorage.setItem("av_mock_bigdata", "1"));
+  await page.evaluate(() => localStorage.setItem("pv_mock_bigdata", "1"));
   await page.goto(SITE + "#/sessions?range=720", { waitUntil: "domcontentloaded" });
   await page.waitForSelector("tr[data-clickable]", { timeout: 15000 });
   const budgets = [];
@@ -1272,7 +1276,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => document.querySelector(".evt.selected .seq")?.textContent === "#600", { timeout: 25000 });
   });
-  await page.evaluate(() => localStorage.removeItem("av_mock_bigdata"));
+  await page.evaluate(() => localStorage.removeItem("pv_mock_bigdata"));
   await page.goto(SITE + "#/overview", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.querySelector(".stat")?.textContent.trim().length > 0, { timeout: 15000 });
   console.log("✅ chart matches series ground truth; budgets: " + budgets.join(", "));
@@ -1392,7 +1396,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 {
   // (a) reset flow — enter via reload-then-hash (in-memory session
   // bounces public routes before a reload)
-  await page.evaluate(() => { localStorage.setItem("av_mock_signed_out", "1"); });
+  await page.evaluate(() => { localStorage.setItem("pv_mock_signed_out", "1"); });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector("input#email", { timeout: 10000 });
   await page.evaluate(() => { location.hash = "#/reset"; });
@@ -1443,7 +1447,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     .catch(() => fail("429 countdown did not re-enable + clear"));
   await page.evaluate(() => { window.dataSource.login = window.dataSource.__origLogin2; });
   // (b) member redaction round-trip
-  await page.evaluate(() => localStorage.removeItem("av_mock_signed_out"));
+  await page.evaluate(() => localStorage.removeItem("pv_mock_signed_out"));
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.querySelector(".stat"), { timeout: 15000 });
   await page.evaluate(() => { location.hash = "#/sessions/sess_01H9K"; });
@@ -1510,26 +1514,26 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   }, { timeout: 8000 }).then((h) => h.jsonValue()).catch(() => null);
   if (!aiToast || !/#\/overview/.test(await aiPage.evaluate(() => location.hash)))
     fail("authed invite click did not bounce-with-explanation: " + JSON.stringify({ aiToast }));
-  await aiPage.evaluate(() => { try { localStorage.setItem("av_mock_signed_out", "1"); } catch (e) {} });
+  await aiPage.evaluate(() => { try { localStorage.setItem("pv_mock_signed_out", "1"); } catch (e) {} });
   await aiPage.reload({ waitUntil: "domcontentloaded" });
   await aiPage.evaluate(() => { location.hash = "#/accept-invite?token=drill_tok"; });
   await aiPage.waitForSelector("#acceptForm", { timeout: 8000 });
   const aiCopy = await aiPage.evaluate(() => document.querySelector(".auth-form .sub")?.textContent.trim() || "");
   if (/for\s*$|for\s+and/i.test(aiCopy)) fail("email-less invite renders dangling copy: " + JSON.stringify(aiCopy));
-  await aiPage.evaluate(() => { try { localStorage.removeItem("av_mock_signed_out"); } catch (e) {} });
+  await aiPage.evaluate(() => { try { localStorage.removeItem("pv_mock_signed_out"); } catch (e) {} });
   await aiPage.close();
   // ⌘K on the login page: the palette is an in-app tool — it must not
   // float over the login form for signed-out users (and must come back
   // after sign-in; the rehearsals cover the authed path).
   const koPage = await context.newPage();
-  await koPage.addInitScript(() => { try { localStorage.setItem("av_mock_signed_out", "1"); } catch (e) {} });
+  await koPage.addInitScript(() => { try { localStorage.setItem("pv_mock_signed_out", "1"); } catch (e) {} });
   await koPage.goto(SITE + "#/login", { waitUntil: "domcontentloaded" });
   await koPage.waitForSelector("input#email", { timeout: 15000 });
   await koPage.keyboard.press(process.platform === "darwin" ? "Meta+k" : "Control+k");
   await koPage.waitForTimeout(400);
   const koSt = await koPage.evaluate(() => ({ open: !!document.querySelector(".cmdk-backdrop"), locked: document.body.classList.contains("locked") }));
   if (koSt.open || koSt.locked) fail("palette opened while signed out: " + JSON.stringify(koSt));
-  await koPage.evaluate(() => { try { localStorage.removeItem("av_mock_signed_out"); } catch (e) {} });
+  await koPage.evaluate(() => { try { localStorage.removeItem("pv_mock_signed_out"); } catch (e) {} });
   await koPage.close();
   console.log("✅ reset flow + auth error branches (401 msg, 429 countdown); member preview redacts + is view-only (tabs, SSO, keypair); policy blocks derived from " + pd.fired + " fired sessions; authed invite click explains itself; email-less invite copy clean; palette blocked while signed out");
 }
@@ -1549,7 +1553,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await page.click("#depForm button[type=submit]");
   await page.waitForSelector(".token-display", { timeout: 8000 });
   const tok = await page.evaluate(() => document.querySelector(".token-display").textContent.trim());
-  if (!tok.startsWith("av_live_")) fail("create-deployment token wrong shape: " + tok.slice(0, 20));
+  if (!tok.startsWith("pv_live_")) fail("create-deployment token wrong shape: " + tok.slice(0, 20));
   await page.evaluate(() => document.querySelector(".modal-backdrop [data-close]").click());
   await page.waitForFunction((n) => document.querySelectorAll("tr[data-clickable]").length === n + 1, rowsBefore, { timeout: 8000 })
     .catch(() => fail("new deployment did not appear in the list"));
@@ -1561,10 +1565,20 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     location.hash = "#/deployments/" + dep.id;
     await new Promise((r) => setTimeout(r, 1200));
     const view = document.getElementById("view");
-    const envBtn = view.querySelector('[data-copy*="AV_INGEST_URL"]');
+    // The "Connect your daemon" block is the pvctl console-sync env
+    // contract: PV_CONSOLE_URL / PV_CONSOLE_DEPLOYMENT / PV_CONSOLE_TOKEN,
+    // and the clipboard payload must equal the displayed text.
+    const envBtn = view.querySelector('[data-copy*="PV_CONSOLE_URL"]');
+    const envPre = envBtn && envBtn.parentElement.querySelector("pre");
+    const payload = envBtn ? envBtn.getAttribute("data-copy") : "";
     const rows = [...view.querySelectorAll("tbody tr[data-clickable]")].map((r) => r.getAttribute("data-id"));
     return {
-      envOk: envBtn && envBtn.getAttribute("data-copy").includes("AV_DEPLOYMENT=" + dep.id),
+      envOk: !!envBtn
+        && payload.includes("PV_CONSOLE_DEPLOYMENT=" + dep.id)
+        && /^PV_CONSOLE_URL=https?:\/\//m.test(payload)
+        && payload.includes("PV_CONSOLE_TOKEN=")
+        && !payload.includes("pv_live_")
+        && !!envPre && envPre.textContent.trim() === payload.trim(),
       statusOk: view.textContent.includes(dep.status),
       rowsOk: rows.length === Math.min(sess.length, 8) && rows.every((id) => sess.some((s) => s.id === id)),
       viewAllOk: (view.querySelector('a[href*="dep="]')?.getAttribute("href") || "").includes("dep=" + dep.id),
@@ -1578,7 +1592,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await page.waitForSelector(".modal-backdrop [data-confirm]", { timeout: 5000 });
   await page.click(".modal-backdrop [data-confirm]");
   await page.waitForSelector(".token-display", { timeout: 8000 });
-  if (!(await page.evaluate(() => document.querySelector(".token-display").textContent.trim().startsWith("av_live_")))) fail("rotated token wrong shape");
+  if (!(await page.evaluate(() => document.querySelector(".token-display").textContent.trim().startsWith("pv_live_")))) fail("rotated token wrong shape");
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   const bm = await page.evaluate(async () => {
@@ -1602,8 +1616,8 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 {
   for (const [age, wantCount] of [[2000, 1], [13500, 2], [17500, 3], [30000, 4]]) {
     await page.evaluate((a) => {
-      localStorage.setItem("av_mock_fresh_t0", String(Date.now() - a));
-      localStorage.setItem("av_mock_fresh_identity", JSON.stringify({ user: { id: "u", email: "drill@x.dev", displayName: "Drill" }, org: { id: "org_d", name: "Drill Co", slug: "drill", createdAt: new Date().toISOString(), role: "owner" } }));
+      localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - a));
+      localStorage.setItem("pv_mock_fresh_identity", JSON.stringify({ user: { id: "u", email: "drill@x.dev", displayName: "Drill" }, org: { id: "org_d", name: "Drill Co", slug: "drill", createdAt: new Date().toISOString(), role: "owner" } }));
     }, age);
     await page.goto(SITE + "#/overview", { waitUntil: "domcontentloaded" });
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -1618,7 +1632,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     if (!r.ok) fail("checklist items wrong at age " + age + "ms: got " + JSON.stringify(r.got) + " want " + JSON.stringify(r.want));
     if (r.got.filter(Boolean).length !== wantCount) fail("checklist schedule drifted at age " + age + "ms: " + JSON.stringify(r.got));
   }
-  await page.evaluate(() => { localStorage.removeItem("av_mock_fresh_t0"); localStorage.removeItem("av_mock_fresh_identity"); });
+  await page.evaluate(() => { localStorage.removeItem("pv_mock_fresh_t0"); localStorage.removeItem("pv_mock_fresh_identity"); });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => document.querySelector(".stat")?.textContent.trim().length > 0, { timeout: 15000 });
   // members panel under member preview: zero management controls
@@ -1676,27 +1690,27 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   // the investor into Northwind, reading as data loss). A different
   // email gets Northwind and clears the abandoned workspace.
   const rl = await page.evaluate(async () => {
-    localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 60000));
-    localStorage.setItem("av_mock_fresh_identity", JSON.stringify({ user: { id: "u_rl", email: "founder@relogin.dev", displayName: "Founder" }, org: { id: "org_rl", name: "Relogin Co", slug: "rl", createdAt: new Date().toISOString(), role: "owner" } }));
+    localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 60000));
+    localStorage.setItem("pv_mock_fresh_identity", JSON.stringify({ user: { id: "u_rl", email: "founder@relogin.dev", displayName: "Founder" }, org: { id: "org_rl", name: "Relogin Co", slug: "rl", createdAt: new Date().toISOString(), role: "owner" } }));
     await window.dataSource.logout();
     const same = await window.dataSource.login({ email: "FOUNDER@relogin.dev", password: "x" });
-    const kept = !!localStorage.getItem("av_mock_fresh_t0");
+    const kept = !!localStorage.getItem("pv_mock_fresh_t0");
     await window.dataSource.logout();
     const other = await window.dataSource.login({ email: "someone@else.dev", password: "x" });
-    const cleared = !localStorage.getItem("av_mock_fresh_t0");
+    const cleared = !localStorage.getItem("pv_mock_fresh_t0");
     return { sameOrg: same.org.name, kept, otherOrg: other.org.name, cleared };
   });
   if (rl.sameOrg !== "Relogin Co" || !rl.kept) fail("same-email relogin lost the fresh workspace: " + JSON.stringify(rl));
   if (rl.otherOrg === "Relogin Co" || !rl.cleared) fail("different-email login kept the stale fresh workspace: " + JSON.stringify(rl));
-  await page.evaluate(() => { localStorage.removeItem("av_mock_fresh_t0"); localStorage.removeItem("av_mock_fresh_identity"); localStorage.removeItem("av_mock_signed_out"); });
+  await page.evaluate(() => { localStorage.removeItem("pv_mock_fresh_t0"); localStorage.removeItem("pv_mock_fresh_identity"); localStorage.removeItem("pv_mock_signed_out"); });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForTimeout(800);
   // Completed-onboarding dismiss lifecycle: 4/4 shows a Dismiss that
   // persists across reload; incomplete checklists never show it.
   const obPage = await context.newPage();
   await obPage.addInitScript(() => {
-    localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 2 * 86400 * 1000));
-    localStorage.setItem("av_mock_fresh_identity", JSON.stringify({ user: { id: "u_ob", email: "ob@x.dev", displayName: "Ob", role: "owner" }, org: { id: "org_ob", name: "Ob Co", slug: "ob", createdAt: new Date().toISOString(), role: "owner" } }));
+    localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 2 * 86400 * 1000));
+    localStorage.setItem("pv_mock_fresh_identity", JSON.stringify({ user: { id: "u_ob", email: "ob@x.dev", displayName: "Ob", role: "owner" }, org: { id: "org_ob", name: "Ob Co", slug: "ob", createdAt: new Date().toISOString(), role: "owner" } }));
   });
   await obPage.goto(SITE + "#/overview", { waitUntil: "domcontentloaded" });
   await obPage.waitForSelector("#obDismiss", { timeout: 15000 });
@@ -1712,7 +1726,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   // follower reloads it (that's the product behavior under test in
   // check 33); wait the reload out so the next check's goto isn't
   // interrupted mid-navigation.
-  await obPage.evaluate(() => { localStorage.removeItem("av_mock_fresh_t0"); localStorage.removeItem("av_mock_fresh_identity"); localStorage.removeItem("av_ob_dismissed"); });
+  await obPage.evaluate(() => { localStorage.removeItem("pv_mock_fresh_t0"); localStorage.removeItem("pv_mock_fresh_identity"); localStorage.removeItem("pv_ob_dismissed"); });
   await obPage.close();
   await page.waitForTimeout(400);
   await page.waitForSelector(".app-shell", { timeout: 15000 });
@@ -2124,8 +2138,8 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   // not overflow; the menu stays capped and on-screen.
   const lnPage = await context.newPage();
   await lnPage.addInitScript(() => {
-    localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 60000));
-    localStorage.setItem("av_mock_fresh_identity", JSON.stringify({
+    localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 60000));
+    localStorage.setItem("pv_mock_fresh_identity", JSON.stringify({
       user: { id: "u_x", email: "maximilian.von.hohenzollern-sigmaringen@acme-international-holdings.example.com", displayName: "Maximilian Alexander von Hohenzollern-Sigmaringen III, Esq.", role: "owner" },
       org: { id: "org_x", name: "Acme Corporation International Holdings & Consolidated Subsidiaries GmbH & Co. KGaA" },
     }));
@@ -2148,7 +2162,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   // per-origin storage — scrub them or every later check boots into a
   // fresh workspace instead of Northwind (the shared-localStorage trap,
   // third bite).
-  await page.evaluate(() => { localStorage.removeItem("av_mock_fresh_t0"); localStorage.removeItem("av_mock_fresh_identity"); });
+  await page.evaluate(() => { localStorage.removeItem("pv_mock_fresh_t0"); localStorage.removeItem("pv_mock_fresh_identity"); });
   console.log("✅ hostile-length identity: topbar contained, account menu capped at " + ln.menuW + "px");
 }
 
@@ -2221,24 +2235,24 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 {
   const kbPage = await context.newPage();
   await kbPage.goto(SITE + "?tour=1#/overview", { waitUntil: "domcontentloaded" });
-  await kbPage.waitForSelector(".av-tour-card", { timeout: 15000 });
+  await kbPage.waitForSelector(".pv-tour-card", { timeout: 15000 });
   let reached = false;
   for (let i = 0; i < 30; i++) {
     await kbPage.keyboard.press("Tab");
-    if (await kbPage.evaluate(() => document.activeElement?.classList?.contains("av-tour-next"))) { reached = true; break; }
+    if (await kbPage.evaluate(() => document.activeElement?.classList?.contains("pv-tour-next"))) { reached = true; break; }
   }
   if (!reached) fail("Tab could not reach the tour Next button");
   for (let step = 0; step < 6; step++) {
     await kbPage.keyboard.press("Enter");
     await kbPage.waitForTimeout(1300);
     const st = await kbPage.evaluate(() => ({
-      onNext: document.activeElement?.classList?.contains("av-tour-next"),
-      label: document.querySelector(".av-tour-next")?.textContent.trim() || "",
+      onNext: document.activeElement?.classList?.contains("pv-tour-next"),
+      label: document.querySelector(".pv-tour-next")?.textContent.trim() || "",
     }));
     if (/verifier/i.test(st.label)) break; // finale CTA reached
     if (!st.onNext) fail("focus left the tour Next button after step " + (step + 1) + " (route-change steal)");
   }
-  const finale = await kbPage.evaluate(() => document.querySelector(".av-tour-next")?.textContent.trim() || "");
+  const finale = await kbPage.evaluate(() => document.querySelector(".pv-tour-next")?.textContent.trim() || "");
   if (!/verifier/i.test(finale)) fail("keyboard walk did not reach the finale CTA: " + finale);
   await kbPage.keyboard.press("Escape");
   await kbPage.close();
@@ -2312,8 +2326,8 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await fPage.goto(SITE, { waitUntil: "domcontentloaded" });
   await fPage.evaluate(() => {
     localStorage.clear();
-    localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 60000));
-    localStorage.setItem("av_mock_fresh_identity", JSON.stringify({
+    localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 60000));
+    localStorage.setItem("pv_mock_fresh_identity", JSON.stringify({
       user: { id: "u_f", email: "founder@acmerobotics.dev", displayName: "Ada Founder", role: "owner" },
       org: { id: "org_acme", name: "Acme Robotics", slug: "acme-robotics", createdAt: new Date().toISOString(), role: "owner" },
     }));
@@ -2346,7 +2360,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   // receipts SIGNED those impossible times). The whole story must sit
   // inside t0‥now and the receipt must sign the displayed window.
   const chrono = await fPage.evaluate(async () => {
-    const t0 = +localStorage.getItem("av_mock_fresh_t0");
+    const t0 = +localStorage.getItem("pv_mock_fresh_t0");
     const list = (await window.dataSource.listSessions()).sessions;
     const rec = await window.dataSource.getReceipt("sess_01H9K");
     const d = await window.dataSource.getSessionById("sess_01H9K");
@@ -2404,7 +2418,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   const preTab = await context.newPage();
   await preTab.goto(SITE, { waitUntil: "domcontentloaded" });
   await preTab.evaluate(() => {
-    localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 2000));
+    localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 2000));
   });
   await preTab.goto(SITE + "#/overview", { waitUntil: "domcontentloaded" });
   await preTab.waitForSelector(".onboard-card", { timeout: 15000 });
@@ -2417,13 +2431,13 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await preTab.keyboard.press("Escape");
   // restore the mature-fresh keys the shared storage had before this leg
   await preTab.evaluate(() => {
-    localStorage.setItem("av_mock_fresh_t0", String(Date.now() - 60000));
+    localStorage.setItem("pv_mock_fresh_t0", String(Date.now() - 60000));
   });
   await preTab.close();
   // ?tour=1 must not auto-start the showcase narration in a fresh org
   await fPage.goto(SITE + "?tour=1#/overview", { waitUntil: "domcontentloaded" });
   await fPage.waitForTimeout(2500);
-  if (await fPage.$(".av-tour-card")) fail("?tour=1 auto-started the Northwind tour inside a fresh workspace");
+  if (await fPage.$(".pv-tour-card")) fail("?tour=1 auto-started the Northwind tour inside a fresh workspace");
   // Pool-path round-trips through window.dataSource: every fresh-mode
   // collection (SAML / webhook / API key / invite / daemon) must
   // create-update-delete inside ITS OWN store with real audit slugs —
@@ -2453,7 +2467,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
     await ds.deleteWebhook(wh.endpoint.id);
     t("webhook delete", (await ds.listWebhooks()).length === 0);
     const key = await ds.createApiKey("acme-ci");
-    t("apikey create", (await ds.listApiKeys()).length === 1 && /^av_srv_/.test(key.plaintextToken));
+    t("apikey create", (await ds.listApiKeys()).length === 1 && /^pv_srv_/.test(key.plaintextToken));
     await ds.revokeApiKey(key.key.id);
     t("apikey revoke", (await ds.listApiKeys()).length === 0);
     const inv = await ds.inviteMember({ email: "cto@acme.dev", role: "admin" });
@@ -2479,7 +2493,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await fPage.waitForTimeout(600);
   const resetTab = await context.newPage();
   await resetTab.goto(SITE, { waitUntil: "domcontentloaded" });
-  await resetTab.evaluate(() => { localStorage.removeItem("av_mock_fresh_t0"); localStorage.removeItem("av_mock_fresh_identity"); });
+  await resetTab.evaluate(() => { localStorage.removeItem("pv_mock_fresh_t0"); localStorage.removeItem("pv_mock_fresh_identity"); });
   await resetTab.close();
   await fPage.waitForTimeout(1500);
   await fPage.waitForSelector("table tbody tr", { timeout: 10000 });
@@ -2499,7 +2513,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
 // (b) A script that never executes: app.js dead → the crash guard's
 // 6s blank-page watchdog cards it. datasource.js dead is SNEAKIER:
 // app.js boots fine, the login render clears #app then dies on
-// state.ds.* AFTER __avBooted pacified the guard — a permanent blank
+// state.ds.* AFTER __pvBooted pacified the guard — a permanent blank
 // page. app.js now fails the boot explicitly when the data layer is
 // missing, so the card (with a working Reload) takes over.
 {
@@ -2585,7 +2599,7 @@ await page.waitForSelector(".av-tour-card", { timeout: 15000 });
   await pp.click("#next-session button");
   await pp.waitForTimeout(1200);
   if (!(await pp.$("#panel-dashboard:not([hidden])"))) fail("pitch walk did not reach the dashboard");
-  await pp.evaluate(() => window.avConsole.goTo("receipt"));
+  await pp.evaluate(() => window.pvConsole.goTo("receipt"));
   await pp.waitForTimeout(600);
   await pp.click("#btn-verify");
   await pp.waitForFunction(() => !document.querySelector("#verify-verdict")?.hidden, { timeout: 10000 })

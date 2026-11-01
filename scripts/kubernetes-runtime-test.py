@@ -2,7 +2,7 @@
 """Run the shipped Kubernetes template in a disposable, isolated kind cluster.
 
 Requires kind, kubectl, Docker, Ruby (standard YAML library), and the local
-release avctl. Never reads or changes the user's kubeconfig. Fixture credentials
+release pvctl. Never reads or changes the user's kubeconfig. Fixture credentials
 and the Redis backup are private and are deleted after task-owned resources.
 The local cluster tests Kubernetes behavior, not a remote storage driver or HA.
 """
@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NODE = "kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f"
 REDIS = "redis:8.2.1-alpine@sha256:987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232"
 ISSUER = "https://kubernetes-staging.invalid"
-OWNER = "agentvisor.test.owner"
+OWNER = "proofvisor.test.owner"
 
 MOCK = r'''
 import json, os
@@ -81,7 +81,7 @@ def owned_node(value, name):
 
 class Drill:
     def __init__(self, image, work, plaintext_redis=False):
-        self.name = "av-k8s-" + uuid.uuid4().hex[:10]
+        self.name = "pv-k8s-" + uuid.uuid4().hex[:10]
         self.namespace = self.name
         self.work = work
         self.work.mkdir(parents=True, exist_ok=True)
@@ -217,7 +217,7 @@ class Drill:
         return next(p for p in pods if not p["metadata"].get("deletionTimestamp"))
 
     def gateway_exec(self, *args):
-        return self.kube("exec", self.pod("agentvisor-ai")["metadata"]["name"], "--", *args).stdout
+        return self.kube("exec", self.pod("proofvisor")["metadata"]["name"], "--", *args).stdout
 
     def forward_gateway(self):
         if self.forward:
@@ -229,7 +229,7 @@ class Drill:
         output = open(self.work / ("port-forward-%s.log" % self.port), "w")
         self.forward = subprocess.Popen(["kubectl", "--kubeconfig", str(self.kubeconfig),
             "--context", "kind-" + self.name, "-n", self.namespace,
-            "port-forward", "--address=127.0.0.1", "service/agentvisor-ai", str(self.port) + ":8484"],
+            "port-forward", "--address=127.0.0.1", "service/proofvisor", str(self.port) + ":8484"],
             env=self.env, stdout=output, stderr=subprocess.STDOUT)
         output.close()
         self.until(lambda: self.http("/readyz")[0] == 200, "gateway port forwarding", 60)
@@ -274,13 +274,13 @@ class Drill:
     def chat(self, token, session=None):
         return self.http("/v1/chat/completions", {"model": "staging", "stream": True,
             "messages": [{"role": "user", "content": "hello"}]}, token,
-            {"x-av-session": session or self.name + "-" + uuid.uuid4().hex})
+            {"x-pv-session": session or self.name + "-" + uuid.uuid4().hex})
 
     def recreate_gateway(self):
-        previous = self.pod("agentvisor-ai")["metadata"]["uid"]
-        self.kube("delete", "pod", self.pod("agentvisor-ai")["metadata"]["name"], "--timeout=180s", timeout=190)
-        self.wait_deployment("agentvisor-ai")
-        self.check("Kubernetes replaces the gateway pod", self.pod("agentvisor-ai")["metadata"]["uid"] != previous)
+        previous = self.pod("proofvisor")["metadata"]["uid"]
+        self.kube("delete", "pod", self.pod("proofvisor")["metadata"]["name"], "--timeout=180s", timeout=190)
+        self.wait_deployment("proofvisor")
+        self.check("Kubernetes replaces the gateway pod", self.pod("proofvisor")["metadata"]["uid"] != previous)
         self.forward_gateway()
 
     def setup(self):
@@ -291,7 +291,7 @@ class Drill:
                                              "created": info["Created"], "labels": info["Config"].get("Labels")}
         self.check("gateway image declares non-root UID 65532", info["Config"]["User"].split(":")[0] == "65532")
         resources = json.loads(self.run(["ruby", "-ryaml", "-rjson", "-e",
-            "puts JSON.generate(YAML.load_stream(File.read(ARGV[0])))", str(ROOT / "deploy/kubernetes/agentvisor-ai.yaml")]).stdout)
+            "puts JSON.generate(YAML.load_stream(File.read(ARGV[0])))", str(ROOT / "deploy/kubernetes/proofvisor.yaml")]).stdout)
         resources = [item for item in resources if item]
         deployment = next(item for item in resources if item["kind"] == "Deployment")
         pod = deployment["spec"]["template"]["spec"]
@@ -337,38 +337,38 @@ class Drill:
                              "tls-key-file /etc/redis/redis.key\ntls-ca-cert-file /etc/redis/ca.crt\n")
         self.apply([self.secret("redis-config", dict(certificates, **{"redis.conf": redis_config, "password": self.redis_password})),
             self.pvc("redis-data"), self.redis_deployment("redis", "redis-data"), self.service("redis", 6379),
-            self.secret("agentvisor-ai-upstream", {"api-key": self.provider_key}),
+            self.secret("proofvisor-upstream", {"api-key": self.provider_key}),
             self.deployment("model", self.mock_tag, {"env": [{"name": "PROVIDER_KEY", "valueFrom": {
-                "secretKeyRef": {"name": "agentvisor-ai-upstream", "key": "api-key"}}}]}), self.service("model", 8080)])
+                "secretKeyRef": {"name": "proofvisor-upstream", "key": "api-key"}}}]}), self.service("model", 8080)])
         self.wait_deployment("redis")
         self.wait_deployment("model")
         self.check("dedicated persistent authenticated Redis and mock backend become ready")
-        self.apply([self.secret("agentvisor-ai-signing-seed", {"signing.seed": self.seed}),
-            self.secret("agentvisor-ai-identity", {"identity.hmac": self.identity}),
-            self.secret("agentvisor-ai-trust", {"ca-bundle.crt": certificates["ca.crt"]}),
-            self.secret("agentvisor-ai-state", {"redis-url": self.redis_url("redis")})])
+        self.apply([self.secret("proofvisor-signing-seed", {"signing.seed": self.seed}),
+            self.secret("proofvisor-identity", {"identity.hmac": self.identity}),
+            self.secret("proofvisor-trust", {"ca-bundle.crt": certificates["ca.crt"]}),
+            self.secret("proofvisor-state", {"redis-url": self.redis_url("redis")})])
         for resource in resources:
             resource["metadata"].update(self.metadata(resource["metadata"]["name"]))
         configuration = next(item for item in resources if item["kind"] == "ConfigMap")["data"]
-        configuration["agentvisor.toml"] = configuration["agentvisor.toml"].replace(
+        configuration["proofvisor.toml"] = configuration["proofvisor.toml"].replace(
             "https://api.openai.com", "http://model:8080").replace("https://identity.example.invalid", ISSUER).replace(
-            'upstream_api_key_env = "AV_UPSTREAM_API_KEY"',
-            'upstream_api_key_env = "AV_UPSTREAM_API_KEY"\ntool_upstream_url = "http://model:8080/tool"\n'
-            'tool_upstream_bearer_env = "AV_UPSTREAM_API_KEY"')
+            'upstream_api_key_env = "PV_UPSTREAM_API_KEY"',
+            'upstream_api_key_env = "PV_UPSTREAM_API_KEY"\ntool_upstream_url = "http://model:8080/tool"\n'
+            'tool_upstream_bearer_env = "PV_UPSTREAM_API_KEY"')
         pod["containers"][0]["image"] = self.image
         pod["containers"][0]["imagePullPolicy"] = "Never"
         pod["initContainers"][0]["image"] = self.init_tag
         pod["initContainers"][0]["imagePullPolicy"] = "Never"
         self.kube("apply", "--dry-run=server", "-f", "-", data=json.dumps({"apiVersion": "v1", "kind": "List", "items": resources}))
         self.apply(resources)
-        self.wait_deployment("agentvisor-ai")
+        self.wait_deployment("proofvisor")
         self.check("production template passes server-side validation, scheduling, init and startup probes")
         self.forward_gateway()
 
     def validate(self):
-        pod = self.pod("agentvisor-ai")
+        pod = self.pod("proofvisor")
         self.provenance["gateway_running_image_id"] = pod["status"]["containerStatuses"][0]["imageID"]
-        self.provenance["gateway_runtime_version"] = self.gateway_exec("agentvisord", "--version").strip()
+        self.provenance["gateway_runtime_version"] = self.gateway_exec("proofvisord", "--version").strip()
         self.check("startup and readiness probes report a ready gateway", all(item["ready"] for item in pod["status"]["containerStatuses"]))
         self.check("liveness endpoint succeeds", self.http("/livez")[0] == 200)
         container = pod["status"]["containerStatuses"][0]["containerID"].split("://", 1)[1]
@@ -381,14 +381,14 @@ class Drill:
         self.check("gateway runs without root, capabilities, or privilege escalation", "Uid:\t65532\t65532\t65532\t65532" in status
                    and "CapEff:\t0000000000000000" in status and "NoNewPrivs:\t1" in status and "Seccomp:\t2" in status)
         for secret in ("signing.seed", "identity.hmac"):
-            mode = self.run(["docker", "exec", node, "stat", "-Lc", "%u:%g:%a", prefix + "/root/etc/agentvisor-ai/" + secret]).stdout.strip()
+            mode = self.run(["docker", "exec", node, "stat", "-Lc", "%u:%g:%a", prefix + "/root/etc/proofvisor/" + secret]).stdout.strip()
             self.check("projected %s is copied with owner-only mode" % secret, mode == "65532:65532:600")
         self.check("gateway has no Kubernetes service-account token", self.run(["docker", "exec", node, "test", "!", "-e",
             prefix + "/root/var/run/secrets/kubernetes.io/serviceaccount/token"], check=False).returncode == 0)
         mounts = self.run(["docker", "exec", node, "cat", prefix + "/mountinfo"]).stdout
         self.check("gateway root and credential mounts are read-only", all(any(
             line.split()[4] == path and "ro" in line.split()[5].split(",") for line in mounts.splitlines())
-            for path in ("/", "/etc/agentvisor-ai/signing.seed", "/etc/agentvisor-ai/identity.hmac")))
+            for path in ("/", "/etc/proofvisor/signing.seed", "/etc/proofvisor/identity.hmac")))
         anonymous = self.chat(None)
         self.check("anonymous chat is refused", anonymous[0] == 401)
         self.check("valid identity without chat scope is refused", self.chat(self.token(scopes=["unrelated"]))[0] == 403)
@@ -400,16 +400,16 @@ class Drill:
                    and body.rstrip().endswith(b"data: [DONE]") and b'"error"' not in body and b"event: error" not in body)
         code, body = self.http("/v1/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "db_write", "arguments": {"table": "fixture", "row": {}}}}, token,
-            {"x-av-session": self.name + "-tool"})
+            {"x-pv-session": self.name + "-tool"})
         self.check("authenticated tool routing uses the configured backend credential", code == 200 and b"tool staging success" in body)
         self.check("signed session closes successfully", self.http("/v1/sessions/" + session + "/close", {}, token)[0] == 200)
         code, receipt = self.http("/v1/sessions/" + session + "/promote", {}, token)
         self.check("session produces a signed receipt", code == 200 and "receipt_id" in json.loads(receipt))
-        pubkey = json.loads(self.gateway_exec("avctl", "pubkey", "--seed", "/etc/agentvisor-ai/signing.seed"))["public_key_hex"]
+        pubkey = json.loads(self.gateway_exec("pvctl", "pubkey", "--seed", "/etc/proofvisor/signing.seed"))["public_key_hex"]
         receipt_file = self.work / "receipt.json"
         receipt_file.write_bytes(receipt)
-        verifier = os.environ.get("AVCTL", str(ROOT / "target/release/avctl"))
-        self.provenance["local_avctl"] = {"path": str(Path(verifier).resolve()),
+        verifier = os.environ.get("PVCTL", str(ROOT / "target/release/pvctl"))
+        self.provenance["local_pvctl"] = {"path": str(Path(verifier).resolve()),
                                            "sha256": hashlib.sha256(Path(verifier).read_bytes()).hexdigest(),
                                            "version": self.run([verifier, "--version"]).stdout.strip()}
         self.run([verifier, "receipt-verify", str(receipt_file), "--public-key-hex", pubkey])
@@ -423,12 +423,12 @@ class Drill:
         self.check("holder token revocation succeeds", self.http("/v1/revoke", form={"token": revoked})[0] == 200)
         self.check("revoked token is refused", self.chat(revoked)[0] == 401)
         self.recreate_gateway()
-        self.check("pod recreation retains signing identity", json.loads(self.gateway_exec("avctl", "pubkey", "--seed",
-                   "/etc/agentvisor-ai/signing.seed"))["public_key_hex"] == pubkey)
+        self.check("pod recreation retains signing identity", json.loads(self.gateway_exec("pvctl", "pubkey", "--seed",
+                   "/etc/proofvisor/signing.seed"))["public_key_hex"] == pubkey)
         self.check("pod recreation retains shared revocation", self.chat(revoked)[0] == 401)
         events = []
         for partition in range(8):
-            output = self.gateway_exec("avctl", "event-tail", "--data-dir", "/app/data/bridge", "--topic", "agent.receipt",
+            output = self.gateway_exec("pvctl", "event-tail", "--data-dir", "/app/data/bridge", "--topic", "agent.receipt",
                 "--partition", str(partition), "--offset", "0", "--max", "100")
             events.extend(json.loads(line) for line in output.splitlines() if line.strip())
         matches = [event for event in events if event.get("value", {}).get("payload", {}).get("receipt_id") == json.loads(receipt)["receipt_id"]]
@@ -491,7 +491,7 @@ class Drill:
         self.wait_deployment("redis-restored")
         self.check("restored Redis restarts with normal AOF configuration",
                    self.pod("redis-restored")["metadata"]["name"] != restored_pod)
-        self.apply([self.secret("agentvisor-ai-state", {"redis-url": self.redis_url("redis-restored")})])
+        self.apply([self.secret("proofvisor-state", {"redis-url": self.redis_url("redis-restored")})])
         self.recreate_gateway()
         claims_part = revoked.split(".")[1]
         revoked_claims = json.loads(base64.urlsafe_b64decode(claims_part + "=" * (-len(claims_part) % 4)))
@@ -499,8 +499,8 @@ class Drill:
             raise AssertionError("Fixture token expired before restored revocation could be tested")
         self.check("restored Redis backup enforces revocation in a fresh gateway process", self.chat(revoked)[0] == 401)
         self.check("fresh token works against restored Redis", self.chat(self.token(subject=self.name + "-restored"))[0] == 200)
-        self.check("Redis restore preserves the signing identity", json.loads(self.gateway_exec("avctl", "pubkey", "--seed",
-                   "/etc/agentvisor-ai/signing.seed"))["public_key_hex"] == pubkey)
+        self.check("Redis restore preserves the signing identity", json.loads(self.gateway_exec("pvctl", "pubkey", "--seed",
+                   "/etc/proofvisor/signing.seed"))["public_key_hex"] == pubkey)
         self.provenance["limitations"] = ["One local kind node and local-path volumes; no multi-host failover or production CSI validation.",
             "No public ingress, external identity provider, real model provider, or remote Kubernetes deployment."]
         self.provenance["redis_transport"] = "plaintext" if self.plaintext_redis else "TLS with private CA and password authentication"
@@ -519,7 +519,7 @@ class Drill:
             if self.kubeconfig.exists():
                 # An unavailable API must not prevent cleanup of our own node.
                 for args in [("get", "pods,pvc,events", "-o", "wide"),
-                             ("logs", "deployment/agentvisor-ai", "--all-containers=true", "--tail=200")]:
+                             ("logs", "deployment/proofvisor", "--all-containers=true", "--tail=200")]:
                     try:
                         self.kube(*args, check=False, timeout=20)
                     except subprocess.TimeoutExpired:
@@ -555,8 +555,8 @@ class UnitTests(unittest.TestCase):
     def test_production_template_requires_identity_and_scopes(self):
         resources = json.loads(subprocess.check_output(["ruby", "-ryaml", "-rjson", "-e",
             "puts JSON.generate(YAML.load_stream(File.read(ARGV[0])))",
-            str(ROOT / "deploy/kubernetes/agentvisor-ai.yaml")], text=True))
-        config = next(item for item in resources if item and item["kind"] == "ConfigMap")["data"]["agentvisor.toml"]
+            str(ROOT / "deploy/kubernetes/proofvisor.yaml")], text=True))
+        config = next(item for item in resources if item and item["kind"] == "ConfigMap")["data"]["proofvisor.toml"]
         self.assertIn("require_identity = true", config.splitlines())
         self.assertIn("enforce_identity_scopes = true", config.splitlines())
         cloudfoundry = (ROOT / "deploy/cloudfoundry/harness.toml").read_text().splitlines()
@@ -564,12 +564,12 @@ class UnitTests(unittest.TestCase):
         self.assertIn("enforce_identity_scopes = true", cloudfoundry)
 
     def test_cleanup_checks_both_name_and_kind_label(self):
-        node = {"Name": "/av-k8s-fixture-control-plane", "Config": {"Labels": {"io.x-k8s.kind.cluster": "av-k8s-fixture"}}}
-        self.assertTrue(owned_node(node, "av-k8s-fixture"))
+        node = {"Name": "/pv-k8s-fixture-control-plane", "Config": {"Labels": {"io.x-k8s.kind.cluster": "pv-k8s-fixture"}}}
+        self.assertTrue(owned_node(node, "pv-k8s-fixture"))
         self.assertFalse(owned_node(node, "someone-else"))
         altered = copy.deepcopy(node)
         altered["Config"]["Labels"] = {}
-        self.assertFalse(owned_node(altered, "av-k8s-fixture"))
+        self.assertFalse(owned_node(altered, "pv-k8s-fixture"))
 
     def test_fixture_token_signature_and_scope(self):
         token = mint("fixture-secret", "fixture-subject", ["chat:complete"])
@@ -582,7 +582,7 @@ class UnitTests(unittest.TestCase):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", default="agentvisor-ai:local")
+    parser.add_argument("--image", default="proofvisor:local")
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--plaintext-redis", action="store_true", help="Explicitly skip Redis TLS; record the reduced scope")
@@ -593,7 +593,7 @@ def main():
     for tool in ("kind", "kubectl", "docker", "ruby", "openssl"):
         if not shutil.which(tool):
             raise SystemExit("Required tool is missing: " + tool)
-    work = args.work_dir or Path(tempfile.mkdtemp(prefix="av-kubernetes-runtime-"))
+    work = args.work_dir or Path(tempfile.mkdtemp(prefix="pv-kubernetes-runtime-"))
     work.mkdir(parents=True, exist_ok=True)
     work.chmod(0o700)
     print("Kubernetes staging logs: " + str(work), flush=True)

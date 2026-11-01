@@ -75,7 +75,7 @@ async function waitForFile(path) {
 }
 
 async function runFixture(t, mode) {
-  const work = await mkdtemp(join(tmpdir(), "av-recovery-cleanup-test-"));
+  const work = await mkdtemp(join(tmpdir(), "pv-recovery-cleanup-test-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const docker = join(work, "docker");
   await writeFile(docker, fakeDocker);
@@ -112,7 +112,7 @@ async function runFixture(t, mode) {
   clearTimeout(timeout);
   assert.equal(signal, null, stdout + stderr);
   assert.equal(code, 1, "the original creation failure/cancellation must remain a failure");
-  const outputs = (await readdir(work)).filter((name) => name.startsWith("av-console-recovery-"));
+  const outputs = (await readdir(work)).filter((name) => name.startsWith("pv-console-recovery-"));
   assert.equal(outputs.length, 1);
   const output = join(work, outputs[0]);
   const report = JSON.parse(await readFile(join(output, "report.json"), "utf8"));
@@ -238,7 +238,7 @@ if (args[0] === "network" && args[1] === "create") {
 `;
 
 async function runImageFailure(t, mode) {
-  const work = await mkdtemp(join(tmpdir(), "av-recovery-image-cleanup-"));
+  const work = await mkdtemp(join(tmpdir(), "pv-recovery-image-cleanup-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const sockets = new Set();
   // Only authentication is needed: image creation deliberately fails before
@@ -276,7 +276,7 @@ async function runImageFailure(t, mode) {
   clearTimeout(timer);
   assert.equal(signal, null, output);
   assert.equal(code, 1, output);
-  const resultDir = join(work, (await readdir(work)).find((name) => name.startsWith("av-console-recovery-")));
+  const resultDir = join(work, (await readdir(work)).find((name) => name.startsWith("pv-console-recovery-")));
   const report = JSON.parse(await readFile(join(resultDir, "report.json"), "utf8"));
   const state = JSON.parse(await readFile(join(work, "state.json"), "utf8"));
   assert.equal(report.status, "failed");

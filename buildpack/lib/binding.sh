@@ -4,7 +4,7 @@
 read_binding() {
     buildpack_dir=${buildpack_dir:?entry point must set buildpack_dir}
     command -v jq >/dev/null 2>&1 || {
-        printf 'error: AgentVisor binding discovery requires jq in the build environment\n' >&2
+        printf 'error: ProofVisor binding discovery requires jq in the build environment\n' >&2
         return 1
     }
     binding=null
@@ -21,9 +21,9 @@ read_binding() {
         for dir in "$binding_root"/*/; do
             [ -f "${dir}type" ] || continue
             # Keep the type inside jq: command substitution could discard NULs.
-            jq -Rse 'gsub("^\\s+|\\s+$"; "") == "agentvisor"' "${dir}type" >/dev/null || continue
+            jq -Rse 'gsub("^\\s+|\\s+$"; "") == "proofvisor"' "${dir}type" >/dev/null || continue
             if [ -n "$match_dir" ]; then
-                printf 'error: ambiguous agentvisor binding\n' >&2
+                printf 'error: ambiguous proofvisor binding\n' >&2
                 return 1
             fi
             match_dir=$dir

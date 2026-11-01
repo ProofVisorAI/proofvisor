@@ -14,6 +14,42 @@ exercised against release binaries in CI on every push
 
 ### Breaking changes
 
+- **Rename: AgentVisor AI → ProofVisor.** The daemon is `proofvisord`
+  (was `agentvisord`), the CLI is `pvctl` (was `avctl`), and the crates are
+  `pv-*` (were `av-*`). Unlike the earlier rebrand, deployments of the
+  previous name exist, so everything they depend on keeps working:
+  - **Unchanged bytes.** Every signed, hashed or derived label keeps its
+    old value: the receipt v2 domain tag (`agentvisor-receipt-v2\0`), the
+    event-chain genesis (`av-genesis`), the journal, cold-outbox, MCP
+    session and compression-marker labels, the JWT types `av-tool+jwt` and
+    `av-intent+jwt`, the delegation claims (`av_subject_tokens`,
+    `av_actor_tokens`, `av_delegation_depth`), and the default `audience`
+    (`agentvisor-ai`, which is also the `iss` of the tokens the daemon
+    signs). Receipts, journals and outboxes written before the rename
+    verify and load unchanged.
+  - **Old names still accepted.** `proofvisord` and `pvctl` adopt any
+    `AV_*` environment variable whose `PV_*` name is unset (and say so on
+    stderr); `./agentvisor.toml`, `~/.agentvisor/agentvisor.toml` and
+    `~/.agentvisor/console.toml` are still found; `pvctl setup` still
+    finds an `agentvisord` binary and recognises an old daemon's `/health`.
+    The console API accepts `av_srv_` API keys, the `X-AV-Deployment`
+    header from older daemons and the `X-AV-Org` header from older
+    console tabs. Receipt bundles with `"format": "agentvisor.receipt.v1"`
+    verify.
+  - **Both names sent.** Webhook deliveries carry `X-ProofVisor-*` and the
+    deprecated `X-AgentVisor-*` headers with the same values; Kafka records
+    carry `proofvisor-event-uid` and `agentvisor-event-uid`; `pvctl
+    console-sync` sends `X-PV-Deployment` and `X-AV-Deployment`, so a new
+    `pvctl` still uploads to a console that runs the pre-rename API.
+  - **Changed without a fallback:** the session cookie (`pv_session`),
+    so everyone is signed out once when the new API is deployed, and
+    sign-ins in progress at that moment must restart; Prometheus metric
+    names (`pv_*` in the daemon, `proofvisor_api_*` in the API);
+    OpenTelemetry service and span attribute names (`proofvisor`,
+    `proofvisor.*`); the OCSF product name (`proofvisor`), so SIEM rules
+    that match `agentvisor-ai` must be updated; the `/health` `service`
+    value; and the console's saved live-mode choice (`?live=1` restores
+    it). Update dashboards, alerts and SIEM rules before upgrading.
 - **Rebrand: AgentBridge → AgentVisor AI.** The daemon is `agentvisord`
   (was `agentbridged`), the CLI is `avctl` (was `abctl`), and all twelve
   workspace crates are renamed `ab-*` → `av-*`. Wire and persisted
@@ -28,11 +64,13 @@ exercised against release binaries in CI on every push
   path is provided. Setup root is `~/.agentvisor/`; the systemd unit and
   Kubernetes manifest are renamed accordingly. `find_server_binary`
   still falls back to the legacy binary names for source-built installs.
-- **Minimum supported Rust version raised to 1.94.**
+- **Minimum supported Rust version raised to 1.95.** wasmtime 48 (the
+  WebAssembly policy engine) needs 1.95, and only the 48 line carries the
+  fixes for RUSTSEC-2026-0420 and RUSTSEC-2026-0324.
 - Exchanged tokens now bind each revocation ancestor to its issuer. Reissue
   exchanged tokens created by older builds: tokens without issuer ancestry
   are refused because their revocation identity is ambiguous.
-- Intent tokens (`x-av-intent-token`) now carry the human principal in
+- Intent tokens (`x-pv-intent-token`) now carry the human principal in
   `sub` and the calling agent in `act.sub` (RFC 8693 shape), plus the ids of
   the missions that applied in `missions`. Backends that read `sub` as the
   agent must read `act.sub` instead.
@@ -47,6 +85,25 @@ exercised against release binaries in CI on every push
   inbound identities.
 
 ### Security
+
+- **Redaction is on by default in every shipped configuration.** The
+  three `config/` files, the Cloud Foundry and Kubernetes manifests, and
+  the configs written by `pvctl init` and `pvctl setup` now set
+  `redaction_patterns` to `pv_harness::config::RECOMMENDED_REDACTION_PATTERNS`
+  (AWS, GitHub, Google and Slack credentials and bare JWTs), which also
+  switches on the built-in patterns (bearer tokens, `sk-`/`key-` API keys,
+  emails, card numbers, US SSNs, public IPv4). Redaction applies to the
+  persisted audit copies, not to the traffic sent to the model. Set
+  `redaction_patterns = []` to turn it off.
+- **Console ingest tokens carry a `pv_live_` prefix** so secret scanners
+  recognise them; the stored hint is the prefix plus eight characters.
+  Tokens minted before this change keep working.
+- Dependency advisories closed (2026-10-31): `rustls` 0.23.46,
+  `rustls-webpki` 0.103.16, `webpki-roots` 1.0.11, `tokio` 1.54.1,
+  `ctutils` 0.4.7, `wasmtime` 48.0.8 (Rust); `fastify` 5.12.7, `undici`
+  8.12.3, `nodemailer` 10.3.1, `fast-uri` 4.2.3 and `zod` 4.6.7 (console
+  API). `cargo deny` and `npm audit` report nothing; see
+  `SECURITY-AUDIT.md` for the one advisory ignored as unreachable.
 
 - Console notification connections now have query deadlines, a listener
   heartbeat, and a bounded publication queue. Recovery resets client streams
@@ -162,7 +219,7 @@ exercised against release binaries in CI on every push
   separation (context tag + length framing); version 1 receipts continue
   to verify.
 - Budget counters key on the authenticated principal rather than the
-  caller-chosen `X-AV-Session` header, so a client cannot escape its
+  caller-chosen `X-PV-Session` header, so a client cannot escape its
   budget by rotating session ids.
 - Receipt, ATIF-trajectory, and chat-completion ingress refuse duplicate
   JSON keys at any nesting depth, explicit JSON `null` on optional
@@ -178,7 +235,7 @@ exercised against release binaries in CI on every push
   templates move the seed out of shared volumes (Docker secret,
   Kubernetes Secret via init container, systemd path outside
   `ReadWritePaths`).
-- Duplicate `X-AV-Session`, `X-AV-Workflow`, and `Authorization` headers
+- Duplicate `X-PV-Session`, `X-PV-Workflow`, and `Authorization` headers
   are refused, preventing identity split-brain between the proxy and the
   upstream.
 - JWKS ingestion hardened: 4 MiB body cap, 256-key cap, Ed25519 key
@@ -197,7 +254,7 @@ exercised against release binaries in CI on every push
   loudly, and the S3 cold-store client honors only `AWS_*`-prefixed
   environment variables.
 - A second daemon pointed at the same spool refuses to boot (exclusive
-  advisory lock on `.agentvisord.lock`), preventing duplicate
+  advisory lock on `.proofvisord.lock`), preventing duplicate
   finalization and duplicate audit events.
 - HTTP responses hardened: dashboard responses carry a strict CSP,
   `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`; every
@@ -206,10 +263,23 @@ exercised against release binaries in CI on every push
   nosniff`; `/health` no longer discloses the build version to
   unauthenticated callers.
 - CLI output is sanitized against terminal-control injection, and
-  `avctl doctor` redacts credentials and URL userinfo in all output,
+  `pvctl doctor` redacts credentials and URL userinfo in all output,
   including error paths.
 
 ### Added
+
+- `docs/FEATURES.md`: the verified list of what ships today, what is
+  planned, and the verification record behind it.
+- Console API: `session.blocked` and `apikey.created` webhooks are now
+  emitted (the first once per session, on the first blocked tool call or a
+  `status: blocked` upsert; the second never includes the plaintext key).
+  `GET /api/v1/deployments` returns `sessions24h` and `spend24hUsdMicros`,
+  `GET /api/v1/sessions` and `/sessions/:id` return `policiesFired`, the
+  overview stats include `events`, and `POST /api/v1/keys` accepts a
+  `role` (owner, admin or member, never above the caller's own).
+- Console: role selector and Role column for API keys; the webhook picker
+  offers every emitted event; the session drawer shows the daemon's
+  journaled event body; `npm test` runs the API unit tests.
 
 - **MCP protocol on `/mcp`.** The gateway is a Streamable HTTP MCP server
   (protocol versions 2024-11-05 to 2025-11-25): `initialize` with version
@@ -247,10 +317,10 @@ exercised against release binaries in CI on every push
   on `/v1/token` issues agent tokens to Cloud Foundry app instances that
   prove their instance identity (`[workload_identity]`,
   `[[workload_identities]]`, each naming the human the agent acts for);
-  `avctl sidecar` attaches that identity to an unmodified application's
+  `pvctl sidecar` attaches that identity to an unmodified application's
   requests; the buildpack sets the OpenAI SDK variables, writes an MCP
   client configuration, and starts the sidecar (`launch.yml`), and
-  `scripts/package-buildpack.py` packages it with the static `avctl`
+  `scripts/package-buildpack.py` packages it with the static `pvctl`
   binaries (also published by the release workflow).
 
 - **Per-agent identity, authorization, and credential isolation for tool
@@ -271,7 +341,7 @@ exercised against release binaries in CI on every push
     policy decision point that runs before the budget is charged, in every
     mode. A denial costs no budget and is audited with its code
     (`UNMAPPED_TOOL`, `MISSION_EXPIRED`, `MISSION_DENIED`).
-  - Forwarded calls carry a signed intent token (`x-av-intent-token`,
+  - Forwarded calls carry a signed intent token (`x-pv-intent-token`,
     `typ: av-intent+jwt`) bound to the receiving backend and the calling
     agent.
   - `POST /v1/revoke` implements RFC 7009 for NHI tokens. Revoking a token
@@ -279,7 +349,7 @@ exercised against release binaries in CI on every push
     `state_backend = "redis"` a revocation applies to every replica. An
     unreadable revocation list fails closed with `503`, not `401`.
   - Every JSON-RPC denial now carries its machine-readable code in
-    `error.data.code` (`av_sandbox::rpc::denial_error`).
+    `error.data.code` (`pv_sandbox::rpc::denial_error`).
   - Boot validation refuses token exchange without a signing seed, an
     identity source, and at least one backend, and refuses exchange
     backends without `require_identity = true`.
@@ -311,17 +381,17 @@ exercised against release binaries in CI on every push
   Policies surface now persists to the org in live mode instead of a
   browser-local mock store. Hit/block counters come from per-policy
   attribution (see the entry above).
-- **`avctl console-sync --bridge-dir`.** Signed-workflow sessions leave
+- **`pvctl console-sync --bridge-dir`.** Signed-workflow sessions leave
   no ATIF trajectory, so they previously synced with zero events; the
   bridge pass replays the embedded Bridge's OCSF topics
   (session/tool_call/stop_reason/compression/identity) into console
   events with deterministic offset-derived sequence numbers, ordered
   before the receipt pass so sealing cannot orphan the evidence.
-- **`avctl setup` console step.** Guided setup can now store the
-  console ingest token (owner-only, `~/.agentvisor/keys/`) and write
-  `~/.agentvisor/console.toml`, then points at `avctl console-sync
+- **`pvctl setup` console step.** Guided setup can now store the
+  console ingest token (owner-only, `~/.proofvisor/keys/`) and write
+  `~/.proofvisor/console.toml`, then points at `pvctl console-sync
   --watch` — matching what the console's onboarding card promises.
-- **`avctl console-sync`.** Uploads locally-spooled session evidence
+- **`pvctl console-sync`.** Uploads locally-spooled session evidence
   (ATIF trajectories, signed receipts, the signer public key) to the
   hosted console's ingest API — the daemon→console bridge the console's
   onboarding flow describes. Incremental and idempotent via a local
@@ -345,9 +415,9 @@ exercised against release binaries in CI on every push
 - **Health endpoints.** `/livez` (liveness, constant 200) and `/readyz`
   (readiness; 503 while draining or while the spool is unreadable) for
   Kubernetes-style probes.
-- **`avctl pubkey`** derives the verifying public key from a signing
+- **`pvctl pubkey`** derives the verifying public key from a signing
   seed, for offline receipt verification and key rotation.
-- **`avctl receipt-locate`** maps a session id to its on-disk receipt
+- **`pvctl receipt-locate`** maps a session id to its on-disk receipt
   and trajectory artifact paths, including quarantined variants.
 - **`principal_budget`** config key: an optional budget layered on the
   validated identity, stable across session-id rotation. Refused-by-
@@ -369,11 +439,11 @@ exercised against release binaries in CI on every push
   validator. The header is never forwarded upstream; refused in
   combination with `require_identity` or
   `upstream_authorization_passthrough`.
-- **`AV_KAFKA_SASL_MECHANISM`**: SASL SCRAM support for Kafka
+- **`PV_KAFKA_SASL_MECHANISM`**: SASL SCRAM support for Kafka
   (`SCRAM-SHA-256` default, `SCRAM-SHA-512`, or `PLAIN`), applied to
   both the event and admin paths.
-- Kafka TLS/SASL (`AV_KAFKA_CA_FILE`, SASL credentials), NATS TLS/auth
-  (`AV_NATS_CA_FILE`, `AV_NATS_USER`/`AV_NATS_PASSWORD`), and an
+- Kafka TLS/SASL (`PV_KAFKA_CA_FILE`, SASL credentials), NATS TLS/auth
+  (`PV_NATS_CA_FILE`, `PV_NATS_USER`/`PV_NATS_PASSWORD`), and an
   S3-compatible cold tier (`cold-store-aws` feature, `s3://` targets),
   each validated against live backends (Redpanda, nats-server, MinIO)
   plus a live Redis Cluster contract test.
@@ -381,6 +451,45 @@ exercised against release binaries in CI on every push
   uploaded in dependency order on version tags, with a dry-run mode.
 
 ### Fixed
+
+- Policy push: the console counted every daemon on the current bundle as
+  enforcing every policy, so a policy a daemon had reported unsupported
+  still read "Enforced by 1 of 1". `enforcement.applied` now counts the
+  daemons that listed that policy as applied, and a new
+  `enforcement.current` carries the old org-wide count for the console's
+  "has not pulled yet" arithmetic.
+- Policy push: a chat request refused by a console-pushed token budget
+  said only `max_tokens exceeded (cap N)`; it now names the policy, as
+  tool refusals and token-rate refusals already did. The daemon also
+  names the policy in the stop-reason event (`payload.policy`), and
+  `pvctl console-sync` uploads such a refusal as a block attributed to
+  that policy, so the policy's hit and block counters count refused chat
+  requests, not only refused tool calls.
+- `pvctl console-sync` got 401 from a console running the pre-rename API
+  because it sent only the new deployment header name; it now sends both.
+- Rustdoc: a public doc comment linked to a private type, which failed
+  CI's documentation build.
+- Windows: the daemon's journal, tool-intent claim and intent release
+  flushed their folder by opening it as a file, which Windows refuses
+  ("Access is denied"), so the journal stopped and tool calls failed.
+  They now use `pv_core::fsutil::sync_directory`, which skips the folder
+  flush on Windows as the rest of the code already did.
+- Console in live mode no longer invents data: sessions showed a default
+  model name and user, deployments showed a fabricated token prefix, the
+  overview event count was hard-coded to zero, the members table labelled
+  the join date "Last active", and the policy page never listed the
+  sessions that fired a policy. The "Connect your daemon" card now prints
+  the variables `pvctl console-sync` actually reads (`PV_CONSOLE_URL`,
+  `PV_CONSOLE_DEPLOYMENT`, `PV_CONSOLE_TOKEN`) and the clipboard copy
+  matches the displayed text.
+- Leftover pre-rename identifiers (`__avActiveOrgId`, `AVTour`,
+  `avVerifyReceipt`, `AV_*` env names, `AVURL`) renamed to their `pv`
+  forms across the console, drills and styles; two drill scripts still
+  pointed at a non-existent `proofvisorai.me` host.
+- Documentation drift: the receipt v2 signing prefix in
+  `CONFORMANCE-STATUS.md`, the crate count, the provider-support wording,
+  the install path, the hosting facts (Render, GitHub Pages; Fly is an
+  unused template), stale status values, and the policy-route claims.
 
 - Loop detection no longer produces false trips: tool-call-only turns
   (request and response side) synthesize text from the tool name and
@@ -442,7 +551,7 @@ exercised against release binaries in CI on every push
   contradictory secret sources, `max_request_bytes = 0`, per-member
   scheme checks on comma-separated endpoint lists (including
   `redis+unix:`), and conflicting identity flags.
-- `avctl doctor` matches runtime behavior: secret files are checked with
+- `pvctl doctor` matches runtime behavior: secret files are checked with
   the same permissions/content rules the daemon enforces, the signing
   seed is probed at the path the daemon actually uses, and Unix-socket
   and multi-endpoint bootstrap forms probe correctly.
@@ -489,12 +598,13 @@ exercised against release binaries in CI on every push
 ### Documentation
 
 - Added an interactive product console (`docs/app/`, published at
-  `/app/` on the site): a self-contained client-side simulation of the
-  full operator flow — setup wizard, one-line integration, a live
-  session with budget refusals and a loop-breaker trip, the fleet
-  dashboard, offline receipt verification, and the on-disk evidence
-  layout. Content is display-only and mirrors the shipped surfaces
-  (config keys, `avctl` commands, HTTP status semantics, and the
+  `/app/` on the site): a client-side app whose mock mode runs the
+  full operator flow against built-in fixtures — setup wizard, one-line
+  integration, a live session with budget refusals and a loop-breaker
+  trip, the fleet dashboard, offline receipt verification, and the
+  on-disk evidence layout. (The same app later gained a live mode
+  against the hosted API.) Mock content mirrors the shipped surfaces
+  (config keys, `pvctl` commands, HTTP status semantics, and the
   receipt v2 schema). A captioned guided tour is available behind
   `?tour=1`.
 - Corrected `docs/reference/LIMITS.md`: budget refusals return 403 —
@@ -553,7 +663,7 @@ exercised against release binaries in CI on every push
 - In-memory and Redis atomic state backends.
 - Hash and ONNX embedding backends plus optional Qdrant persistence.
 - Ed25519 JWKS refresh and HS256 development identity support.
-- `abctl` operations, load generation, schemas, Docker Compose, and Vector configuration.
+- `pvctl` (then named `abctl`) operations, load generation, schemas, Docker Compose, and Vector configuration.
 - Bounded byte-oriented SSE/non-SSE capture with fragmented UTF-8 and tool-call reassembly.
 - Authenticated, torn-tail-tolerant signed and unsigned crash journals with exact receipt reuse.
 - Durable lifecycle and cold-export outboxes with persisted acknowledgments.

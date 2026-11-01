@@ -7,6 +7,7 @@ import { verifyPassword } from "../lib/auth.js";
 import { bus } from "../lib/bus.js";
 import { dispatchEvent } from "../lib/webhooks.js";
 import { writeAudit } from "../lib/audit.js";
+import { buildPolicyBundle, currentOrgEtag } from "../lib/policy-bundle.js";
 
 // ── Auth for the ingest endpoint ────────────────────────────────────────────
 //
@@ -15,26 +16,122 @@ import { writeAudit } from "../lib/audit.js";
 // argon2 hash on file. This lookup is intentionally by deployment id (fast,
 // indexed) — never by scanning every deployment.
 
+// The ingest routes are exempt from the global rate limiter (a busy
+// fleet posts constantly), and every token check is an argon2 verify
+// (19 MiB, ~50-100 ms). Deployment ids are not secret — receipt share
+// links carry them — so without the guards below anyone could make the
+// API run unbounded argon2 work, exhausting its memory and CPU:
+//
+// 1. A short-lived cache of successful checks. The key hashes the
+//    deployment id, the presented token AND the stored argon2 hash, so a
+//    token rotation (new hash) invalidates it at once and a wrong token
+//    never matches. Ingest tokens are 192-bit random values, so a SHA-256
+//    of them is not a guessable password hash.
+// 2. A per-IP budget of failed checks. An address over the budget gets
+//    429 before any argon2 work.
+// 3. A cap on concurrent uncached verifications; excess callers get 429
+//    with Retry-After: 1, which `pvctl console-sync` already honours.
+const AUTH_CACHE_TTL_MS = 60_000;
+const AUTH_CACHE_MAX = 10_000;
+const AUTH_FAIL_WINDOW_MS = 60_000;
+const AUTH_FAIL_MAX_PER_IP = 20;
+const AUTH_FAIL_TRACK_MAX = 10_000;
+const AUTH_MAX_CONCURRENT_VERIFY = 8;
+
+const authCache = new Map<string, number>();
+const authFailures = new Map<string, { count: number; resetAt: number }>();
+let verifyInFlight = 0;
+
+function authCacheKey(deploymentId: string, token: string, hash: string): string {
+  return createHash("sha256").update(deploymentId).update("\0").update(token).update("\0").update(hash).digest("hex");
+}
+
+function failureBudgetExceeded(ip: string, now: number): boolean {
+  const f = authFailures.get(ip);
+  return f !== undefined && f.resetAt > now && f.count >= AUTH_FAIL_MAX_PER_IP;
+}
+
+function recordAuthFailure(ip: string, now: number): void {
+  const f = authFailures.get(ip);
+  if (f && f.resetAt > now) {
+    f.count += 1;
+    return;
+  }
+  if (authFailures.size >= AUTH_FAIL_TRACK_MAX) {
+    for (const [k, v] of authFailures) if (v.resetAt <= now) authFailures.delete(k);
+    // Still full of live entries: drop the oldest insertion.
+    if (authFailures.size >= AUTH_FAIL_TRACK_MAX) {
+      const oldest = authFailures.keys().next().value;
+      if (oldest !== undefined) authFailures.delete(oldest);
+    }
+  }
+  authFailures.set(ip, { count: 1, resetAt: now + AUTH_FAIL_WINDOW_MS });
+}
+
+function rememberAuth(key: string, now: number): void {
+  authCache.delete(key);
+  if (authCache.size >= AUTH_CACHE_MAX) {
+    const oldest = authCache.keys().next().value;
+    if (oldest !== undefined) authCache.delete(oldest);
+  }
+  authCache.set(key, now + AUTH_CACHE_TTL_MS);
+}
+
 async function authenticateDaemon(
   req: FastifyRequest,
   reply: FastifyReply,
 ): Promise<{ deploymentId: string; orgId: string } | null> {
-  const deploymentId = req.headers["x-av-deployment"];
+  // Daemons released before the ProofVisor rename send X-AV-Deployment.
+  const deploymentId = req.headers["x-pv-deployment"] ?? req.headers["x-av-deployment"];
   const auth = req.headers.authorization;
   if (typeof deploymentId !== "string" || !auth?.startsWith("Bearer ")) {
     reply.code(401).send({ error: "unauthenticated" });
     return null;
   }
   const token = auth.slice("Bearer ".length);
-  const deployment = await db.deployment.findUnique({
-    where: { id: deploymentId },
-    select: { id: true, orgId: true, ingestTokenHash: true },
-  });
-  if (!deployment) {
+  // Real tokens are "pv_live_" + 32 base64url characters (or 32 bare
+  // characters for tokens minted before the prefix). Anything far
+  // longer is not a token and is refused before hashing.
+  if (token.length === 0 || token.length > 256 || deploymentId.length > 64) {
     reply.code(401).send({ error: "unauthenticated" });
     return null;
   }
-  const ok = await verifyPassword(deployment.ingestTokenHash, token);
+  const now = Date.now();
+  const ip = req.ip;
+  const deployment = await db.deployment.findUnique({
+    where: { id: deploymentId },
+    select: { id: true, orgId: true, ingestTokenHash: true, isDemo: true },
+  });
+  // Demo deployments never accept daemon traffic: their rows are staged
+  // by POST /demo/attack and labelled "demo" in the console, so evidence
+  // posted under that label would be indistinguishable from the story.
+  if (!deployment || deployment.isDemo) {
+    reply.code(401).send({ error: "unauthenticated" });
+    return null;
+  }
+  const key = authCacheKey(deployment.id, token, deployment.ingestTokenHash);
+  const cachedUntil = authCache.get(key);
+  let ok = cachedUntil !== undefined && cachedUntil > now;
+  if (!ok) {
+    if (failureBudgetExceeded(ip, now)) {
+      reply.header("Retry-After", String(Math.ceil(AUTH_FAIL_WINDOW_MS / 1000)));
+      reply.code(429).send({ error: "rate_limited" });
+      return null;
+    }
+    if (verifyInFlight >= AUTH_MAX_CONCURRENT_VERIFY) {
+      reply.header("Retry-After", "1");
+      reply.code(429).send({ error: "rate_limited" });
+      return null;
+    }
+    verifyInFlight += 1;
+    try {
+      ok = await verifyPassword(deployment.ingestTokenHash, token);
+    } finally {
+      verifyInFlight -= 1;
+    }
+    if (ok) rememberAuth(key, now);
+    else recordAuthFailure(ip, now);
+  }
   if (!ok) {
     reply.code(401).send({ error: "unauthenticated" });
     return null;
@@ -140,7 +237,7 @@ const eventPayload = z.object({
   // sentinel; every other error re-throws as 500 → daemon
   // retries → same error → **session livelock**, the exact
   // class R95 F1 closed for the tx-timeout case. Threat model:
-  // leaked AV_INGEST_TOKEN or a runaway daemon, same as R119
+  // leaked PV_CONSOLE_TOKEN or a runaway daemon, same as R119
   // F2 / R144 F1 / R151 F1 / R152 F1.
   //
   // Caps sized so a full 500-event batch fits comfortably
@@ -191,8 +288,8 @@ const eventPayload = z.object({
 
 // ── Server-side Ed25519 receipt verification ────────────────────────────────
 //
-// Mirrors the byte framing of the Rust `av-receipts` crate
-// (crates/av-receipts/src/receipt.rs `signing_message`) and the JS
+// Mirrors the byte framing of the Rust `pv-receipts` crate
+// (crates/pv-receipts/src/receipt.rs `signing_message`) and the JS
 // verifier (docs/verify/verify.js `receiptSigningMessage`):
 //   * v1 → bare canonical body bytes
 //   * v2 → b"agentvisor-receipt-v2\0" || u64_be(body.len) || body
@@ -200,11 +297,13 @@ const eventPayload = z.object({
 // holder of a leaked ingest token could POST a receipt whose sigB64 is
 // random bytes; first-write-wins then permanently sealed the session
 // against the LEGITIMATE receipt, and every downstream verifier
-// (console, /verify page, avctl) reported an invalid compliance
+// (console, /verify page, pvctl) reported an invalid compliance
 // artifact for a session the customer trusted.
+// Wire format: every v2 receipt ever issued is signed over these bytes.
+// They predate the ProofVisor name and must never be renamed.
 const RECEIPT_DOMAIN_TAG_V2 = Buffer.from("agentvisor-receipt-v2\0", "utf8");
 
-function receiptSigningMessage(rawBody: string): Buffer {
+export function receiptSigningMessage(rawBody: string): Buffer {
   const canonical = Buffer.from(rawBody, "utf8");
   let receiptVersion = 1;
   try {
@@ -234,7 +333,7 @@ function receiptSigningMessage(rawBody: string): Buffer {
 /** SPKI DER prefix for a raw 32-byte Ed25519 public key. */
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
-function verifyReceiptSignature(
+export function verifyReceiptSignature(
   publicKeyHex: string,
   sigB64: string,
   rawBody: string,
@@ -471,7 +570,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // audit-trail defacement (e.g. mutating workflow to
     // "unsigned" makes a legitimately signed session appear
     // unsigned in the list). Same threat model as R92 F2 / R93
-    // F4 / R118 F2 (leaked AV_INGEST_TOKEN). First-write-wins
+    // F4 / R118 F2 (leaked PV_CONSOLE_TOKEN). First-write-wins
     // matches the sealed-receipt posture across the file.
     // R141 F3: refuse pre-sealed CREATE. The R119 F2 update-branch
     // freeze covered rewrites of already-sealed rows, but the
@@ -484,7 +583,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // /read/sessions/:id then renders a "sealed but no receipt"
     // row (Receipt was cascade-purged), producing plausible-
     // deniability defacement of forensic history. Same threat
-    // model as R118 F2 / R119 F2 (leaked AV_INGEST_TOKEN). The
+    // model as R118 F2 / R119 F2 (leaked PV_CONSOLE_TOKEN). The
     // seal transition is by design the receipt row's job
     // (/ingest/receipts sets status:"sealed" atomically with
     // the receipt) — an ingest client should never POST a new
@@ -497,7 +596,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // /ingest/receipts. Result: session.status="sealed" with NO
     // Receipt row, stopReason/stopReasonId null, /events guard at
     // ingest.ts:362 silently drops all further events for that
-    // session — a compromised AV_INGEST_TOKEN holder can race an
+    // session — a compromised PV_CONSOLE_TOKEN holder can race an
     // in-flight session, force-seal it, and censor the rest of
     // the trail. Same threat model as R141 F3; the invariant
     // needs to hold on UPDATE too.
@@ -632,6 +731,30 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       externalId: session.externalId,
       agent: session.agent,
     });
+    // session.blocked fan-out, status edge: the daemon marked the whole
+    // session blocked and it was not blocked before. The other edge
+    // (first blocked tool call inside an otherwise live session) fires
+    // from /events below. The row was written by the guarded updateMany
+    // or the create branch above, so upd.count === 0 on an existing row
+    // means a frozen (sealed / quarantined) session, which never flips.
+    const becameBlocked =
+      s.status === "blocked" &&
+      existing?.status !== "blocked" &&
+      (upd.count > 0 || !existing);
+    if (becameBlocked) {
+      dispatchEvent({
+        orgId: daemon.orgId,
+        event: "session.blocked",
+        data: {
+          deploymentId: daemon.deploymentId,
+          sessionId: session.id,
+          sessionExternalId: session.externalId,
+          agent: session.agent,
+          reason: "status_blocked",
+        },
+        logger: req.log,
+      });
+    }
     return reply.send({ session });
   });
 
@@ -674,7 +797,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
             externalId,
           },
         },
-        select: { id: true, status: true },
+        select: { id: true, status: true, agent: true, toolsBlocked: true },
       });
       if (!session) continue; // ignore events for a session the daemon didn't upsert first
 
@@ -792,7 +915,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       // `session.events` / session totals, breaking the
       // compliance story from the OTHER direction R144 F1 /
       // R151 F1 closed for POST /ingest/sessions. Same
-      // threat model (leaked AV_INGEST_TOKEN or benign daemon
+      // threat model (leaked PV_CONSOLE_TOKEN or benign daemon
       // racing its own seal). Fix: convert the rollup to
       // updateMany with `status: { not: "sealed" }`, throw
       // inside the tx when the guard fails so the whole batch
@@ -976,6 +1099,27 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
             },
             logger: req.log,
           });
+          // session.blocked, first-block edge: this batch carried the
+          // session's first blocked tool call (the pre-tx rollup read
+          // zero). policy.block fires on every batch with a block;
+          // session.blocked fires once per session so a pager can page
+          // on "an agent just got stopped" without a flood.
+          if (session.toolsBlocked === 0) {
+            dispatchEvent({
+              orgId: daemon.orgId,
+              event: "session.blocked",
+              data: {
+                deploymentId: daemon.deploymentId,
+                sessionId: session.id,
+                sessionExternalId: externalId,
+                agent: session.agent,
+                blockedCount: clampedBlockedCount,
+                blockedPayoutUsdMicros: clampedBlockedPayout,
+                reason: "first_blocked_event",
+              },
+              logger: req.log,
+            });
+          }
         }
       }
     }
@@ -997,7 +1141,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // R195 F1: validate `keyIdHex` against the deployment's
     // registered pubkey. `derive_key_id(pubkey)` = first 32 hex
     // chars of SHA-256(pubkey_bytes) per Rust
-    // crates/av-receipts/src/keys.rs:115-118. The daemon signs
+    // crates/pv-receipts/src/keys.rs:115-118. The daemon signs
     // receipts with the same keypair whose pubkey it posted via
     // /ingest/pubkey (R91 F3 blocks silent rotation). If the
     // daemon posts a receipt whose `keyIdHex` doesn't match the
@@ -1066,7 +1210,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     // garbage bytes and first-write-wins would then refuse the
     // legitimate receipt forever (see the R93 F4 comment below for
     // why sealed receipts are immutable). Same framing as the JS
-    // verifier and `avctl receipt-verify`.
+    // verifier and `pvctl receipt-verify`.
     if (!verifyReceiptSignature(dep.publicKeyHex, r.sigB64, r.body)) {
       req.log.warn(
         {
@@ -1484,5 +1628,126 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       receiptId: r.receiptId,
     });
     return reply.send({ ok: true });
+  });
+  // ── Policy push ───────────────────────────────────────────────────────
+  //
+  // GET /policies hands a daemon the org's enabled policies as one
+  // bundle (contract in lib/policy-bundle.ts). The daemon polls it from
+  // `pvctl console-sync --watch --pull-policies`, sends the last etag as
+  // If-None-Match, and gets 304 while nothing changed. Same daemon auth
+  // as the other ingest routes; rate-limit exempt via the /api/v1/ingest
+  // allowList in index.ts.
+  app.get("/policies", async (req, reply) => {
+    const daemon = await authenticateDaemon(req, reply);
+    if (!daemon) return;
+    const bundle = await buildPolicyBundle(daemon.orgId, daemon.deploymentId);
+    reply.header("ETag", `"${bundle.etag}"`);
+    const inm = req.headers["if-none-match"];
+    if (typeof inm === "string" && inm.length > 0) {
+      // Accept the bare hash, a quoted entity tag, a weak validator
+      // (W/"…") or a comma-separated list of any of those.
+      const offered = inm
+        .split(",")
+        .map((t) => t.trim().replace(/^W\//i, "").replace(/^"(.*)"$/, "$1"));
+      if (offered.includes(bundle.etag)) return reply.code(304).send();
+    }
+    return reply.send(bundle);
+  });
+
+  // POST /policy-status: what the daemon applied from the bundle it
+  // pulled. One row per deployment (upsert); the etag is the bundle hash
+  // the daemon received, echoed verbatim. `applied` lists the policy
+  // ids now enforced; `unsupported` lists ids the daemon could not
+  // enforce with a short reason (older daemon, unknown kind, bad spec).
+  // An etag change writes a `policy.applied` audit entry so operators
+  // can see WHEN each daemon picked up a change.
+  const policyStatusPayload = z.object({
+    etag: z.string().min(1).max(128).regex(/^[0-9a-fA-F]+$/, "etag must be the bundle's hex hash"),
+    appliedAt: z.coerce.date(),
+    daemonVersion: z
+      .string()
+      .max(40)
+      .regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]*$/)
+      .optional(),
+    applied: z.array(z.string().min(1).max(64)).max(1000),
+    unsupported: z
+      .array(
+        z.object({
+          id: z.string().min(1).max(64),
+          reason: z.string().max(200).refine(noControlOrFormatChars, "must not contain control or format characters"),
+        }),
+      )
+      .max(1000),
+  });
+  app.post("/policy-status", async (req, reply) => {
+    const daemon = await authenticateDaemon(req, reply);
+    if (!daemon) return;
+    const body = policyStatusPayload.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const st = body.data;
+    const etag = st.etag.toLowerCase();
+    // Clamp like the session clock: a daemon with a skewed clock must
+    // not report an application time hours in the future.
+    const nowMs = Date.now();
+    const appliedAt = new Date(
+      Math.min(Math.max(st.appliedAt.getTime(), new Date("2000-01-01T00:00:00Z").getTime()), nowMs + 5 * 60_000),
+    );
+    const [previous, dep] = await Promise.all([
+      db.deploymentPolicyStatus.findUnique({
+        where: { deploymentId: daemon.deploymentId },
+        select: { etag: true },
+      }),
+      db.deployment.findUnique({
+        where: { id: daemon.deploymentId },
+        select: { name: true },
+      }),
+    ]);
+    await db.deploymentPolicyStatus.upsert({
+      where: { deploymentId: daemon.deploymentId },
+      create: {
+        deploymentId: daemon.deploymentId,
+        etag,
+        appliedAt,
+        daemonVersion: st.daemonVersion ?? null,
+        applied: st.applied,
+        unsupported: st.unsupported,
+      },
+      update: {
+        etag,
+        appliedAt,
+        daemonVersion: st.daemonVersion ?? null,
+        applied: st.applied,
+        unsupported: st.unsupported,
+      },
+    });
+    if (st.daemonVersion) {
+      // Same display-only version the pubkey check-in records.
+      await db.deployment
+        .update({ where: { id: daemon.deploymentId }, data: { daemonVersion: st.daemonVersion } })
+        .catch(() => void 0);
+    }
+    const currentEtag = await currentOrgEtag(daemon.orgId);
+    if (!previous || previous.etag !== etag) {
+      writeAudit(
+        {
+          orgId: daemon.orgId,
+          event: "policy.applied",
+          actorId: `daemon:${daemon.deploymentId}`,
+          actorEmail: `daemon@${dep?.name ?? daemon.deploymentId}`,
+          target: dep?.name ?? daemon.deploymentId,
+          metadata: {
+            deploymentId: daemon.deploymentId,
+            etag,
+            current: etag === currentEtag,
+            appliedCount: st.applied.length,
+            unsupported: st.unsupported,
+            daemonVersion: st.daemonVersion ?? null,
+          },
+          req,
+        },
+        req.log,
+      );
+    }
+    return reply.send({ ok: true, etag, currentEtag, stale: etag !== currentEtag });
   });
 }

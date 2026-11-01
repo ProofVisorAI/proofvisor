@@ -24,22 +24,22 @@
 
 import { execSync } from "node:child_process";
 
-// CI names its Postgres container av-pg-r45; local runs pass PG_CONTAINER
+// CI names its Postgres container pv-pg-r45; local runs pass PG_CONTAINER
 // (same override webhook-drill.mjs already honors).
-const PG_CONTAINER = process.env.PG_CONTAINER ?? "av-pg-r45";
+const PG_CONTAINER = process.env.PG_CONTAINER ?? "pv-pg-r45";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8745";
 
 async function jsonReq(state, method, path, body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (state.cookie) headers["Cookie"] = "av_session=" + state.cookie + (state.csrf ? "; av_csrf=" + state.csrf : "");
-  if (state.csrf) headers["x-av-csrf"] = state.csrf;
+  if (state.cookie) headers["Cookie"] = "pv_session=" + state.cookie + (state.csrf ? "; pv_csrf=" + state.csrf : "");
+  if (state.csrf) headers["x-pv-csrf"] = state.csrf;
   const r = await fetch(BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const sc = r.headers.get("set-cookie") ?? "";
-  const nc = /av_session=([^;]+)/.exec(sc);
+  const nc = /pv_session=([^;]+)/.exec(sc);
   if (nc) state.cookie = nc[1];
-  const nc2 = /av_csrf=([^;]+)/.exec(sc);
+  const nc2 = /pv_csrf=([^;]+)/.exec(sc);
   if (nc2) state.csrf = nc2[1];
   return r;
 }
@@ -128,7 +128,7 @@ let carolState = {};
     headers: { Authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.aGVsbG8.foo" },
   });
   if (r.status !== 401) fail(`wrong-prefix bearer -> ${r.status}, expected 401`);
-  console.log("✅ non-av_srv_ bearer falls through to 401");
+  console.log("✅ non-pv_srv_ bearer falls through to 401");
 }
 
 // 6. Revoke alice's key; ensure GET /keys no longer lists it.
@@ -149,7 +149,7 @@ let carolState = {};
 // bearer must still authenticate (proves we don't stop at first
 // candidate).
 {
-  const bobHint = bobKey.key.hint.slice("av_srv_".length, "av_srv_".length + 8);
+  const bobHint = bobKey.key.hint.slice("pv_srv_".length, "pv_srv_".length + 8);
   // Idempotency: a previous run of this drill (same DB, e.g. local
   // battery reruns) leaves the fixed-id collider row behind, and the
   // INSERT below would then die on the primary key — a false FAIL
@@ -158,7 +158,7 @@ let carolState = {};
   const colliderDelete =
     "DELETE FROM api_keys WHERE id = 'colliderkey000000000000000000';";
   execSync(
-    `docker exec -e PGPASSWORD=av ${PG_CONTAINER} psql -U av -d avdb -c "${colliderDelete}"`,
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "${colliderDelete}"`,
     { stdio: "ignore" },
   );
   const sql = [
@@ -167,7 +167,7 @@ let carolState = {};
     "FROM api_keys LIMIT 1;",
   ].join(" ");
   execSync(
-    `docker exec -e PGPASSWORD=av ${PG_CONTAINER} psql -U av -d avdb -c "${sql.replace(/"/g, '\\"')}"`,
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "${sql.replace(/"/g, '\\"')}"`,
     { stdio: "ignore" },
   );
   const r = await fetch(BASE + "/api/v1/sessions", {
@@ -176,7 +176,7 @@ let carolState = {};
   if (r.status !== 200) fail(`hint collision broke real bearer -> ${r.status}`);
   console.log("✅ hint collision: real key still authenticates past the impostor");
   execSync(
-    `docker exec -e PGPASSWORD=av ${PG_CONTAINER} psql -U av -d avdb -c "${colliderDelete}"`,
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "${colliderDelete}"`,
     { stdio: "ignore" },
   );
 }

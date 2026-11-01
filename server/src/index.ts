@@ -17,8 +17,10 @@ import {
 import { authenticate } from "./lib/session-middleware.js";
 import { apiKeyRoutes } from "./routes/api-keys.js";
 import { authRoutes } from "./routes/auth.js";
+import { demoRoutes } from "./routes/demo.js";
 import { deploymentRoutes } from "./routes/deployments.js";
 import { ingestRoutes } from "./routes/ingest.js";
+import { publicRoutes } from "./routes/public.js";
 import { memberRoutes } from "./routes/members.js";
 import { oauthRoutes } from "./routes/oauth.js";
 import { orgRoutes } from "./routes/org.js";
@@ -28,6 +30,8 @@ import { samlRoutes } from "./routes/saml.js";
 import { streamRoutes } from "./routes/stream.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
 import { webhookRoutes } from "./routes/webhooks.js";
+import { billingRoutes } from "./routes/billing.js";
+import { scimAdminRoutes, scimRoutes } from "./routes/scim.js";
 import { startWebhookSweeper, stopWebhookSweeper } from "./lib/webhooks.js";
 import { startRetentionSweeper, stopRetentionSweeper } from "./lib/retention.js";
 
@@ -187,7 +191,7 @@ async function main(): Promise<void> {
     keyGenerator: (req) => {
       // R93 F1 + R100 F1: bucket the global 300 rpm cap on IP,
       // period. Prior R93 shape derived the key from sha256 of
-      // the raw av_session cookie value or Authorization token,
+      // the raw pv_session cookie value or Authorization token,
       // pre-auth, without validating anything. An attacker could
       // plant a fresh RANDOM cookie value per request → fresh
       // bucket per request → the entire global backstop was
@@ -250,7 +254,7 @@ async function main(): Promise<void> {
   //
   // Skipped when:
   //   • Method is safe (GET/HEAD/OPTIONS).
-  //   • Path is /api/v1/ingest — daemons attach an X-AV-Deployment token
+  //   • Path is /api/v1/ingest — daemons attach an X-PV-Deployment token
   //     which is cryptographically verified before any state mutation.
   //   • No Origin/Referer at all — same-origin fetches from most modern
   //     browsers, curl/scripts (no cookie either), and health checks.
@@ -349,7 +353,7 @@ async function main(): Promise<void> {
   // the cookie now names (retention changes, API keys, webhooks,
   // policies, invites — generalizing the per-endpoint invite pin). The
   // SPA stamps every request with the org id it is RENDERING
-  // (X-AV-Org); a mismatch against the authenticated claims means the
+  // (X-PV-Org); a mismatch against the authenticated claims means the
   // context moved underneath the user and the mutation must not
   // proceed. Scope: cookie-session mutations only — API-key sessions
   // are org-fixed (no cross-tab cookie to race), scripts/daemons don't
@@ -359,7 +363,8 @@ async function main(): Promise<void> {
   app.addHook("preHandler", async (req, reply) => {
     const method = req.method.toUpperCase();
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
-    const pinned = req.headers["x-av-org"];
+    // Console pages loaded before the ProofVisor rename send X-AV-Org.
+    const pinned = req.headers["x-pv-org"] ?? req.headers["x-av-org"];
     if (typeof pinned !== "string" || pinned.length === 0) return;
     if (!req.session || req.session.sub.startsWith("apikey:")) return;
     if (
@@ -502,6 +507,12 @@ const PROBLEM_DETAIL_COPY: Record<string, string> = {
   invalid_token: "That link is invalid or has expired.",
   unknown_session: "That session doesn't exist.",
   session_evidence_incomplete: "This session contains incomplete crash evidence and cannot receive a signed receipt.",
+  demo_name_in_use: "A real deployment is already named demo-attack — rename it before staging the demo.",
+  policy_name_in_use: "Another policy already has that name.",
+  billing_not_configured: "Billing is not enabled on this instance.",
+  already_on_plan: "This workspace is already on that plan.",
+  no_billing_customer: "This workspace has no billing account yet — upgrade first.",
+  membership_deactivated: "Your access to this workspace has been deactivated by its identity provider.",
 };
 
 function problemDetail(slug: string): string {
@@ -620,9 +631,15 @@ function problemDetail(slug: string): string {
   // public internet — allow-list contains the scraper's egress IPs
   // (Grafana Cloud, Prometheus server, k8s cluster ranges, etc). Set
   // ALLOW_METRICS_IPS="0.0.0.0/0" only if the metrics scraper is on the
-  // same private network.
+  // same private network. In production an unset list means 404.
   app.get("/metrics", async (req, reply) => {
     const allowed = env.ALLOW_METRICS_IPS;
+    // Fail closed in production: with no allow-list the counters were
+    // served to anyone on the internet. An operator who really wants
+    // them public sets ALLOW_METRICS_IPS=0.0.0.0/0,::/0 explicitly.
+    if (allowed.length === 0 && env.NODE_ENV === "production") {
+      return reply.code(404).send({ error: "not_found" });
+    }
     if (allowed.length > 0) {
       const ip = req.ip;
       // R77 F2 (MEDIUM-HIGH): route allowlist checks through
@@ -728,11 +745,11 @@ function problemDetail(slug: string): string {
   // just the static docs. Researchers scanning the origin should always
   // find a machine-readable disclosure path.
   const securityTxt = [
-    "Contact: mailto:security@agentvisorai.me",
+    "Contact: mailto:security@proofvisor.com",
     "Expires: 2027-08-25T00:00:00.000Z",
     "Preferred-Languages: en",
-    "Canonical: https://api.agentvisorai.me/.well-known/security.txt",
-    "Policy: https://github.com/AgentVisorAI/agentvisor-ai/blob/main/SECURITY.md",
+    "Canonical: https://api.proofvisor.com/.well-known/security.txt",
+    "Policy: https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY.md",
     "",
   ].join("\n");
   app.get("/.well-known/security.txt", async (_req, reply) => {
@@ -770,8 +787,27 @@ function problemDetail(slug: string): string {
   await app.register(async (r) => r.register(deploymentRoutes), {
     prefix: "/api/v1/deployments",
   });
+  await app.register(async (r) => r.register(billingRoutes), {
+    prefix: "/api/v1/billing",
+  });
+  // Owner-only SCIM management (tokens + settings) rides the normal
+  // session auth; the SCIM protocol surface the IdP talks to lives
+  // outside /api/v1 and authenticates with its own bearer token.
+  await app.register(async (r) => r.register(scimAdminRoutes), {
+    prefix: "/api/v1/scim",
+  });
+  await app.register(async (r) => r.register(scimRoutes), {
+    prefix: "/scim/v2",
+  });
   await app.register(async (r) => r.register(ingestRoutes), {
     prefix: "/api/v1/ingest",
+  });
+  await app.register(async (r) => r.register(demoRoutes), {
+    prefix: "/api/v1/demo",
+  });
+  // Unauthenticated trust-anchor lookups for the public /verify page.
+  await app.register(async (r) => r.register(publicRoutes), {
+    prefix: "/api/v1/public",
   });
   await app.register(async (r) => r.register(readRoutes), {
     prefix: "/api/v1",

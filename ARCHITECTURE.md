@@ -25,22 +25,23 @@ flowchart LR
 
 Production routes reserve bounded worker capacity before mutating quotas. Chat effects gate on a durable in-flight response marker before the upstream call, and MCP tool effects gate on a MAC-authenticated durable intent file before the upstream call, so a crash between authorization and effect always leaves crash-recovery evidence for the reconciler. The corresponding OCSF audit event is queued to the worker pool and published asynchronously (the request path does not block on broker `publish`); the durable local records — response marker and tool intent — are what the recovery scan reasons about. Synchronous quota, WASM, and compression work runs on Tokio's blocking pool when a token budget is configured (`budget.max_tokens`); with no token budget those local gates are cheap enough to run inline. Provider responses have a pre-reserved capture slot. Non-SSE responses are bounded and validated before delivery; SSE uses a bounded byte-oriented decoder.
 
-Receipt signing and ATIF serialization remain off the request path. Worker overload fails before quota mutation and is counted in `av_events_dropped_total`.
+Receipt signing and ATIF serialization remain off the request path. Worker overload fails before quota mutation and is counted in `pv_events_dropped_total`.
 
 ## Crates
 
-- `av-core`: identifiers, time, token estimates, digests, metrics.
-- `av-events`: OCSF agent event model and validation.
-- `av-atif`: ATIF v1.0-v1.7 reader, strict v1.7 writer, atomic persistence.
-- `av-receipts`: RFC 8785 canonicalization, hash chains, Ed25519 receipts.
-- `av-state`: atomic counters and multi-dimensional budgets, memory and Redis.
-- `av-bridge`: EventBus, embedded log, Kafka/Redpanda, NATS JetStream.
-- `av-identity`: EdDSA/HS256 NHI validation, delegation, JWKS refresh.
-- `av-compress`: auditable, idempotent context reduction.
-- `av-loopdetect`: hash or ONNX embeddings, circuit breaker, Qdrant sink.
-- `av-sandbox`: JSON-RPC parsing, JSON Schema, native and WASM policy.
-- `av-harness`: proxy, routes, workers, sessions, reconciliation.
-- `av-cli`: operational commands and load generation.
+- `pv-core`: identifiers, time, token estimates, digests, metrics.
+- `pv-events`: OCSF agent event model and validation.
+- `pv-atif`: ATIF v1.0-v1.7 reader, strict v1.7 writer, atomic persistence.
+- `pv-receipts`: RFC 8785 canonicalization, hash chains, Ed25519 receipts.
+- `pv-state`: atomic counters and multi-dimensional budgets, memory and Redis.
+- `pv-bridge`: EventBus, embedded log, Kafka/Redpanda, NATS JetStream.
+- `pv-identity`: EdDSA/HS256 NHI validation, delegation, JWKS refresh.
+- `pv-compress`: auditable, idempotent context reduction.
+- `pv-loopdetect`: hash or ONNX embeddings, circuit breaker, Qdrant sink.
+- `pv-sandbox`: JSON-RPC parsing, JSON Schema, WASM policy. The crate also exports a native allow/deny tool-list type (`NativePolicy`) that is library-only; the daemon enforces JSON Schema and WASM policies, not native lists.
+- `pv-redact`: sensitive-data redaction for persisted audit payloads (built-in and custom regex patterns, JSON pointer paths); it never touches the traffic forwarded to the model.
+- `pv-harness`: proxy, routes, workers, sessions, reconciliation.
+- `pv-cli`: operational commands and load generation.
 
 ## Session lifecycle
 
@@ -59,7 +60,7 @@ close marker), every archived prior incarnation of a recycled session
 id, and every receipt is kept indefinitely as audit evidence. Set
 `atif_retention_days = N` (config.rs refuses `0`) to opt into the
 built-in hourly sweep (`Finalizer::prune_sealed_atif`, wired at
-`main.rs:233`; also exposed as `avctl spool-prune`); only sealed
+`main.rs:233`; also exposed as `pvctl spool-prune`); only sealed
 (ATIF + receipt) pairs older than `N` days are eligible. Receipts and
 `.archived-*` collision-incarnation files are never retention targets
 — manage them externally. Unbounded spool growth also grows the
@@ -69,4 +70,4 @@ disk-space concern.
 
 ## Portability
 
-The manifest declares topics, partitions, retention, cold storage, and JSON Schema references. Embedded provisioning copies and compiles referenced schemas. Kafka verifies partitions and `retention.ms`; NATS configures stream age. Secured endpoints are environment-driven: `AV_KAFKA_CA_FILE` plus `AV_KAFKA_SASL_USERNAME`/`AV_KAFKA_SASL_PASSWORD` (mechanism from `AV_KAFKA_SASL_MECHANISM`: `SCRAM-SHA-256` default, `SCRAM-SHA-512`, or `PLAIN`; credentials are refused without TLS) for Kafka/Redpanda, `AV_NATS_CA_FILE` plus `AV_NATS_USER`/`AV_NATS_PASSWORD` for NATS. Cold writes use deterministic object keys plus a local durable retry outbox (`AV_COLD_OUTBOX_DIR` overrides its location; network backends default to the CWD-relative `data/cold-outbox`, the embedded broker to `<bridge_data_dir>/cold-outbox`), independently of broker acknowledgment; `s3://` targets (feature `cold-store-aws`) take standard `AWS_*` credentials.
+The manifest declares topics, partitions, retention, cold storage, and JSON Schema references. Embedded provisioning copies and compiles referenced schemas. Kafka verifies partitions and `retention.ms`; NATS configures stream age. Secured endpoints are environment-driven: `PV_KAFKA_CA_FILE` plus `PV_KAFKA_SASL_USERNAME`/`PV_KAFKA_SASL_PASSWORD` (mechanism from `PV_KAFKA_SASL_MECHANISM`: `SCRAM-SHA-256` default, `SCRAM-SHA-512`, or `PLAIN`; credentials are refused without TLS) for Kafka/Redpanda, `PV_NATS_CA_FILE` plus `PV_NATS_USER`/`PV_NATS_PASSWORD` for NATS. Cold writes use deterministic object keys plus a local durable retry outbox (`PV_COLD_OUTBOX_DIR` overrides its location; network backends default to the CWD-relative `data/cold-outbox`, the embedded broker to `<bridge_data_dir>/cold-outbox`), independently of broker acknowledgment; `s3://` targets (feature `cold-store-aws`) take standard `AWS_*` credentials.

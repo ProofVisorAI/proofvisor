@@ -6,7 +6,7 @@
  *   2. Registers itself as a SamlConfig on the API using the IdP's public cert.
  *   3. Crafts a signed SAMLResponse XML for a test user.
  *   4. POSTs it to /api/v1/auth/saml/<configId>/acs.
- *   5. Verifies the response is 302 to /app/... and we got an av_session cookie.
+ *   5. Verifies the response is 302 to /app/... and we got an pv_session cookie.
  *   6. Uses the cookie to hit /api/v1/sessions — proves the mint succeeded.
  *   7. Tries to replay the same SAMLResponse — expects the second attempt to
  *      fail with replay_detected.
@@ -30,7 +30,7 @@ const PG_CONTAINER = process.env.PG_CONTAINER;
 function sweepDrillRows() {
   if (!PG_CONTAINER) return;
   execSync(
-    `docker exec -e PGPASSWORD=av ${PG_CONTAINER} psql -U av -d avdb -c "` +
+    `docker exec -e PGPASSWORD=pv ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "` +
       `DELETE FROM orgs WHERE id IN (SELECT m.\\"orgId\\" FROM memberships m ` +
       `JOIN users u ON u.id = m.\\"userId\\" WHERE u.email LIKE '%@saml-drill.example'); ` +
       `DELETE FROM users WHERE email LIKE '%@saml-drill.example';"`,
@@ -61,7 +61,7 @@ async function main() {
     throw new Error("signup failed: " + signup.status + " " + await signup.text());
   }
   const setCookie = signup.headers.get("set-cookie") ?? "";
-  const cookie = /(av_session=[^;]+)/.exec(setCookie)?.[1];
+  const cookie = /(pv_session=[^;]+)/.exec(setCookie)?.[1];
   if (!cookie) throw new Error("no session cookie");
 
   // 2. Generate the IdP's RSA keypair + a real self-signed X.509 cert.
@@ -114,10 +114,10 @@ async function main() {
   // InResponseTo, exactly like a live IdP would.
   const loginRes = await fetch(`${API}/api/v1/auth/saml/${config.id}/login`, { redirect: "manual" });
   if (loginRes.status !== 302) throw new Error("SP-initiated login start failed: " + loginRes.status);
-  // Browser-binding txn cookie: /login now sets av_saml_txn and the ACS
+  // Browser-binding txn cookie: /login now sets pv_saml_txn and the ACS
   // requires it back — the ceremony must flow through ONE browser.
-  const txnCookie = /(av_saml_txn=[^;]+)/.exec(loginRes.headers.get("set-cookie") ?? "")?.[1];
-  if (!txnCookie) throw new Error("no av_saml_txn cookie from /login");
+  const txnCookie = /(pv_saml_txn=[^;]+)/.exec(loginRes.headers.get("set-cookie") ?? "")?.[1];
+  if (!txnCookie) throw new Error("no pv_saml_txn cookie from /login");
   const idpRedirect = new URL(loginRes.headers.get("location"));
   const samlRequestB64 = idpRedirect.searchParams.get("SAMLRequest");
   if (!samlRequestB64) throw new Error("no SAMLRequest in IdP redirect");
@@ -214,9 +214,9 @@ async function main() {
     throw new Error("ACS should be a redirect");
   }
   const acsSetCookie = acsRes.headers.get("set-cookie") ?? "";
-  const jwtCookie = /(av_session=[^;]+)/.exec(acsSetCookie)?.[1];
-  if (!jwtCookie) throw new Error("no av_session cookie from ACS");
-  console.log("[3/6] got av_session cookie");
+  const jwtCookie = /(pv_session=[^;]+)/.exec(acsSetCookie)?.[1];
+  if (!jwtCookie) throw new Error("no pv_session cookie from ACS");
+  console.log("[3/6] got pv_session cookie");
   const location = acsRes.headers.get("location") ?? "";
   console.log("[4/6] redirect Location:", location);
   if (!location.includes("#/deployments")) {

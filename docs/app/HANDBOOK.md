@@ -139,9 +139,9 @@ catalog at the bottom.
     beat earlier responsive overrides. Mobile overrides live AT FILE END of
     `styles.css`, on purpose, with a comment. Append below them or raise
     specificity.
-21. Cross-tab: sign-out (`av_signed_out_at`), sign-in (`av_signed_in_at` via
+21. Cross-tab: sign-out (`pv_signed_out_at`), sign-in (`pv_signed_in_at` via
     `announceSignIn()` at every auth-success site), and theme all sync via
-    storage events. Signup drops `av_return_to`; login honors it.
+    storage events. Signup drops `pv_return_to`; login honors it.
 22. `announceRoute` focuses `#view` after navigation ONLY when focus has
     collapsed to `<body>` (or was inside the old `#view`). Focus sitting
     in a persistent body-level overlay (tour card) must survive route
@@ -184,7 +184,7 @@ catalog at the bottom.
     top level if `window.dataSource` is undefined (datasource.js
     aborted by a proxy / 404 mid-deploy), so the crash guard's card
     takes over. Without it, boot() succeeded, the login render cleared
-    `#app` and died on `state.ds.*` — but `__avBooted` had already
+    `#app` and died on `state.ds.*` — but `__pvBooted` had already
     pacified the guard AND the empty-`#app` watchdog, leaving a
     permanent blank page. The guard's three nets: pre-boot
     window.error → card; unhandledrejection → card; 6s watchdog for
@@ -228,7 +228,7 @@ catalog at the bottom.
   loudly when a probe query matches nothing** (fixture drift tripwire).
 - Probe pages in the SHARED drill context write to the same
   per-origin localStorage as every other check: a probe that sets
-  `av_mock_signed_out` / fresh-mode keys and closes without cleanup
+  `pv_mock_signed_out` / fresh-mode keys and closes without cleanup
   breaks the NEXT check (empty webhooks in fresh mode, login bounces).
   Always restore the keys before `page.close()` — this bit THRICE
   (the third bite: check 29's `addInitScript` fresh keys put checks
@@ -236,7 +236,7 @@ catalog at the bottom.
   until the palette check created a deployment and it vanished —
   which turned out to be a REAL fresh-mode bug, not just a leak).
   Corollary since the cross-tab fresh follower: REMOVING (or first
-  SETTING) `av_mock_fresh_t0` from a probe page fires a presence
+  SETTING) `pv_mock_fresh_t0` from a probe page fires a presence
   flip in every parked page of the shared context, which reloads
   itself mid-whatever-the-next-check-does ("interrupted by another
   navigation" on the next goto). After a probe restores fresh keys,
@@ -262,12 +262,37 @@ fixtures mirror the REAL taxonomy in `server/src/lib/audit.ts`
 `audit.exported_csv`, `deployment.pubkey_first_set` for the fresh
 "daemon connected" moment). Webhook pause/resume records
 `webhook.updated` with a paused/resumed NOTE — the real PATCH writes no
-dedicated slug. Documented demo-forward exceptions (no server
-equivalent yet): `policy.created/updated/enabled/disabled` and
-`policies.defaults_seeded` (server has no policy CRUD routes).
+dedicated slug. The server does have policy CRUD routes
+(`server/src/routes/policies.ts`, slugs `policy.create` /
+`policy.update` / `policy.delete`, plus enable/disable variants); the
+mock's `policy.created/updated/enabled/disabled` spellings and
+`policies.defaults_seeded` predate them and are the remaining
+demo-forward exceptions to reconcile. Note that policy *push* from the
+console to daemons is not built: daemons enforce their local policy
+files, and the console only stores definitions.
 Never invent a slug — check audit.ts first; the audit chips
 self-generate from the category prefix, so a renamed slug silently
 re-files its rows.
+
+**Webhook events are a separate vocabulary** from audit slugs
+(`server/src/lib/webhooks.ts`, dispatched from the routes). The server
+emits exactly: `test`, `member.invited`, `policy.block` (every ingest
+batch containing a blocked tool call), `session.blocked` (once per
+session — its first blocked tool call, or a `status: "blocked"` upsert;
+the payload carries `reason`), and `apikey.created` (display hint and
+role only, never the plaintext). `policy.block` is NOT an audit slug.
+The mock's webhook test-delivery and event pickers must list exactly
+these names and no others.
+
+**Daemon hookup copy** (deployment page "Connect your daemon" card):
+the card prints `PV_CONSOLE_URL=<API origin>`,
+`PV_CONSOLE_DEPLOYMENT=<deployment id>`,
+`PV_CONSOLE_TOKEN=<token shown once>` and tells the operator to run
+`pvctl console-sync --watch`. These are the exact variables
+`crates/pv-cli/src/console_sync.rs` reads; the URL is the bare origin
+(pvctl appends `/api/v1/ingest`). Never reintroduce the old
+`PV_INGEST_URL` / `PV_DEPLOYMENT` / `PV_INGEST_TOKEN` names or the
+`ingest.proofvisor.com` host — none of them ever existed on the CLI.
 
 **Receipts exist only at seal**: the real API 404s a running session's
 receipt (the daemon posts it AT seal) and the console renders "No
@@ -284,7 +309,7 @@ drill check 2 pins the whole unsealed→sealed transition.
 | `live-site-smoke.mjs` | 11 checks: link/media crawl, captions, alias stubs, 404, OG/Twitter link previews, video-metadata truth (durations + zero MediaErrors), install-promise (the exact URL app.js prints serves the real installer; live runs also assert the public README leads with working commands) |
 | `a11y-audit.mjs` | 46 axe scans: 11 routes + 9 modal states × 2 themes, 3 static pages × 2 schemes |
 | `mobile-smoke.mjs` | phone/tablet: tab bar, taps, modals fit + hittable + stacking, static pages |
-| `verify-page-drill.mjs` | 12 checks incl. download→drop→green / tamper→red |
+| `verify-page-drill.mjs` | 15 checks incl. download→drop→green / tamper→red |
 | `receipt-verify-drill.mjs` | download → CLI verifier + tamper matrix |
 | `full-flow-rehearsal.mjs` | ONE continuous session in narrative order: landing CTA → tour → verify finale → attack → receipt → fresh signup → reset. `PROFILE=phone` reruns it as the QR-code path on an iPhone profile; `SLOW=1` adds 300–700ms venue-wifi jitter to every datasource call |
 | `engine-matrix.mjs` | nightly: 11 features × chromium/webkit/firefox (incl. sticky headers, dirty-guard, theme-state) |
@@ -312,43 +337,45 @@ lives there. Both snapshots are force-pushed content exports (no
 history, never edit them directly — the next export overwrites
 everything):
 
-- `AgentVisorAI/agentvisorai.github.io` — the ASSEMBLED site.
+- `ProofVisorAI/proofvisorai.github.io` — the ASSEMBLED site.
   `pages.yml` builds (rustdoc + terser) and pushes over SSH using the
-  `SITE_DEPLOY_KEY` secret. Its Pages serves `agentvisorai.me`
+  `SITE_DEPLOY_KEY` secret. Its Pages serves `proofvisor.com`
   (legacy branch build off `main`, `.nojekyll` in the artifact).
-- `AgentVisorAI/agentvisor` — the public binary tool: the Rust
+- `ProofVisorAI/proofvisor` — the public binary tool: the Rust
   workspace + every compile-time-included path + the offline
-  verifier at `tools/verify-receipt.mjs`. `publish-tool.yml` exports
+  verifier at `server/scripts/verify-receipt.mjs`. `publish-tool.yml` exports
   an explicit INCLUDE list via `TOOL_DEPLOY_KEY`. If a crate gains a
   new `include_str!` outside the list, the public build breaks —
   extend the list AND the workflow's `paths:` trigger.
 
-Public site pages link `github.com/AgentVisorAI/agentvisor` (the
+Public site pages link `github.com/ProofVisorAI/proofvisor` (the
 curated tool repo) — keep it that way even while the monorepo is
 public; the tool repo is the stable public artifact. EXTERNAL
 PROMISES (URLs/commands the product tells users to run elsewhere)
 must be guarded: the onboarding install command shipped for weeks
-pointing at get.agentvisorai.me, a host that never existed in DNS —
-the installer now lives at agentvisorai.me/install.sh (same Pages
-artifact, no DNS dependency), installs agentvisord + avctl via
-`cargo install --git` from the public repo, and smoke check 11
+pointing at get.proofvisor.com, a host that never existed in DNS —
+the installer now lives at proofvisor.com/install.sh (same Pages
+artifact, no DNS dependency), installs proofvisord + pvctl from the
+prebuilt GitHub release binaries (SHA-256 checked; pinned to
+v0.1.0-rc.5) and falls back to `cargo install --git` from the public
+repo on other platforms, and smoke check 11
 fetches the EXACT URL the deployed app.js prints. Public-consumer
 chain certified BY EXECUTION (R270–R272): fresh clone compiles; real
 `cargo install --locked --git` produced both binaries; the printed
-`agentvisord start --token` was REFUSED by the fail-closed CLI (fixed
-to `avctl setup`); `avctl setup` exits gracefully on non-TTY EOF;
+`proofvisord start --token` was REFUSED by the fail-closed CLI (fixed
+to `pvctl setup`); `pvctl setup` exits gracefully on non-TTY EOF;
 `doctor --offline` fails loudly on exactly the unset provider key and
-passes with it; `avctl start` served /health and PROXIED a live
+passes with it; `pvctl start` served /health and PROXIED a live
 chat/completions request (upstream's own 401 for a dummy key proves
-the pipe); tools/verify-receipt.mjs accepts a production receipt.
-The public README's `cargo install av-harness av-cli` pointed at
+the pipe); server/scripts/verify-receipt.mjs accepts a production receipt.
+The public README's `cargo install pv-harness pv-cli` pointed at
 crates.io entries that were NEVER published — quickstart now leads
 with the installer one-liner + --git form (crates.io note stays for
 the future release). Re-run the chain by hand when the export
 include-list or CLI surface changes. Beware squatters: another
 worktree's daemon on :8484 answered a health probe meant for a
 daemon that had failed to start — always probe on an overridden
-AV_LISTEN port. deploy.yml's
+PV_LISTEN port. deploy.yml's
 attestation steps gate on `!github.event.repository.private` (the
 attestations API 403s for private repos on this plan) and resume
 automatically on pushes made while public. If the repo ever goes
@@ -364,7 +391,7 @@ R282 also resolves #fragments against GitHub-slugged headings
 heading grew "(2026 baseline)"). Never cite file:line in living docs —
 SECURITY-AUDIT.md's onnx_embed.rs:30 rotted to :32; cite the enclosing
 symbol instead, and pin greppable audit-doc claims in
-av-harness/tests/security_audit_doc.rs (wasmtime feature set, named
+pv-harness/tests/security_audit_doc.rs (wasmtime feature set, named
 containment tests, verify_slice, TODO(compression-marker), lockfile
 states). When a
 reference doc links a ROOT file, confirm the target is in
@@ -379,16 +406,16 @@ reality (the whole doc ran verbatim: pubkey/banner parity, sha256-stem
 locate, hex+base64+multi-key verify, tamper/relabel/v3/weak-key/
 malformed failures, §5a reimplemented from prose in Python byte-exact
 against a real daemon receipt, event-tail replay, incarnation
-archiving). Guards: av-receipts tests/doc_walkthrough.rs (§5 snippet
+archiving). Guards: pv-receipts tests/doc_walkthrough.rs (§5 snippet
 text + executed twin, §5a domain-tag/field-count/framing pins, §4
-key_id derivation) and av-cli setup.rs
+key_id derivation) and pv-cli setup.rs
 landing_page_mock_terminal_matches_real_wizard_output (menu couples to
 WIZARD_MENU; every shown line pinned to BOTH setup.rs source and the
 HTML). OPERATIONS.md executed verbatim R283 — fully TRUE (probe
 writability flip, SIGTERM pre-drain 503 window, whole key-rotation
 runbook incl. SIGHUP-explicitly-ignored + multi-key window, orphan
 quarantine rename + metric, spool-prune, all 26 alert metrics + 7 pass
-labels); pinned in av-harness/tests/operations_doc.rs. Video caption
+labels); pinned in pv-harness/tests/operations_doc.rs. Video caption
 grids: both VTTs kept the pre-R275 30s/130s grid — final cues ended
 after the (re-shot) footage; smoke's video-truth leg now parses cue
 timing in-browser (sorted, non-overlapping, last cue ≤ duration).
@@ -403,7 +430,7 @@ email). Guard: mobile-smoke topbar leg (fits, nothing clipped, ≥40px
 search tap target, avatar ≥20px).
 API-MODE BROWSER TRUTH (R284): the api-mode console was never driven
 in a real browser until R284 — Node-fetch E2E can't see the meta CSP
-(connect-src allowed ONLY api.agentvisorai.me: every self-hosted
+(connect-src allowed ONLY api.proofvisor.com: every self-hosted
 API_BASE was silently blocked), cookie flow, or toast copy. Server's
 RFC 7807 transform copied machine slugs into `detail` (toasts read
 "deployment_name_in_use") — problemDetail() now maps curated human
@@ -416,7 +443,7 @@ reveal → audit slugs → signout/login, zero unexpected console errors)
 + smoke.py problem+json human-detail assert. Server-side session
 revocation works: a logout invalidates the cookie for ALL saved
 storage states. OPENAI-COMPATIBILITY.md executed R285 (all clean:
-404 sweep, X-AV-Session echo + ephemeral auto-close-with-receipt,
+404 sweep, X-PV-Session echo + ephemeral auto-close-with-receipt,
 harness-own errors carry NUMERIC code 413/404, /mcp aliases, close
 kinds, promote returns the bare receipt) — guard
 unsupported_openai_routes_stay_404 EXECUTES the Unsupported list

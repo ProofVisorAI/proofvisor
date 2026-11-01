@@ -5,7 +5,7 @@
  * auto-detect the URL and reformat the JSON payload into the format
  * that platform expects, so the customer's #ops channel shows a
  * pretty card instead of a raw JSON dump. For any other URL we ship
- * the neutral AgentVisor envelope.
+ * the neutral ProofVisor envelope.
  *
  * The signature is still computed over the OUTBOUND body — whichever
  * format we send is what we sign — so the anti-tamper guarantee is
@@ -122,14 +122,14 @@ export function slackBody(env: Envelope): string {
     text: `*${escSlackMrkdwn(k)}:*\n\`${escSlackMrkdwn(shortValue(v))}\``,
   }));
   const payload = {
-    text: `AgentVisor: ${label(env.event)}`,
+    text: `ProofVisor: ${label(env.event)}`,
     attachments: [
       {
         color,
         blocks: [
           {
             type: "header",
-            text: { type: "plain_text", text: `AgentVisor · ${label(env.event)}` },
+            text: { type: "plain_text", text: `ProofVisor · ${label(env.event)}` },
           },
           ...(fields.length
             ? [{ type: "section", fields }]
@@ -165,8 +165,8 @@ export function teamsBody(env: Envelope): string {
     "@type": "MessageCard",
     "@context": "https://schema.org/extensions",
     themeColor,
-    summary: `AgentVisor: ${label(env.event)}`,
-    title: `AgentVisor · ${label(env.event)}`,
+    summary: `ProofVisor: ${label(env.event)}`,
+    title: `ProofVisor · ${label(env.event)}`,
     sections: [
       {
         activityTitle: label(env.event),
@@ -189,7 +189,7 @@ export function discordBody(env: Envelope): string {
   const payload = {
     embeds: [
       {
-        title: `AgentVisor · ${label(env.event)}`,
+        title: `ProofVisor · ${label(env.event)}`,
         color,
         timestamp: env.createdAt,
         fields: fields.length ? fields : [{ name: "info", value: "(no fields)" }],

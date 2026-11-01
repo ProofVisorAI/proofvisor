@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "updated": "2026-10-31",
+  "keys": [
+    {
+      "key_id": "4862bc12197a01e11475156158f3ac04",
+      "public_key_hex": "f85ae0090441c9ddaaaeec5e8483e28b7a48521d782117a69c0c17dacc2e6d65",
+      "public_key_b64": "+FrgCQRByd2qruxehIPii3pIUh14IRemnAwX2swubWU=",
+      "label": "Sample receipt bundled with /verify (private half discarded after signing)",
+      "trust": "sample"
+    },
+    {
+      "key_id": "0dc1a2f8d2798b325d92d21baf68a8af",
+      "public_key_hex": "573c8f249012fbb08b3d79973411bb93141f32719c86ada25306fde5e59e8d57",
+      "public_key_b64": "VzyPJJAS+7CLPXmXNBG7kxQfMnGchq2iUwb95eWejVc=",
+      "label": "Console demo signing key (private half is public by design; signs only demo data)",
+      "trust": "demo"
+    }
+  ]
+}

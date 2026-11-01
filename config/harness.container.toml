@@ -1,27 +1,27 @@
-# AgentVisor AI single-container configuration.
+# ProofVisor single-container configuration.
 #
 # Used by docker/docker-compose.minimal.yml: no external services, embedded
 # event bridge, in-memory state, hash embedder. Ships receipts, OCSF events,
 # loop detection, and budget enforcement out of the box.
 #
 # Environment overrides (set with `docker run -e ...`):
-#   AV_UPSTREAM_URL       provider base URL (default below: Ollama on the host)
-#   AV_UPSTREAM_API_KEY   API key value; presence selects it as the key source
-#   AV_UPSTREAM_KEY_FILE  path to a mounted secret file holding the key
+#   PV_UPSTREAM_URL       provider base URL (default below: Ollama on the host)
+#   PV_UPSTREAM_API_KEY   API key value; presence selects it as the key source
+#   PV_UPSTREAM_KEY_FILE  path to a mounted secret file holding the key
 #                         (Docker/Kubernetes secrets; must be mode 0600)
-#   AV_UPSTREAM_CHAT_PATH provider chat path when not /v1/chat/completions
-#   AV_LISTEN             listen address
+#   PV_UPSTREAM_CHAT_PATH provider chat path when not /v1/chat/completions
+#   PV_LISTEN             listen address
 
 config_version = 1
 listen = "0.0.0.0:8484"
 
 # Default upstream: Ollama running on the Docker host.
-# Override with AV_UPSTREAM_URL, e.g. https://api.openai.com plus
-# AV_UPSTREAM_API_KEY=sk-... for a cloud provider.
+# Override with PV_UPSTREAM_URL, e.g. https://api.openai.com plus
+# PV_UPSTREAM_API_KEY=sk-... for a cloud provider.
 upstream_url = "http://host.docker.internal:11434"
 upstream_read_timeout_s = 300
 # Keep the drain budget under the pod's terminationGracePeriodSeconds
-# (150 in deploy/kubernetes/agentvisor-ai.yaml) — otherwise the kubelet
+# (150 in deploy/kubernetes/proofvisor.yaml) — otherwise the kubelet
 # SIGKILLs mid-drain. Unset, the budget derives as
 # upstream_read_timeout_s + 5 = 305 s, which exceeds the grace period.
 shutdown_drain_timeout_s = 110
@@ -37,7 +37,7 @@ require_identity = false
 allow_wildcard_bind = true
 
 # "signed" is the product's core promise (every session close mints an
-# Ed25519 receipt); matches avctl init and the README headline claim.
+# Ed25519 receipt); matches pvctl init and the README headline claim.
 default_workflow = "signed"
 consequential_tools = ["db_write", "payout", "merge", "deploy"]
 
@@ -57,6 +57,22 @@ session_idle_close_s = 900
 worker_channel_capacity = 32768
 compression_enabled = true
 reconcile_tick_s = 5
+
+# Sensitive-data redaction before anything is persisted or exported.
+# Redaction runs only when this list (or `redaction_paths`) is
+# non-empty; whenever it runs, the built-in patterns (Bearer tokens,
+# sk-/key- API keys, email addresses, Luhn-valid card numbers, US Social
+# Security numbers, public IPv4 addresses) are always included. These
+# entries add AWS, GitHub, Google, Slack, and bare JWT credentials and
+# mirror `pv_harness::config::RECOMMENDED_REDACTION_PATTERNS`.
+# To turn redaction OFF, set `redaction_patterns = []`.
+redaction_patterns = [
+  '(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)',
+  '(?-u:\b)gh[opsur]_[A-Za-z0-9]{36,255}(?-u:\b)',
+  '(?-u:\b)AIza[0-9A-Za-z_-]{35}(?-u:\b)',
+  '(?-u:\b)xox[abeprs]-[A-Za-z0-9-]{10,255}',
+  '(?-u:\b)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}',
+]
 
 [breaker]
 delta_epsilon = 0.30

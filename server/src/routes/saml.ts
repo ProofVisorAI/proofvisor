@@ -26,6 +26,7 @@ import { generateKeyPairSync, createHash } from "node:crypto";
 import { db } from "../db.js";
 import { env } from "../env.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
+import { orgPlan, refuseIfFeatureMissing } from "../lib/entitlements.js";
 import {
   SESSION_COOKIE_OPTS,
   mintSession,
@@ -35,7 +36,7 @@ import { truncateWellFormed } from "../lib/strings.js";
 
 // Browser-binding transaction cookie for SP-initiated SAML logins —
 // see lib/saml.ts and the shared saml_authn_requests table.
-const SAML_TXN_COOKIE = "av_saml_txn";
+const SAML_TXN_COOKIE = "pv_saml_txn";
 import {
   buildLoginUrl,
   consumeSamlResponse,
@@ -125,7 +126,12 @@ function fingerprintPem(pem: string): string {
 
 // ---------- Zod validation ---------------------------------------------
 
-const createConfigSchema = z.object({
+// Field schemas WITHOUT defaults. zod 4 changed `.partial()` so that a
+// field carrying `.default()` is filled in when the key is absent; a
+// PATCH that only renamed a config would then silently reset every other
+// setting (and trip the jitEnabled/allowedDomains guard below). Defaults
+// therefore live only on the create schema.
+const configFieldSchemas = {
   // R211 F1: .max().trim().min() ordering — see auth.ts
   // orgNameSchema.
   displayName: z.string().max(80).trim().min(1),
@@ -133,9 +139,9 @@ const createConfigSchema = z.object({
   sloUrl: z.string().url().max(2048).optional().nullable(),
   entityIdIdp: z.string().min(1).max(2048),
   x509Cert: z.string().min(1).max(16_000),
-  wantAssertionsSigned: z.boolean().default(true),
-  wantResponseSigned: z.boolean().default(false),
-  allowEncryptedAssertions: z.boolean().default(true),
+  wantAssertionsSigned: z.boolean(),
+  wantResponseSigned: z.boolean(),
+  allowEncryptedAssertions: z.boolean(),
   // R88 F5: dropped "sha1". SHA-1 is chosen-prefix collision-broken
   // since Leurent/Peyrin 2020 (SHAmbles — ~$45k of cloud compute).
   // With SHA-1 as the digest, an attacker with access to a legitimate
@@ -148,16 +154,29 @@ const createConfigSchema = z.object({
   // requires SHA-1, the fix is an env-gated allow-list (not a per-org
   // schema field) so security posture is a deployment decision, not
   // a form-field.
-  signatureAlgorithm: z.enum(["sha256", "sha512"]).default("sha256"),
-  digestAlgorithm: z.enum(["sha256", "sha512"]).default("sha256"),
-  nameIdFormat: z.string().max(256).default(
+  signatureAlgorithm: z.enum(["sha256", "sha512"]),
+  digestAlgorithm: z.enum(["sha256", "sha512"]),
+  nameIdFormat: z.string().max(256),
+  jitEnabled: z.boolean(),
+  jitDefaultRole: z.enum(["member", "admin"]),
+  allowedDomains: z.string().max(2048),
+};
+const createConfigSchema = z.object({
+  ...configFieldSchemas,
+  wantAssertionsSigned: configFieldSchemas.wantAssertionsSigned.default(true),
+  wantResponseSigned: configFieldSchemas.wantResponseSigned.default(false),
+  allowEncryptedAssertions: configFieldSchemas.allowEncryptedAssertions.default(true),
+  signatureAlgorithm: configFieldSchemas.signatureAlgorithm.default("sha256"),
+  digestAlgorithm: configFieldSchemas.digestAlgorithm.default("sha256"),
+  nameIdFormat: configFieldSchemas.nameIdFormat.default(
     "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
   ),
-  jitEnabled: z.boolean().default(true),
-  jitDefaultRole: z.enum(["member", "admin"]).default("member"),
-  allowedDomains: z.string().max(2048).default(""),
+  jitEnabled: configFieldSchemas.jitEnabled.default(true),
+  jitDefaultRole: configFieldSchemas.jitDefaultRole.default("member"),
+  allowedDomains: configFieldSchemas.allowedDomains.default(""),
 });
-const updateConfigSchema = createConfigSchema.partial().extend({
+// Every field optional and nothing defaulted: absent keys stay absent.
+const updateConfigSchema = z.object(configFieldSchemas).partial().extend({
   isActive: z.boolean().optional(),
 });
 
@@ -343,6 +362,12 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
 
       // Membership check: is this user already in this org?
       let membership = user?.memberships.find((m) => m.orgId === cfg.orgId);
+      // SCIM deactivated this member: the IdP must re-activate them
+      // over /scim/v2 before SSO may mint a session again. Not a JIT
+      // case — the row exists — so refuse rather than re-provision.
+      if (membership && !membership.active) {
+        return errRedirect("membership_deactivated");
+      }
       if (!membership) {
         if (!cfg.jitEnabled) {
           return errRedirect("saml_jit_disabled");
@@ -458,7 +483,7 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
       // confirm, reset confirm). SAML sign-in itself never needs the
       // flag.
 
-      // Everything lines up. Mint an av_session JWT, PINNED to this
+      // Everything lines up. Mint an pv_session JWT, PINNED to this
       // org (see SessionClaims.ssoOrgId): the asserting IdP speaks for
       // this workspace only, so the session must not widen into the
       // user's other orgs via /switch-org.
@@ -506,7 +531,7 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
       // Prior shape did NO validation: no session cookie check,
       // no configId lookup, no LogoutRequest signature verify. Any
       // origin could POST here (SLO was CSRF-exempt) and force
-      // `Set-Cookie: av_session=; Max-Age=0` on any authenticated
+      // `Set-Cookie: pv_session=; Max-Age=0` on any authenticated
       // visitor — a session-DoS primitive. Combined with the fact
       // that the handler previously didn't even validate the
       // configId param (destructured as `_req`), an attacker
@@ -705,6 +730,9 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
     if (!body.success) {
       return reply.code(400).send({ error: "invalid_input" });
     }
+    // Plan entitlement: SAML is a paid feature. Existing configs keep
+    // working on any plan; only creating a new one is gated.
+    if (refuseIfFeatureMissing(req, reply, await orgPlan(claims.orgId), "saml")) return;
     // R76 review Q6 (landed R77): reject `jitEnabled=true` with
     // an empty `allowedDomains` at CONFIG WRITE TIME. The R76
     // ACS-time guard fails-closed at login time with 403
@@ -944,7 +972,7 @@ export async function samlRoutes(app: FastifyInstance): Promise<void> {
         "../lib/saml-cert.js"
       );
       const certPem = await generateSelfSignedCert(privateKey, publicKey, {
-        subjectCN: `AgentVisor SP for ${existing.id}`,
+        subjectCN: `ProofVisor SP for ${existing.id}`,
         days: 365 * 5,
       });
 

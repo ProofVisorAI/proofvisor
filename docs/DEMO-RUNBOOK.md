@@ -8,14 +8,15 @@ against the shipped release + live prod stack.
 
 ```sh
 # 1. Binaries exist and are healthy
-target/release/agentvisord --version && target/release/avctl --version
+target/release/proofvisord --version && target/release/pvctl --version
 
 # 2. The offline set piece is green (10/10 beats, ~8 s)
 node scripts/demo-agent.mjs
 
-# 3. Prod is up
-curl -fsS https://api.agentvisorai.me/healthz
-curl -fsS -o /dev/null https://agentvisorai.me/app/
+# 3. Prod is up (api.proofvisor.com is pending DNS; until it resolves,
+#    use the Render hostname https://agentvisor-api.onrender.com instead)
+curl -fsS https://api.proofvisor.com/healthz
+curl -fsS -o /dev/null https://proofvisor.com/app/
 
 # 4. Console signed in as the demo owner in a CLEAN browser profile
 #    (debug6667@proton.me — password in the usual vault). Park the tab
@@ -45,10 +46,10 @@ Works in airplane mode — the model and tool backend are in-process.
 ```sh
 node scripts/demo-agent.mjs --keep          # terminal 1: leaves stack up
 # terminal 2 (SPOOL is printed by --keep; DEP/token from preflight #5):
-target/release/avctl console-sync \
+target/release/pvctl console-sync \
   --spool-dir  <SPOOL>/spool/atif \
   --bridge-dir <SPOOL>/data/bridge \
-  --console-url https://api.agentvisorai.me \
+  --console-url https://api.proofvisor.com \
   --deployment $(awk '{print $2}' /tmp/demo-dep.txt) \
   --token-file /tmp/demo-token \
   --state-file /tmp/demo-state.json
@@ -75,8 +76,8 @@ optionally ⚡ Simulate an attack on the mock demo (`?live=0`).
 
 ```sh
 # Wipe the demo deployment (cascades its sessions + receipts), recreate:
-B=https://api.agentvisorai.me/api/v1
-H='-H Content-Type:application/json -H X-Requested-With:fetch -H Origin:https://agentvisorai.me'
+B=https://api.proofvisor.com/api/v1
+H='-H Content-Type:application/json -H X-Requested-With:fetch -H Origin:https://proofvisor.com'
 curl -s -c /tmp/prod.jar $H -X POST $B/auth/login \
   -d '{"email":"debug6667@proton.me","password":"<vault>"}'
 curl -s -b /tmp/prod.jar $H -X DELETE \
@@ -91,7 +92,7 @@ echo "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); \
 
 # Optional: purge rehearsal residue older than a day (orphaned
 # recovery-adopted sessions from drills sync with agent
-# "agentvisor-ai-harness" and would render as stalled pills). Restores
+# "proofvisor-harness" and would render as stalled pills). Restores
 # 90d after.
 curl -s -b /tmp/prod.jar $H -X PATCH $B/org/retention \
   -d '{"sessionRetentionDays":1,"auditRetentionDays":365}' >/dev/null
@@ -109,7 +110,7 @@ tmp spool and a fresh session id.
 
 1. **Live sync flaky / venue wifi dead** → Beat A alone still lands the
    whole story offline; narrate the console from the mock demo
-   (`agentvisorai.me/app/?live=0` — tour + ⚡ attack work without auth).
+   (`proofvisor.com/app/?live=0` — tour + ⚡ attack work without auth).
 2. **Laptop trouble** → walkthrough video (41.6 s, re-recorded 2026-09-07
    against the current UI): session files `walkthrough-2026-09-07.webm`.
 3. **Prod API down mid-demo** → `docs/RUNBOOK.md` §1-3; the mock console

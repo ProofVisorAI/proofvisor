@@ -46,27 +46,27 @@ import { execSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8752";
-const PG = process.env.PG_CONTAINER ?? "av-pg-r52";
+const PG = process.env.PG_CONTAINER ?? "pv-pg-r52";
 const nonce = Math.random().toString(36).slice(2, 6);
 
 async function jr(state, method, path, body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (state.cookie) headers["Cookie"] = "av_session=" + state.cookie + (state.csrf ? "; av_csrf=" + state.csrf : "");
-  if (state.csrf) headers["x-av-csrf"] = state.csrf;
+  if (state.cookie) headers["Cookie"] = "pv_session=" + state.cookie + (state.csrf ? "; pv_csrf=" + state.csrf : "");
+  if (state.csrf) headers["x-pv-csrf"] = state.csrf;
   const r = await fetch(BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const sc = r.headers.get("set-cookie") ?? "";
-  const nc = /av_session=([^;]+)/.exec(sc);
+  const nc = /pv_session=([^;]+)/.exec(sc);
   if (nc) state.cookie = nc[1];
-  const nc2 = /av_csrf=([^;]+)/.exec(sc);
+  const nc2 = /pv_csrf=([^;]+)/.exec(sc);
   if (nc2) state.csrf = nc2[1];
   return r;
 }
 function fail(m) { console.log("❌", m); process.exit(1); }
 function sql(q) {
-  const path = "/tmp/av-drill-" + Math.random().toString(36).slice(2, 8) + ".sql";
+  const path = "/tmp/pv-drill-" + Math.random().toString(36).slice(2, 8) + ".sql";
   writeFileSync(path, q);
-  const out = execSync(`docker cp ${path} ${PG}:/tmp/q.sql && docker exec ${PG} psql -U av -d avdb -t -A -f /tmp/q.sql`).toString().trim();
+  const out = execSync(`docker cp ${path} ${PG}:/tmp/q.sql && docker exec ${PG} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -f /tmp/q.sql`).toString().trim();
   unlinkSync(path);
   return out;
 }
@@ -84,7 +84,7 @@ const targets = [
   { name: "slack",   url: "https://hooks.slack.com/services/T00000000/B00000000/deadbeef" },
   { name: "teams",   url: "https://acme.webhook.office.com/webhookb2/deadbeef@guid/IncomingWebhook/xyz/deadbeef" },
   { name: "discord", url: "https://discord.com/api/webhooks/123456/deadbeef" },
-  { name: "raw",     url: "https://relay.example.com/av/hook" },
+  { name: "raw",     url: "https://relay.example.com/pv/hook" },
 ];
 
 const created = [];
@@ -117,7 +117,7 @@ for (const c of created) {
   const j = JSON.parse(payload);
   if (c.name === "slack") {
     if (!j.attachments) fail(`slack: missing attachments, got ${payload.slice(0, 200)}`);
-    if (!j.text?.startsWith("AgentVisor")) fail(`slack: bad text: ${j.text}`);
+    if (!j.text?.startsWith("ProofVisor")) fail(`slack: bad text: ${j.text}`);
     if (!Array.isArray(j.attachments[0].blocks)) fail("slack: no blocks");
     console.log("✅ slack: attachments + blocks + colored bar");
   } else if (c.name === "teams") {
@@ -127,7 +127,7 @@ for (const c of created) {
     console.log("✅ teams: MessageCard + themeColor + sections");
   } else if (c.name === "discord") {
     if (!Array.isArray(j.embeds)) fail(`discord: no embeds: ${payload.slice(0, 200)}`);
-    if (!j.embeds[0].title?.startsWith("AgentVisor")) fail(`discord: bad title`);
+    if (!j.embeds[0].title?.startsWith("ProofVisor")) fail(`discord: bad title`);
     if (typeof j.embeds[0].color !== "number") fail(`discord: no color`);
     console.log("✅ discord: embeds + title + numeric color");
   } else if (c.name === "raw") {

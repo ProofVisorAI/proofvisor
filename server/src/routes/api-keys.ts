@@ -3,10 +3,10 @@
  *
  * Wire a CI job / Grafana dashboard / internal script as an *org*
  * rather than as a user. Keys are argon2-hashed at rest; plaintext
- * (av_srv_xxxx) is returned once at create time.
+ * (pv_srv_xxxx) is returned once at create time.
  *
  * Authenticate by sending:
- *   Authorization: Bearer av_srv_<plaintext>
+ *   Authorization: Bearer pv_srv_<plaintext>
  *
  * This is picked up in lib/session-middleware.ts alongside the JWT
  * cookie flow; a valid key grants a synthesized session with the key's
@@ -24,8 +24,13 @@ import { db } from "../db.js";
 import { canGrantRole, hashPassword, randomToken, type SessionClaims } from "../lib/auth.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
 import { requireSession } from "../lib/session-middleware.js";
+import { dispatchEvent } from "../lib/webhooks.js";
 
 const roleSchema = z.enum(["owner", "admin", "member"]);
+
+// Keys minted before the ProofVisor rename start with "av_srv_" and keep
+// working (session-middleware accepts both); new keys use this prefix.
+export const API_KEY_PREFIX = "pv_srv_";
 
 export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", async (req, reply) => {
@@ -52,6 +57,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
         id: true,
         name: true,
         tokenHint: true,
+        tokenPrefix: true,
         role: true,
         createdByEmail: true,
         lastUsedAt: true,
@@ -62,7 +68,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       keys: rows.map((r) => ({
         id: r.id,
         name: r.name,
-        hint: "av_srv_" + r.tokenHint + "…",
+        hint: r.tokenPrefix + r.tokenHint + "…",
         role: r.role,
         createdByEmail: r.createdByEmail,
         lastUsedAt: r.lastUsedAt,
@@ -94,7 +100,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const plaintextBody = randomToken(28); // 224 bits of randomness
-    const plaintext = "av_srv_" + plaintextBody;
+    const plaintext = API_KEY_PREFIX + plaintextBody;
     const tokenHash = await hashPassword(plaintext);
     // R104 F1 + F2: resolve claims.sub to the ULTIMATE human user
     // id before persisting createdById. For a cookie session
@@ -193,6 +199,7 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
               name: body.data.name,
               tokenHash,
               tokenHint: plaintextBody.slice(0, 8),
+              tokenPrefix: API_KEY_PREFIX,
               role: body.data.role,
               createdById: creatorUser?.id ?? null,
               createdByEmail: creatorUser?.email ?? null,
@@ -228,11 +235,27 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       },
       req.log,
     );
+    // Webhook fan-out so a SIEM can alert on new org credentials. The
+    // payload carries the display hint only — the plaintext is shown
+    // once to the operator below and must never travel to a third-party
+    // endpoint.
+    dispatchEvent({
+      orgId: claims.orgId,
+      event: "apikey.created",
+      data: {
+        apiKeyId: key.id,
+        name: key.name,
+        role: key.role,
+        hint: API_KEY_PREFIX + key.tokenHint + "…",
+        createdByEmail: creatorUser?.email ?? null,
+      },
+      logger: req.log,
+    });
     return reply.code(201).send({
       key: {
         id: key.id,
         name: key.name,
-        hint: "av_srv_" + key.tokenHint + "…",
+        hint: API_KEY_PREFIX + key.tokenHint + "…",
         role: key.role,
         createdAt: key.createdAt,
       },

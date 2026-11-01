@@ -1,11 +1,11 @@
-Contact: https://github.com/AgentVisorAI/agentvisor-ai/security/advisories/new
+Contact: https://github.com/ProofVisorAI/proofvisor/security/advisories/new
 Expires: 2027-08-25T00:00:00.000Z
 Preferred-Languages: en
-Canonical: https://agentvisorai.me/.well-known/security.txt
-Policy: https://github.com/AgentVisorAI/agentvisor-ai/blob/main/SECURITY.md
-Acknowledgments: https://github.com/AgentVisorAI/agentvisor-ai/blob/main/SECURITY-AUDIT.md
+Canonical: https://proofvisor.com/.well-known/security.txt
+Policy: https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY.md
+Acknowledgments: https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY-AUDIT.md
 
-# AgentVisor AI security disclosure — RFC 9116 (securitytxt.org).
+# ProofVisor security disclosure — RFC 9116 (securitytxt.org).
 #
 # We welcome coordinated disclosure. Please open a private security
 # advisory (the Contact URL above) with a description of the issue,
@@ -15,10 +15,10 @@ Acknowledgments: https://github.com/AgentVisorAI/agentvisor-ai/blob/main/SECURIT
 # days for high/critical severity.
 #
 # In-scope surfaces:
-#   • agentvisorai.me and *.agentvisorai.me
-#   • the AgentVisor console SPA at /app
+#   • proofvisor.com and *.proofvisor.com
+#   • the ProofVisor console SPA at /app
 #   • the hosted API (launches with the beta; in scope from day one)
-#   • the on-device daemon (crates/av-harness + crates/av-atif in this repo)
+#   • the on-device daemon (crates/pv-harness + crates/pv-atif in this repo)
 #
 # Out of scope: dependency CVEs already tracked upstream, findings that
 # require an already-compromised administrator account, DoS via unbounded

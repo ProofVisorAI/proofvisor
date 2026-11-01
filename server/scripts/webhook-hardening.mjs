@@ -19,9 +19,9 @@ import { createServer } from "node:http";
 import { createHmac } from "node:crypto";
 import { execSync } from "node:child_process";
 
-// CI names its Postgres container av-pg-r48; local runs pass PG_CONTAINER
+// CI names its Postgres container pv-pg-r48; local runs pass PG_CONTAINER
 // (same override webhook-drill.mjs already honors).
-const PG_CONTAINER = process.env.PG_CONTAINER ?? "av-pg-r48";
+const PG_CONTAINER = process.env.PG_CONTAINER ?? "pv-pg-r48";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8748";
 const RECV_PORT = 21118;
@@ -45,13 +45,13 @@ const recvUrl = `http://127.0.0.1:${RECV_PORT}/hook`;
 async function jsonReq(state, method, path, body) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (state.cookie) headers["Cookie"] = "av_session=" + state.cookie + (state.csrf ? "; av_csrf=" + state.csrf : "");
-  if (state.csrf) headers["x-av-csrf"] = state.csrf;
+  if (state.cookie) headers["Cookie"] = "pv_session=" + state.cookie + (state.csrf ? "; pv_csrf=" + state.csrf : "");
+  if (state.csrf) headers["x-pv-csrf"] = state.csrf;
   const r = await fetch(BASE + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const sc = r.headers.get("set-cookie") ?? "";
-  const nc = /av_session=([^;]+)/.exec(sc);
+  const nc = /pv_session=([^;]+)/.exec(sc);
   if (nc) state.cookie = nc[1];
-  const nc2 = /av_csrf=([^;]+)/.exec(sc);
+  const nc2 = /pv_csrf=([^;]+)/.exec(sc);
   if (nc2) state.csrf = nc2[1];
   return r;
 }
@@ -157,15 +157,15 @@ const carol = {};
 {
   // fetch endpoint's secret from DB directly (not exposed via API).
   const secret = execSync(
-    `docker exec ${PG_CONTAINER} psql -U av -d avdb -t -A -c "SELECT secret FROM webhook_endpoints WHERE id='${alicEp.id}'"`,
+    `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -c "SELECT secret FROM webhook_endpoints WHERE id='${alicEp.id}'"`,
   ).toString().trim();
   capture = [];
   await jsonReq(alice, "POST", "/api/v1/webhooks/" + alicEp.id + "/test");
   for (let i = 0; i < 30 && capture.length === 0; i++) await wait(150);
   if (capture.length !== 1) fail("no delivery captured");
   const c = capture[0];
-  const ts = c.headers["x-agentvisor-timestamp"];
-  const sig = c.headers["x-agentvisor-signature"];
+  const ts = c.headers["x-proofvisor-timestamp"];
+  const sig = c.headers["x-proofvisor-signature"];
   const legit = "sha256=" + createHmac("sha256", secret).update(ts).update(".").update(c.body).digest("hex");
   if (legit !== sig) fail(`legit signature mismatch! ${legit} vs ${sig}`);
   const tamperedBody = c.body.replace(/"test"/, '"attack"');
@@ -184,7 +184,7 @@ const carol = {};
   let finalAttempt = 0;
   for (let i = 0; i < 15; i++) {
     execSync(
-      `docker exec ${PG_CONTAINER} psql -U av -d avdb -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
+      `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -c "UPDATE webhook_deliveries SET \\"nextRetryAt\\" = NOW() - INTERVAL '1 minute' WHERE status='retrying'"`,
       { stdio: "ignore" },
     );
     await wait(900); // sweeper=500ms + 400ms slop for retry
@@ -203,12 +203,12 @@ const carol = {};
 receiverBehavior = { status: 200 };
 {
   const before = execSync(
-    `docker exec ${PG_CONTAINER} psql -U av -d avdb -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
+    `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
   ).toString().trim();
   if (before === "0") fail("no deliveries recorded prior to delete");
   await jsonReq(alice, "DELETE", "/api/v1/webhooks/" + alicEp.id);
   const after = execSync(
-    `docker exec ${PG_CONTAINER} psql -U av -d avdb -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
+    `docker exec ${PG_CONTAINER} psql -U ${process.env.PG_USER ?? "pv"} -d ${process.env.PG_DB ?? "pvdb"} -t -A -c "SELECT COUNT(*) FROM webhook_deliveries WHERE \\"endpointId\\"='${alicEp.id}'"`,
   ).toString().trim();
   if (after !== "0") fail(`delete cascade: expected 0 rows, got ${after}`);
   console.log(`✅ delete cascade: ${before} deliveries -> 0`);

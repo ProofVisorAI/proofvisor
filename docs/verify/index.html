@@ -11,31 +11,31 @@
     for the sample receipt. Any pasted JSON is verified locally.
   -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:; manifest-src 'self'; object-src 'none'; frame-src 'none'">
-  <title>Verify a receipt. AgentVisor AI</title>
-  <meta name="description" content="Drop an AgentVisor session receipt into your browser. The Ed25519 signature verifies right here, offline, against the receipt's embedded public key. No account, no upload.">
+        content="default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.proofvisor.com; img-src 'self' data:; font-src 'self' data:; manifest-src 'self'; object-src 'none'; frame-src 'none'">
+  <title>Verify a receipt. ProofVisor</title>
+  <meta name="description" content="Drop a ProofVisor session receipt into your browser. The Ed25519 signature verifies right here, offline, against the receipt's embedded public key. No account, no upload.">
   <link rel="stylesheet" href="../style.css">
   <link rel="stylesheet" href="verify.css">
   <link rel="icon" type="image/png" href="../logo.png">
-  <meta property="og:title" content="Verify an AgentVisor receipt in your browser">
+  <meta property="og:title" content="Verify a ProofVisor receipt in your browser">
   <meta property="og:description" content="Drop a receipt JSON in your browser. Ed25519 signature verified offline in ~1 ms. No account, no upload.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://agentvisorai.me/verify/">
-  <meta property="og:image" content="https://agentvisorai.me/social-preview.png">
+  <meta property="og:url" content="https://proofvisor.com/verify/">
+  <meta property="og:image" content="https://proofvisor.com/social-preview.png">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Verify an AgentVisor receipt in your browser">
+  <meta name="twitter:title" content="Verify a ProofVisor receipt in your browser">
   <meta name="twitter:description" content="Drop a receipt JSON in your browser. Ed25519 signature verified offline in ~1 ms.">
-  <meta name="twitter:image" content="https://agentvisorai.me/social-preview.png">
+  <meta name="twitter:image" content="https://proofvisor.com/social-preview.png">
 </head>
 <body>
 
   <nav aria-label="Primary">
     <div class="wrap nav-inner">
-      <a class="brand" href="../"><img src="../logo.png" alt="" width="26" height="26" style="vertical-align:-6px;margin-right:8px">AgentVisor AI</a>
+      <a class="brand" href="../"><img src="../logo.png" alt="" width="26" height="26" style="vertical-align:-6px;margin-right:8px">ProofVisor</a>
       <div class="nav-links">
         <a href="../">Home</a>
         <a href="../app/">Console</a>
-        <a href="https://github.com/AgentVisorAI/agentvisor">GitHub</a>
+        <a href="https://github.com/ProofVisorAI/proofvisor">GitHub</a>
       </div>
     </div>
   </nav>
@@ -44,7 +44,7 @@
     <section class="verify-hero">
       <h1>Verify a session receipt</h1>
       <p>
-        Drop an AgentVisor receipt JSON in your browser. The Ed25519 signature
+        Drop a ProofVisor receipt JSON in your browser. The Ed25519 signature
         verifies right here, offline, against the receipt's embedded public
         key. No account, no upload. Nothing leaves this page.
       </p>
@@ -73,7 +73,7 @@
     <section class="how">
       <h3>How this works</h3>
       <p>
-        Every session on AgentVisor can end with a receipt: a signed JSON that
+        Every session on ProofVisor can end with a receipt: a signed JSON that
         commits to the exact set of events, tokens, tool calls, and policy
         decisions that happened. The receipt embeds an Ed25519 public key.
       </p>
@@ -83,6 +83,15 @@
         anywhere, the verification fails. Don't take our word for it —
         after a green verify, click <em>Now tamper with one byte</em>
         and watch the same receipt turn red.
+      </p>
+      <p>
+        What this page cannot do is tell you who owns the key. It trusts
+        only the sample receipt's key and the console demo key. A receipt
+        from a real deployment therefore shows "internally consistent,
+        trust anchor not verified": the signature is valid for the key
+        inside the receipt, but you still have to compare that key's
+        fingerprint with the one on the deployment page in the console,
+        or with the key the operator gave you out of band.
       </p>
       <p>
         The same check runs offline in Node too:

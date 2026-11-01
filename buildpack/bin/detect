@@ -12,4 +12,4 @@ buildpack_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 . "$buildpack_dir/lib/binding.sh"
 binding=$(read_binding)
 [ "$binding" != null ] || exit 100
-printf 'agentvisor\n'
+printf 'proofvisor\n'

@@ -8,8 +8,8 @@
  *   1. Load every ACTIVE endpoint for that org whose `events` list
  *      includes the event name (or "*"). Zero endpoints — fast return.
  *   2. Serialize the payload once. Attach:
- *        X-AgentVisor-Event, X-AgentVisor-Delivery, X-AgentVisor-Timestamp,
- *        X-AgentVisor-Signature: sha256=<HMAC>
+ *        X-ProofVisor-Event, X-ProofVisor-Delivery, X-ProofVisor-Timestamp,
+ *        X-ProofVisor-Signature: sha256=<HMAC>
  *      The signature is over `${timestamp}.${body}` so a replay of an old
  *      captured request can't be re-sent hours later against the same
  *      endpoint.
@@ -670,7 +670,14 @@ async function deliverOne(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "User-Agent": "AgentVisor-Webhook/1.0",
+        "User-Agent": "ProofVisor-Webhook/1.0",
+        "X-ProofVisor-Event": event,
+        "X-ProofVisor-Delivery": deliveryId,
+        "X-ProofVisor-Timestamp": timestamp,
+        "X-ProofVisor-Signature": sig,
+        // The same values under the names receivers configured before the
+        // ProofVisor rename, so their signature checks keep working.
+        // Deprecated; documented in server/README.md (webhooks row).
         "X-AgentVisor-Event": event,
         "X-AgentVisor-Delivery": deliveryId,
         "X-AgentVisor-Timestamp": timestamp,

@@ -39,7 +39,7 @@
       card.appendChild(btn);
       var a = document.createElement("a");
       a.style.cssText = "margin-left:12px;color:#0a5c8b;text-decoration:none";
-      a.href = "https://github.com/AgentVisorAI/agentvisor-ai/issues/new?title=Console%20crash";
+      a.href = "https://github.com/ProofVisorAI/proofvisor/issues/new?title=Console%20crash";
       a.textContent = "Contact support";
       card.appendChild(a);
       host.appendChild(card);
@@ -57,11 +57,11 @@
   }
   function handle(msg) {
     if (benign(msg)) return;
-    // Once the app has booted (app.js sets __avBooted at the end of
+    // Once the app has booted (app.js sets __pvBooted at the end of
     // boot()), a stray error must NOT wipe a working console — an
     // extension throwing mid-demo used to replace the whole UI with
     // this card. Log it; the app keeps running.
-    if (window.__avBooted) { try { console.error("[post-boot]", msg); } catch (e) {} return; }
+    if (window.__pvBooted) { try { console.error("[post-boot]", msg); } catch (e) {} return; }
     crashCard(msg, window.__lastRequestId);
   }
   window.addEventListener("error", function (ev) {
@@ -75,7 +75,7 @@
   // never EXECUTES (404 mid-deploy, corporate proxy stripping JS)
   // fires no window error — the page just stayed blank forever.
   setTimeout(function () {
-    if (!window.__avBooted && !document.querySelector("#app > *")) {
+    if (!window.__pvBooted && !document.querySelector("#app > *")) {
       crashCard("The console failed to load. A deploy may be mid-flight, or your network is blocking scripts.");
     }
   }, 6000);

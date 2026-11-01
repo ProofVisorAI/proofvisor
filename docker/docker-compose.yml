@@ -40,12 +40,12 @@ services:
     volumes:
       - runtime-secrets:/prepared-secrets
 
-  agentvisor-ai:
+  proofvisor:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: agentvisor-ai:local
-    container_name: agentvisor-ai
+    image: proofvisor:local
+    container_name: proofvisor
     ports:
       # Keep the published gateway local. The full configuration requires
       # identity; configure its issuer and audience before exposing it through
@@ -66,7 +66,7 @@ services:
     stop_grace_period: 180s
     # Round-24 F2: pair the systemd-side Restart=on-failure hardening
     # (round-19 F7) with a compose-side policy. Without this, a single
-    # OOMKill leaves agentvisor-ai Exited with no healthcheck consulted
+    # OOMKill leaves proofvisor Exited with no healthcheck consulted
     # and no alert path. Use `unless-stopped` so `docker compose down`
     # still works predictably (as opposed to `always`).
     restart: unless-stopped
@@ -81,10 +81,10 @@ services:
     read_only: false # /app/data and /app/spool are writable named volumes
     environment:
       RUST_LOG: info
-      AV_CONFIG: /app/config/harness.docker.toml
+      PV_CONFIG: /app/config/harness.docker.toml
       # The receipt trust anchor lives in a private volume populated by
       # install-secrets and mounted read-only, separate from bridge data.
-      AV_SIGNING_SEED_FILE: /run/secrets/signing_seed
+      PV_SIGNING_SEED_FILE: /run/secrets/signing_seed
       OTEL_EXPORTER_OTLP_ENDPOINT: http://vector:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
     volumes:
@@ -94,7 +94,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      # Hardcode the URL rather than relying on `avctl health`'s default
+      # Hardcode the URL rather than relying on `pvctl health`'s default
       # matching whatever `listen` is in `config/harness.docker.toml`.
       # A silent drift between the two used to make the healthcheck
       # report *green* against the wrong endpoint (round-11 F8) — the
@@ -103,7 +103,7 @@ services:
       # service. Probe /readyz, not the /health constant: a full disk
       # keeps /health green while every request 503s — readiness's
       # spool WRITABILITY probe is what flips on that incident.
-      test: ["CMD", "avctl", "health", "--url", "http://127.0.0.1:8484/readyz"]
+      test: ["CMD", "pvctl", "health", "--url", "http://127.0.0.1:8484/readyz"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -195,18 +195,18 @@ services:
     image: cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     # Internal-only S3-compatible object store for the cold tier
     # (`cold_uri = "s3://..."`). Used by CI's live cold-store contract
-    # test (`AV_COLD_S3_URL`); the entrypoint pre-creates the bucket so
+    # test (`PV_COLD_S3_URL`); the entrypoint pre-creates the bucket so
     # the conditional-put export path needs no client-side setup.
     ports:
       # Host 9100: port 9000 is commonly occupied on dev hosts.
       - "127.0.0.1:9100:9000"
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: agentvisor
-      MINIO_ROOT_PASSWORD: agentvisor-ci-secret
+      MINIO_ROOT_USER: proofvisor
+      MINIO_ROOT_PASSWORD: proofvisor-ci-secret
       # The image has no curl; its bundled MinIO client checks readiness.
-      MC_HOST_local: http://agentvisor:agentvisor-ci-secret@127.0.0.1:9000
-    entrypoint: ["/bin/sh", "-c", "mkdir -p /data/agentvisor-cold && exec minio server /data"]
+      MC_HOST_local: http://proofvisor:proofvisor-ci-secret@127.0.0.1:9000
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /data/proofvisor-cold && exec minio server /data"]
     volumes:
       - minio-data:/data
     healthcheck:
@@ -238,7 +238,7 @@ services:
 
   vector:
     image: timberio/vector:0.48.0-debian
-    # Internal-only OTLP receivers; agentvisor-ai sends via the compose network.
+    # Internal-only OTLP receivers; proofvisor sends via the compose network.
     ports:
       - "127.0.0.1:4317:4317"
       - "127.0.0.1:4318:4318"
@@ -248,9 +248,9 @@ services:
       # Round-24 F1: the docker socket was previously mounted read-only
       # for the docker_logs source. Read-only does NOT prevent Vector
       # (or a malicious VRL transform) from calling `docker inspect` on
-      # every co-scheduled container, including agentvisor-ai, whose
-      # environment holds AV_UPSTREAM_API_KEY. The source has been
-      # switched to OTLP-only (agentvisor-ai already sends OTel logs via
+      # every co-scheduled container, including proofvisor, whose
+      # environment holds PV_UPSTREAM_API_KEY. The source has been
+      # switched to OTLP-only (proofvisor already sends OTel logs via
       # the compose network on 4318). If you need container-log
       # discovery, put a docker-socket-proxy (e.g.
       # tecnativa/docker-socket-proxy) in front and remount ONLY the

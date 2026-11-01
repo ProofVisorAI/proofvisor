@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Package buildpack/ with the sidecar binaries it launches.
 
-The buildpack starts `avctl sidecar` beside the application, so a packaged
-buildpack must carry static Linux `avctl` binaries. Pass the musl binaries
+The buildpack starts `pvctl sidecar` beside the application, so a packaged
+buildpack must carry static Linux `pvctl` binaries. Pass the musl binaries
 the release workflow builds:
 
     python3 scripts/package-buildpack.py \\
-        --avctl-x86_64 target/x86_64-unknown-linux-musl/release/avctl \\
-        --avctl-aarch64 target/aarch64-unknown-linux-musl/release/avctl \\
+        --pvctl-x86_64 target/x86_64-unknown-linux-musl/release/pvctl \\
+        --pvctl-aarch64 target/aarch64-unknown-linux-musl/release/pvctl \\
         --output dist
 
 It writes, with SHA-256 checksum files:
 
-- agentvisor-buildpack-<version>.zip: a Cloud Foundry classic buildpack
-  (`cf create-buildpack agentvisor-buildpack <zip> 1`);
-- agentvisor-buildpack-<version>.tgz: the same tree for Cloud Native
+- proofvisor-buildpack-<version>.zip: a Cloud Foundry classic buildpack
+  (`cf create-buildpack proofvisor-buildpack <zip> 1`);
+- proofvisor-buildpack-<version>.tgz: the same tree for Cloud Native
   Buildpacks (`pack buildpack package --path <tgz>`).
 
 At least one architecture is required. The tests directory is left out, and
@@ -55,8 +55,8 @@ def entries(binaries: dict) -> list:
     for arch, binary in sorted(binaries.items()):
         data = Path(binary).read_bytes()
         if not data.startswith(ELF_MAGIC):
-            raise SystemExit(f"{binary} is not a Linux (ELF) binary; build avctl for *-unknown-linux-musl")
-        files.append((f"vendor/avctl-linux-{arch}", data, 0o755))
+            raise SystemExit(f"{binary} is not a Linux (ELF) binary; build pvctl for *-unknown-linux-musl")
+        files.append((f"vendor/pvctl-linux-{arch}", data, 0o755))
     return files
 
 
@@ -86,17 +86,17 @@ def checksum(path: Path) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--avctl-x86_64", help="static Linux x86_64 avctl binary")
-    parser.add_argument("--avctl-aarch64", help="static Linux aarch64 avctl binary")
+    parser.add_argument("--pvctl-x86_64", help="static Linux x86_64 pvctl binary")
+    parser.add_argument("--pvctl-aarch64", help="static Linux aarch64 pvctl binary")
     parser.add_argument("--output", default="dist", help="output directory (default: dist)")
     args = parser.parse_args(argv)
-    binaries = {arch: path for arch, path in (("x86_64", args.avctl_x86_64), ("aarch64", args.avctl_aarch64)) if path}
+    binaries = {arch: path for arch, path in (("x86_64", args.pvctl_x86_64), ("aarch64", args.pvctl_aarch64)) if path}
     if not binaries:
-        parser.error("pass at least one of --avctl-x86_64 / --avctl-aarch64")
+        parser.error("pass at least one of --pvctl-x86_64 / --pvctl-aarch64")
     files = entries(binaries)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    stem = f"agentvisor-buildpack-{version()}"
+    stem = f"proofvisor-buildpack-{version()}"
     for suffix, writer in ((".zip", write_zip), (".tgz", write_tgz)):
         target = output / (stem + suffix)
         writer(target, files)

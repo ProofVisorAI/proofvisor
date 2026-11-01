@@ -227,7 +227,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       req.log,
     );
     // R213 F1: increment the previously-dead Prometheus
-    // `agentvisor_api_auth_events_total{event,result}` counter
+    // `proofvisor_api_auth_events_total{event,result}` counter
     // (declared at lib/metrics.ts:52 with the comment
     // "high-signal for spotting brute-force sprays and
     // organic-growth graphs alike" — nothing was wired up, so
@@ -322,7 +322,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       // password branch has to enter the same code path
       // below).
       include: {
-        memberships: { include: { org: true }, orderBy: { createdAt: "asc" } },
+        // SCIM-deactivated memberships are not login targets.
+        memberships: { where: { active: true }, include: { org: true }, orderBy: { createdAt: "asc" } },
         _count: { select: { webauthnCredentials: true } },
       },
     });
@@ -341,7 +342,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     // learned that a candidate password was CORRECT for a
     // WebAuthn-protected account even though they couldn't
     // complete the ceremony. The password is directly reusable
-    // as a credential-stuffing input against non-AgentVisor
+    // as a credential-stuffing input against non-ProofVisor
     // services. Post R85 F3: uniformly respond
     // `{mfaRequired:true}` (no email leaked; client already
     // has it) on unknown-email, wrong-password, no-membership,
@@ -512,8 +513,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (req.session) {
       // R106 F3: API-key sessions have no cookie to clear and no
       // user row to fence — the auth identity is the plaintext
-      // av_srv_ token in the Authorization header, which the
-      // holder still has. Clearing the client's av_session
+      // pv_srv_ token in the Authorization header, which the
+      // holder still has. Clearing the client's pv_session
       // cookie is a no-op for them. Prior shape (a) called
       // user.update on 'apikey:<id>' → threw P2025 → swallowed
       // by .catch(), noisy log line for every API-key /logout
@@ -573,7 +574,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!claims) return;
     const user = await db.user.findUnique({
       where: { id: claims.sub },
-      include: { memberships: { include: { org: true } } },
+      include: { memberships: { where: { active: true }, include: { org: true } } },
     });
     if (!user) {
       clearSessionCookie(reply);
@@ -650,11 +651,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(403).send({ error: "sso_session_org_locked" });
     }
     const membership = await db.membership.findFirst({
-      where: { userId: claims.sub, orgId: body.data.orgId },
+      where: { userId: claims.sub, orgId: body.data.orgId, active: true },
       include: { org: true, user: true },
     });
-    // Uniform 404 whether the org doesn't exist or the caller simply
-    // isn't a member — no existence oracle for org ids.
+    // Uniform 404 whether the org doesn't exist, the caller simply
+    // isn't a member, or SCIM deactivated them — no existence oracle
+    // for org ids.
     if (!membership) return reply.code(404).send({ error: "not_found" });
     const token = await mintSession({
       sub: claims.sub,
@@ -692,7 +694,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   // Signed-in password change. Until now the ONLY way to rotate a
   // password was the anonymous forgot-password email round-trip —
-  // which auto-revokes every av_srv_ API key (reset-confirm treats
+  // which auto-revokes every pv_srv_ API key (reset-confirm treats
   // itself as break-glass, R123 F3) and fences ALL cookies including
   // the one you're holding. A routine hygiene rotation shouldn't
   // nuke production ingest tokens or sign you out of your own
@@ -719,7 +721,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   }, async (req, reply) => {
     const claims = requireSession(req, reply);
     if (!claims) return;
-    // av_srv_ tokens authenticate as sub="apikey:<id>" — there is no
+    // pv_srv_ tokens authenticate as sub="apikey:<id>" — there is no
     // user password behind them and a leaked key must never be able
     // to probe or rotate its creator's credential.
     if (claims.sub.startsWith("apikey:")) {
@@ -1143,7 +1145,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // extract the whole org history in one call.
   app.post("/me/export", {
     // R142 F2: perIpCookieOnly skips the bucket for api-key
-    // requests so an attacker with any valid av_srv_ token on
+    // requests so an attacker with any valid pv_srv_ token on
     // the same IP can't burn the legitimate owner's export
     // budget by hammering with a Bearer header — see
     // lib/rate-limit.ts for the shared helper rationale.
@@ -1310,7 +1312,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     reply.raw.setHeader("Content-Type", "application/x-ndjson");
     reply.raw.setHeader(
       "Content-Disposition",
-      `attachment; filename="agentvisor-export-${claims.orgId}-${Date.now()}.jsonl"`,
+      `attachment; filename="proofvisor-export-${claims.orgId}-${Date.now()}.jsonl"`,
     );
     reply.raw.setHeader("Cache-Control", "no-store");
     reply.raw.flushHeaders();
@@ -1891,12 +1893,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     // bumps sessionRevokedAt to fence every live cookie JWT, but
     // session-middleware's API-key auth path (lib/session-middleware.ts)
     // does NOT consult user.sessionRevokedAt when synthesizing a
-    // membershipRole from ApiKey.role — so a leaked `av_srv_`
+    // membershipRole from ApiKey.role — so a leaked `pv_srv_`
     // token that predates the reset still authenticates at prior
     // privilege indefinitely. Same fence gap R103 F1 closed for
     // /members PATCH+DELETE role changes, at the reset-confirm
     // scope. Concrete threat: victim's laptop is compromised with
-    // browser autofill + a checked-in av_srv_ token in dotfiles →
+    // browser autofill + a checked-in pv_srv_ token in dotfiles →
     // attacker forces a password reset via the compromised
     // mailbox → all cookies die → victim believes account is
     // safe → attacker keeps hitting the API with the pre-reset
@@ -1953,10 +1955,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(401).send({ error: "invalid_token" });
     }
     // R135 F1: password reset is the strongest break-glass primitive
-    // in the auth pipeline (R123 F3 auto-revokes every av_srv_
+    // in the auth pipeline (R123 F3 auto-revokes every pv_srv_
     // token org-wide + R90 F1 fences all cookies). Prior shape
     // emitted zero writeAudit — an admin investigating "who reset
-    // user X's password at 03:12 from IP Y, and which av_srv_
+    // user X's password at 03:12 from IP Y, and which pv_srv_
     // tokens just went dead" got nothing from audit_entries.
     // Every other authentication-material mutation audits
     // (auth.login, auth.signup, auth.oauth_signin,

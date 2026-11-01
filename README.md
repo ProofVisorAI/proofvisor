@@ -1,26 +1,30 @@
 <p align="center">
-  <img src="assets/logo.png" width="128" alt="AgentVisor AI logo">
+  <img src="assets/logo.png" width="128" alt="ProofVisor logo">
 </p>
 
-# AgentVisor AI
+# ProofVisor
 
-[![CI](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/ci.yml)
-[![Console + API](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/console-api.yml/badge.svg)](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/console-api.yml)
-[![Deploy](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/deploy.yml/badge.svg)](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/deploy.yml)
-[![Supply chain](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/deny.yml/badge.svg)](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/deny.yml)
-[![Docs](https://github.com/AgentVisorAI/agentvisor-ai/actions/workflows/pages.yml/badge.svg)](https://agentvisorai.me/)
+[![CI](https://github.com/ProofVisorAI/proofvisor/actions/workflows/ci.yml/badge.svg)](https://github.com/ProofVisorAI/proofvisor/actions/workflows/ci.yml)
+[![Console + API](https://github.com/ProofVisorAI/proofvisor/actions/workflows/console-api.yml/badge.svg)](https://github.com/ProofVisorAI/proofvisor/actions/workflows/console-api.yml)
+[![Deploy](https://github.com/ProofVisorAI/proofvisor/actions/workflows/deploy.yml/badge.svg)](https://github.com/ProofVisorAI/proofvisor/actions/workflows/deploy.yml)
+[![Supply chain](https://github.com/ProofVisorAI/proofvisor/actions/workflows/deny.yml/badge.svg)](https://github.com/ProofVisorAI/proofvisor/actions/workflows/deny.yml)
+[![Docs](https://github.com/ProofVisorAI/proofvisor/actions/workflows/pages.yml/badge.svg)](https://proofvisor.com/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
+**What exists today:** [docs/FEATURES.md](docs/FEATURES.md) lists every shipped feature, what is still planned, and the verification record behind the list.
 
 **AI agents you can hand to an auditor.**
 
-AgentVisor AI is a small Rust server you drop in front of your agent's
+ProofVisor is a small Rust server you drop in front of your agent's
 LLM and tool calls. Every request is recorded, every limit you set is
 enforced before the call goes out, and every session can end with a
-signed receipt anyone can verify offline with just a public key
-(out of the box sessions record unsigned trajectories; set
-`default_workflow = "signed"` or promote a session via `/promote` to
-mint the receipt). Change one line in your OpenAI client. Nothing else
-in your app moves.
+signed receipt that anyone holding the deployment's public key can
+verify offline. The built-in default workflow is unsigned (sessions
+record ATIF trajectories), but every shipped config file, including the
+one the `pvctl` setup wizard writes, sets `default_workflow = "signed"`;
+an unsigned session can also be promoted to a receipt later via
+`/promote`. Change one line in your OpenAI client. Nothing else in your
+app moves.
 
 ```python
 client = OpenAI(
@@ -29,33 +33,35 @@ client = OpenAI(
 )
 ```
 
-- **[Landing page](https://agentvisorai.me/)** — the story, in
+- **[Landing page](https://proofvisor.com/)** — the story, in
   three concrete examples.
-- **[Console](https://agentvisorai.me/app/)** — the
+- **[Console](https://proofvisor.com/app/)** — the
   product, clickable in your browser: setup, one-line integration, a live
   capped session, the fleet overview, and offline receipt verification.
-  Client-side simulation with representative data; nothing leaves the page.
-- **[Releases](https://github.com/AgentVisorAI/agentvisor-ai/releases)** —
+  It is a real multi-tenant app. By default it runs in mock mode against
+  built-in fixtures (nothing leaves the page); append `?live=1` to use the
+  hosted API instead.
+- **[Releases](https://github.com/ProofVisorAI/proofvisor/releases)** —
   pre-built binaries with SHA-256 checksums.
 - **[Security model](SECURITY.md)** — trust boundaries, controls, and how
   to deploy safely. Report vulnerabilities privately via the
-  [advisory form](https://github.com/AgentVisorAI/agentvisor-ai/security/advisories/new).
+  [advisory form](https://github.com/ProofVisorAI/proofvisor/security/advisories/new).
 - **[Architecture](ARCHITECTURE.md)** · **[Benchmarks](BENCHMARKS.md)** ·
   **[Conformance status](CONFORMANCE-STATUS.md)** — going deeper.
 - **[Current validation record](docs/PRODUCTION-VALIDATION.md)** — tested
   behavior, reproducible checks, and remaining deployment-specific validation.
 - **[Reference docs](docs/reference/)** — configuration, operations,
   OpenAI compatibility, limits, and offline receipt verification.
-- **[API docs](https://agentvisorai.me/api/)** — Rust crate
-  reference. Skip unless you're embedding AgentVisor AI as a library.
+- **[API docs](https://proofvisor.com/api/)** — Rust crate
+  reference. Skip unless you're embedding ProofVisor as a library.
 
 ---
 
 ## Easiest start (no config, no exports)
 
 ```bash
-curl -fsSL https://agentvisorai.me/install.sh | sh    # installs `agentvisord` + `avctl`
-avctl
+curl -fsSL https://proofvisor.com/install.sh | sh    # installs `proofvisord` + `pvctl`
+pvctl
 ```
 
 Prebuilt static binaries cover Linux (x86_64/aarch64, any libc) and
@@ -67,29 +73,30 @@ Windows runs via WSL.
 Or install straight from this repository (same thing the script runs):
 
 ```bash
-cargo install --locked --git https://github.com/AgentVisorAI/agentvisor av-harness
-cargo install --locked --git https://github.com/AgentVisorAI/agentvisor av-cli
-avctl
+cargo install --locked --git https://github.com/ProofVisorAI/proofvisor pv-harness
+cargo install --locked --git https://github.com/ProofVisorAI/proofvisor pv-cli
+pvctl
 ```
 
 > `cargo install` builds **default features only**: the embedded
 > bridge, in-memory state, hash embedder and in-memory vector store
 > all work, but `redis`/`kafka`/`nats`/`onnx`/`qdrant`/`otel` are
 > compiled out. To use those backends add `--features full` (or the
-> specific feature) to the `av-harness` install line. Both pre-flight
-> tools (`avctl config-validate`, `avctl doctor`) fail loudly when a
+> specific feature) to the `pv-harness` install line. Both pre-flight
+> tools (`pvctl config-validate`, `pvctl doctor`) fail loudly when a
 > config selects a backend the build cannot run.
 
-> Plain `cargo install av-harness av-cli` (crates.io, no `--git`)
-> starts working when the first tagged release is published; until
-> then the registry does not know these crates — use the `--git`
-> lines above or [Install from source](#install-from-source).
+> Plain `cargo install pv-harness pv-cli` (crates.io, no `--git`)
+> does not work yet: the crates are not published to crates.io. The
+> latest GitHub release is the `v0.1.0-rc.5` pre-release, which is the
+> version the installer pins; there is no final `v0.1.0` release yet.
+> Use the `--git` lines above or [Install from source](#install-from-source).
 
-Bare `avctl` launches a guided setup: pick your AI provider from a
+Bare `pvctl` launches a guided setup: pick your AI provider from a
 numbered list, paste your API key once (typed hidden, stored
-owner-only under `~/.agentvisor/keys/`), and it writes
-`~/.agentvisor/agentvisor.toml` for you. Answer "yes" at the end —
-or run `avctl start` later — and AgentVisor AI is running with a
+owner-only under `~/.proofvisor/keys/`), and it writes
+`~/.proofvisor/proofvisor.toml` for you. Answer "yes" at the end —
+or run `pvctl start` later — and ProofVisor is running with a
 friendly banner telling you exactly what URL to paste into your app.
 `Ctrl-C` stops it cleanly. No files to edit, no environment
 variables, no terminal knowledge beyond typing a number.
@@ -99,13 +106,13 @@ variables, no terminal knowledge beyond typing a number.
 Pick the row that matches your provider, then run two commands.
 
 ```bash
-curl -fsSL https://agentvisorai.me/install.sh | sh    # or the --git lines above
+curl -fsSL https://proofvisor.com/install.sh | sh    # or the --git lines above
 ```
 
 ```bash
-avctl init --preset openai     # writes agentvisor.toml + prints next steps
+pvctl init --preset openai     # writes proofvisor.toml + prints next steps
 export OPENAI_API_KEY=sk-...
-agentvisord                   # http://127.0.0.1:8484
+proofvisord                   # http://127.0.0.1:8484
 ```
 
 Point any OpenAI-compatible SDK at `http://127.0.0.1:8484/v1` and use it as normal. Trajectories and receipts land under `spool/atif/` (receipts in `spool/atif/receipts/`); bridge events land under `data/bridge`.
@@ -117,10 +124,17 @@ Point any OpenAI-compatible SDK at `http://127.0.0.1:8484/v1` and use it as norm
 > Set `compression_enabled = false` to forward payloads verbatim —
 > details in [docs/reference/OPENAI-COMPATIBILITY.md](docs/reference/OPENAI-COMPATIBILITY.md).
 
+> **Note:** the shipped configs turn on sensitive-data redaction with
+> the built-in patterns (API keys, bearer tokens, email addresses, card
+> numbers, SSNs, public IPv4 addresses). Redaction applies to the
+> persisted audit copies — events, ATIF steps, and exports — not to the
+> traffic forwarded to the model. Keys are described in
+> [docs/reference/CONFIGURATION.md](docs/reference/CONFIGURATION.md#tenant-observability-and-redaction).
+
 No config file at all also works — built-in defaults plus one env var:
 
 ```bash
-AV_UPSTREAM_URL=http://127.0.0.1:11434 agentvisord   # e.g. Ollama
+PV_UPSTREAM_URL=http://127.0.0.1:11434 proofvisord   # e.g. Ollama
 ```
 
 ### Install from source
@@ -129,9 +143,9 @@ Cloning the repo works too — useful for development, or before the
 first crates.io release lands:
 
 ```bash
-git clone https://github.com/AgentVisorAI/agentvisor-ai && cd agentvisor-ai
-cargo install --path crates/av-harness   # installs `agentvisord`
-cargo install --path crates/av-cli       # installs `avctl`
+git clone https://github.com/ProofVisorAI/proofvisor && cd proofvisor
+cargo install --path crates/pv-harness   # installs `proofvisord`
+cargo install --path crates/pv-cli       # installs `pvctl`
 ```
 
 ### Provider presets
@@ -140,8 +154,8 @@ cargo install --path crates/av-cli       # installs `avctl`
 |---|---|---|
 | `openai` | api.openai.com | `OPENAI_API_KEY` |
 | `azure` | your-resource.openai.azure.com | `AZURE_OPENAI_API_KEY` |
-| `anthropic` | api.anthropic.com | `ANTHROPIC_API_KEY` |
-| `gemini` | generativelanguage.googleapis.com/v1beta/openai | `GEMINI_API_KEY` |
+| `anthropic` | api.anthropic.com (native Messages API) | `ANTHROPIC_API_KEY` |
+| `gemini` | generativelanguage.googleapis.com (native generateContent API) | `GEMINI_API_KEY` |
 | `groq` | api.groq.com/openai | `GROQ_API_KEY` |
 | `mistral` | api.mistral.ai | `MISTRAL_API_KEY` |
 | `openrouter` | openrouter.ai/api | `OPENROUTER_API_KEY` |
@@ -155,20 +169,33 @@ cargo install --path crates/av-cli       # installs `avctl`
 | `litellm` | 127.0.0.1:4000 | `LITELLM_MASTER_KEY` |
 | `custom` | `--upstream-url ...` | `--key-env NAME` |
 
-`avctl doctor` diagnoses the environment (config resolution, key presence, upstream reachability, data dirs, backends, budget posture) without printing secrets. `avctl health` probes a running instance. `avctl start` launches the server for you (logs to `~/.agentvisor/agentvisor-ai.log`) and waits until it answers.
+Your agent always speaks the OpenAI chat-completions format to
+ProofVisor. With `provider = "openai"` (the default, used by every preset
+except two) the request is forwarded to the upstream unchanged. The
+`anthropic` and `gemini` presets set `provider = "anthropic"` or
+`provider = "gemini"`. ProofVisor then translates each request into that
+vendor's native API (Anthropic Messages, Gemini `generateContent`) and
+translates the answer back into OpenAI chat-completion objects and
+stream chunks, including tool calls, stop reasons and token usage.
+Anthropic requires an output limit, so a request without `max_tokens`
+gets `provider_default_max_tokens` (4096 unless you change it). See
+[OPENAI-COMPATIBILITY.md](docs/reference/OPENAI-COMPATIBILITY.md) for the
+exact mapping and for how `n > 1` works with each provider.
+
+`pvctl doctor` diagnoses the environment (config resolution, key presence, upstream reachability, data dirs, backends, budget posture) without printing secrets. `pvctl health` probes a running instance. `pvctl start` launches the server for you (logs to `~/.proofvisor/proofvisor.log`) and waits until it answers.
 
 ### Configuration resolution
 
-1. `AV_CONFIG=/path/to.toml` (error if missing)
-2. `./agentvisor.toml`
+1. `PV_CONFIG=/path/to.toml` (error if missing)
+2. `./proofvisor.toml`
 3. `./config/harness.toml`
-4. `~/.agentvisor/agentvisor.toml` (written by the `avctl` guided setup)
-5. built-in defaults (requires `AV_UPSTREAM_URL`)
+4. `~/.proofvisor/proofvisor.toml` (written by the `pvctl` guided setup)
+5. built-in defaults (requires `PV_UPSTREAM_URL`)
 
 `config/harness.example.toml` is documentation only — it is NOT
 searched. Copy it to one of the paths above to use it.
 
-Environment overrides beat file values: `AV_LISTEN`, `AV_UPSTREAM_URL`, `AV_UPSTREAM_CHAT_PATH`, `AV_UPSTREAM_AUTH_HEADER`, `AV_UPSTREAM_AUTH_SCHEME`, `AV_STATE_ENDPOINT`, `AV_BRIDGE_ENDPOINT`, `AV_QDRANT_URL`. Exporting `AV_UPSTREAM_API_KEY` selects itself as the key source when the file doesn't name one; `AV_UPSTREAM_KEY_FILE=/run/secrets/api_key` points at a mounted secret file (Docker/Kubernetes secrets) instead. Key *values* are only ever read from the environment or `0600` files — never from the command line.
+Environment overrides beat file values: `PV_LISTEN`, `PV_UPSTREAM_URL`, `PV_UPSTREAM_CHAT_PATH`, `PV_UPSTREAM_AUTH_HEADER`, `PV_UPSTREAM_AUTH_SCHEME`, `PV_STATE_ENDPOINT`, `PV_BRIDGE_ENDPOINT`, `PV_QDRANT_URL`. Exporting `PV_UPSTREAM_API_KEY` selects itself as the key source when the file doesn't name one; `PV_UPSTREAM_KEY_FILE=/run/secrets/api_key` points at a mounted secret file (Docker/Kubernetes secrets) instead. Key *values* are only ever read from the environment or `0600` files — never from the command line.
 
 ### Upstream authentication
 
@@ -187,7 +214,7 @@ Alternatively `upstream_authorization_passthrough = true` relays each client's o
 
 ```bash
 cp config/harness.example.toml config/harness.toml   # the example is a template, never auto-loaded
-OPENAI_API_KEY=sk-... cargo run -p av-harness --bin agentvisord
+OPENAI_API_KEY=sk-... cargo run -p pv-harness --bin proofvisord
 curl http://127.0.0.1:8484/health
 curl http://127.0.0.1:8484/metrics
 ```
@@ -227,35 +254,35 @@ turn it off.
 
 Request headers:
 
-- `X-AV-Session`: caller-selected header-safe id; UUIDv7 is generated when absent.
-- `X-AV-Workflow`: `signed` or `unsigned`.
+- `X-PV-Session`: caller-selected header-safe id; UUIDv7 is generated when absent.
+- `X-PV-Workflow`: `signed` or `unsigned`.
 - `Authorization: Bearer <JWT>`: required when identity enforcement is enabled.
 
 ## CLI
 
 ```bash
-avctl init --preset ollama                # write a provider config
-avctl doctor                              # diagnose the environment
-avctl health                              # probe a running harness
-avctl keygen --output config/signing.seed
-avctl config-validate agentvisor.toml
-avctl manifest-validate manifests/bridge.example.yaml
-avctl bridge-provision --manifest manifests/bridge.example.yaml --data-dir data/bridge
-avctl atif-validate trajectory.json
-avctl receipt-locate my-session-id --spool spool/atif   # session id -> artifact paths
-avctl spool-prune --spool spool/atif --retention-days 30  # one-off sealed-ATIF retention sweep
-avctl receipt-verify receipt.json --public-key-hex "$TRUSTED_ED25519_PUBLIC_KEY_HEX"  # repeatable; hex or base64
-avctl loadgen --connections 500
+pvctl init --preset ollama                # write a provider config
+pvctl doctor                              # diagnose the environment
+pvctl health                              # probe a running harness
+pvctl keygen --output config/signing.seed
+pvctl config-validate proofvisor.toml
+pvctl manifest-validate manifests/bridge.example.yaml
+pvctl bridge-provision --manifest manifests/bridge.example.yaml --data-dir data/bridge
+pvctl atif-validate trajectory.json
+pvctl receipt-locate my-session-id --spool spool/atif   # session id -> artifact paths
+pvctl spool-prune --spool spool/atif --retention-days 30  # one-off sealed-ATIF retention sweep
+pvctl receipt-verify receipt.json --public-key-hex "$TRUSTED_ED25519_PUBLIC_KEY_HEX"  # repeatable; hex or base64
+pvctl loadgen --connections 500
 ```
 
-When identity enforcement is enabled, pass `--bearer-token-file /path/to/token` to `session-promote` and `loadgen`, or set `AV_BEARER_TOKEN_FILE`. Token contents are never accepted as command-line values.
+When identity enforcement is enabled, pass `--bearer-token-file /path/to/token` to `session-promote` and `loadgen`, or set `PV_BEARER_TOKEN_FILE`. Token contents are never accepted as command-line values.
 
 ## Container deployment
 
 Local demonstration (one container, embedded bridge, in-memory state):
 
 ```bash
-AV_UPSTREAM_URL=https://api.openai.com AV_UPSTREAM_API_KEY=sk-... \
+PV_UPSTREAM_URL=https://api.openai.com PV_UPSTREAM_API_KEY=sk-... \
   docker compose -f docker/docker-compose.minimal.yml up --build
 ```
 
@@ -269,11 +296,11 @@ install -m 0600 /path/to/signing.seed docker/secrets/signing.seed
 docker compose -f docker/docker-compose.yml up --build
 ```
 
-Both source files are required. The committed files contain deliberately invalid placeholders. For a new deployment, generate an identity secret with `openssl rand -hex 32` and a signing seed with `avctl keygen --output /path/to/signing.seed`. Preserve and back up the signing seed across deployments so existing receipts retain their trust anchor. Plain Docker Compose preserves the host ownership of file secrets, so the `install-secrets` service checks their owner-only permissions and copies them into a dedicated volume owned by UID 65532. The daemon mounts those copies read-only. Bridge data, cold exports, Redis state, and Qdrant data use separate persistent volumes. The embedded Bridge remains available for single-binary and air-gapped deployments. Container healthchecks use `avctl health` against `/readyz`.
+Both source files are required. The committed files contain deliberately invalid placeholders. For a new deployment, generate an identity secret with `openssl rand -hex 32` and a signing seed with `pvctl keygen --output /path/to/signing.seed`. Preserve and back up the signing seed across deployments so existing receipts retain their trust anchor. Plain Docker Compose preserves the host ownership of file secrets, so the `install-secrets` service checks their owner-only permissions and copies them into a dedicated volume owned by UID 65532. The daemon mounts those copies read-only. Bridge data, cold exports, Redis state, and Qdrant data use separate persistent volumes. The embedded Bridge remains available for single-binary and air-gapped deployments. Container healthchecks use `pvctl health` against `/readyz`.
 
 The full stack disables the unauthenticated operator dashboard. Identity validation protects proxy operations, but it does not protect dashboard routes, and other containers can reach the listener directly without using the host's loopback port mapping. Keep the dashboard disabled unless a separate access control protects every path to those routes. The minimal configuration remains a local development and evaluation example.
 
-After building the image, run `python3 scripts/container-smoke.py --image agentvisor-ai:local` to check startup, a real streaming request, signed receipt verification, and restart persistence using isolated local containers.
+After building the image, run `python3 scripts/container-smoke.py --image proofvisor:local` to check startup, a real streaming request, signed receipt verification, and restart persistence using isolated local containers.
 
 Signed receipts remain in the durable spool and event bridge after restart. Session control endpoints, including `/promote`, are not a historical receipt lookup API: a closed signed session can return `404` after eviction or restart. Retained unsigned trajectories can still be recovered for later promotion.
 
@@ -286,11 +313,11 @@ The production image checksum-pins `sentence-transformers/all-MiniLM-L6-v2` at r
 ## Kubernetes and systemd
 
 - [Kubernetes template](deploy/kubernetes/README.md): authenticated single-replica deployment with a ConfigMap, PVC, probes, and private signing and identity credentials. Configure the issuer and Secrets before applying it. Horizontal scaling requires shared bridge, state, and revocation backends.
-- `deploy/systemd/agentvisor-ai.service`: hardened unit with `EnvironmentFile` for the key; install steps in the file header.
+- `deploy/systemd/proofvisor.service`: hardened unit with `EnvironmentFile` for the key; install steps in the file header.
 
 ### Running multiple instances
 
-A single AgentVisor AI process is the default. [Benchmarks](BENCHMARKS.md)
+A single ProofVisor process is the default. [Benchmarks](BENCHMARKS.md)
 records the tested concurrency, measurement boundaries, and fixture settings.
 Production revocation persistence requires durable Redis even for one replica;
 the in-memory default is suitable for local evaluation. Running two or more replicas is safe **only** when
@@ -300,10 +327,10 @@ single-instance:
 | Subsystem | Single-instance default | Multi-instance requirement |
 | --- | --- | --- |
 | Signer seed | file on disk | same seed mounted at each replica (or a rotation you accept per replica) |
-| State store (budgets, ratelimits) | `state_backend = "memory"` | `state_backend = "redis"` with `state_endpoint = "redis://..."` and identical `AV_STATE_ENDPOINT` at each replica |
+| State store (session and principal budgets; the daemon has no per-caller rate limiter) | `state_backend = "memory"` | `state_backend = "redis"` with `state_endpoint = "redis://..."` and identical `PV_STATE_ENDPOINT` at each replica |
 | Bridge (event bus) | `bridge_backend = "embedded"` (per-pod data-dir) | `bridge_backend = "kafka"` or `"nats"` with shared endpoints |
-| ATIF spool | pod-local `atif_spool_dir` (enforced: the daemon holds an exclusive lock on `.agentvisord.lock` in the spool and a second instance refuses to boot) | one replica per spool volume — sharing a spool is refused at startup because the reconciler's per-file lifecycle lock is process-local and two replicas would race on close |
-| Session registry | in-memory only | client stickiness (LB session affinity on `X-AV-Session`) OR accept that a session's audit chain lives on one pod for its lifetime and doesn't survive that pod's eviction |
+| ATIF spool | pod-local `atif_spool_dir` (enforced: the daemon holds an exclusive lock on `.proofvisord.lock` in the spool and a second instance refuses to boot) | one replica per spool volume — sharing a spool is refused at startup because the reconciler's per-file lifecycle lock is process-local and two replicas would race on close |
+| Session registry | in-memory only | client stickiness (LB session affinity on `X-PV-Session`) OR accept that a session's audit chain lives on one pod for its lifetime and doesn't survive that pod's eviction |
 
 Concretely: a two-replica deployment with `state_backend = "memory"`
 lets a client rotate through both pods and effectively bypass every

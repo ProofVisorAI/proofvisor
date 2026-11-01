@@ -20,8 +20,19 @@ gen() {
   local text="$*"
   local d rate
   for rate in "+20%" "+25%" "+30%" "+35%" "+40%"; do
-    "$EDGE_TTS" --voice "$VOICE_ID" --rate="$rate" --text "$text" \
-      --write-media "$out.mp3" 2>/dev/null
+    # The Edge TTS service occasionally answers with no audio at all;
+    # retry a few times before giving up on the clip.
+    local try
+    for try in 1 2 3; do
+      rm -f "$out.mp3"
+      if "$EDGE_TTS" --voice "$VOICE_ID" --rate="$rate" --text "$text" \
+          --write-media "$out.mp3" 2>/dev/null && [ -s "$out.mp3" ]; then
+        break
+      fi
+      echo "  retry $try for $(basename "$out") (no audio received)"
+      sleep 2
+    done
+    [ -s "$out.mp3" ] || { echo "ERROR: $(basename "$out") produced no audio"; exit 1; }
     ffmpeg -y -i "$out.mp3" \
       -af "silenceremove=stop_periods=-1:stop_threshold=-45dB:stop_duration=0.25" \
       -c:a pcm_s16le -ar 44100 "$out.raw.wav" 2>/dev/null
@@ -34,13 +45,13 @@ gen() {
   echo "  WARNING: $(basename "$out") ${d}s exceeds window ${window}s even at +40%"
 }
 
-gen "$VOICE/s1" 5.4 "This is Agent Visor A I: the control plane for A I agents that touch real money and real systems."
+gen "$VOICE/s1" 5.4 "This is Proof Visor: the control plane for A I agents that touch real money and real systems."
 gen "$VOICE/s2" 6.4 "Companies let A I agents order stock and pay invoices on their own. One tricked agent can send thousands to a fake vendor."
-gen "$VOICE/s3" 7.9 "Agent Visor sits between the agent and the money. Bad orders are blocked before they go out, and proven afterwards. Here is the complete flow, from zero."
-gen "$VOICE/s4" 4.6 "A brand new user lands on Agent Visor A I."
+gen "$VOICE/s3" 7.9 "Proof Visor sits between the agent and the money. Bad orders are blocked before they go out, and proven afterwards. Here is the complete flow, from zero."
+gen "$VOICE/s4" 4.6 "A brand new user lands on Proof Visor."
 gen "$VOICE/s5" 7.2 "They create a workspace. Company, email, password. That is the whole setup."
 gen "$VOICE/s6" 4.9 "A brand new workspace. Zero sessions, zero deployments. Nothing to audit, yet."
-gen "$VOICE/s7" 9.0 "One install command connects their first daemon. Agent Visor issues its signing key automatically."
+gen "$VOICE/s7" 9.0 "One install command connects their first daemon. Proof Visor issues its signing key automatically."
 gen "$VOICE/s8" 9.6 "And the first sessions stream in. Their buying agent just tried to pay a vendor that is not on the approved list. The order is blocked: eight thousand four hundred dollars kept."
 gen "$VOICE/s9" 5.9 "One click isolates the blocked session."
 gen "$VOICE/s10" 9.2 "Inside it: the agent was tricked into ordering from an unapproved vendor. Blocked before the money moved. Its retry, with the approved vendor, went through."
@@ -61,23 +72,23 @@ done
 
 # Scene-start offsets + ~200ms lead, from compose.sh `Offsets:`.
 D1=300
-D2=6100
-D3=12800
-D4=20933
-D5=26833
-D6=33366
-D7=39066
-D8=47699
-D9=57866
-D10=64466
-D11=74066
-D12=79233
-D13=82066
-D14=88166
-D15=95733
-D16=102266
-D17=108399
-D18=124132
+D2=6033
+D3=12666
+D4=20799
+D5=26166
+D6=32466
+D7=38099
+D8=46599
+D9=56532
+D10=63032
+D11=72565
+D12=77598
+D13=80331
+D14=86231
+D15=93731
+D16=100164
+D17=106131
+D18=121731
 
 ffmpeg -y -f lavfi -i "anullsrc=r=44100:cl=stereo:d=140" \
   -c:a pcm_s16le "$OUT/silence-44s.wav" 2>&1 | tail -1

@@ -14,7 +14,7 @@ const OUT = "/tmp/video-v4/scenes";
 if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 
-const SITE = process.env.SITE ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? "https://proofvisor.com/app/";
 const LANDING = new URL(SITE).origin;
 
 function cardHtml(opts) {
@@ -116,7 +116,7 @@ function cardHtml(opts) {
       ${sub ? `<div class="subline">${sub}</div>` : ""}
       ${opts.cta ? `<div class="cta"><span class="arrow">→</span> ${opts.cta}</div>` : ""}
     </div>
-    <div class="brand"><div class="brand-mark">A</div>AgentVisor AI · agentvisorai.me</div>
+    <div class="brand"><div class="brand-mark">P</div>ProofVisor · proofvisor.com</div>
   </body></html>`;
 }
 
@@ -164,12 +164,12 @@ async function recordConsoleScene(browser, sceneName, durationMs, hash, waitFor,
   const warmCtx = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const warm = await warmCtx.newPage();
   await warm.addInitScript(() => { try {
-    localStorage.setItem("av_mock_signed_out", "1");
+    localStorage.setItem("pv_mock_signed_out", "1");
     // Collapse the mock's simulated latency: the recorded context
     // inherits this via storageState, so scene 2 stops opening on
     // ~2s of stat-card skeletons under the "$31,840 saved" caption
     // (the tour pipeline has always set this; the 30s cut never did).
-    localStorage.setItem("av_mock_fastload", "1");
+    localStorage.setItem("pv_mock_fastload", "1");
   } catch {} });
   await warm.goto(SITE + "#/login", { waitUntil: "networkidle" });
   await warm.waitForSelector("input#email", { timeout: 15000 });
@@ -300,7 +300,7 @@ async function applyCinematic(page, opts = {}) {
       0%, 100% { box-shadow: 0 0 0 0 rgba(110, 207, 142, 0), 0 0 0 0 rgba(110, 207, 142, 0); }
       50%      { box-shadow: 0 0 0 6px rgba(110, 207, 142, 0.55), 0 0 40px 8px rgba(110, 207, 142, 0.35); }
     }
-    .av-pulse-target { animation: pulse-glow 1.6s ease-in-out 3 !important; border-radius: 8px; }
+    .pv-pulse-target { animation: pulse-glow 1.6s ease-in-out 3 !important; border-radius: 8px; }
   ` });
   if (pulseSel) {
     // Give the zoom half a beat to breathe, then trigger the pulse
@@ -308,7 +308,7 @@ async function applyCinematic(page, opts = {}) {
       try {
         await page.evaluate((sel) => {
           const el = document.querySelector(sel);
-          if (el) el.classList.add("av-pulse-target");
+          if (el) el.classList.add("pv-pulse-target");
         }, pulseSel);
       } catch {}
     }, 1000);
@@ -390,7 +390,7 @@ await recordScene(browser, "05-close", 5500, async (page, ms) => {
   await showCard(page, cardHtml({
     bg: "#0a5c8b",
     headline: `AI agents you can<br>hand to an <span class="accent-yellow">auditor</span>.`,
-    cta: "agentvisorai.me",
+    cta: "proofvisor.com",
   }), ms);
 });
 

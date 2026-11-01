@@ -1,26 +1,26 @@
-# AgentVisor AI minimal deployment: one container, zero external services.
+# ProofVisor minimal deployment: one container, zero external services.
 #
 #   docker compose -f docker/docker-compose.minimal.yml up
 #
 # Default upstream is Ollama on the Docker host. For a cloud provider:
 #
-#   AV_UPSTREAM_URL=https://api.openai.com \
-#   AV_UPSTREAM_API_KEY=sk-... \
+#   PV_UPSTREAM_URL=https://api.openai.com \
+#   PV_UPSTREAM_API_KEY=sk-... \
 #   docker compose -f docker/docker-compose.minimal.yml up
 #
 # The full observability stack (Redpanda, Redis, Qdrant, Vector) lives in
 # docker-compose.yml next to this file.
 
 services:
-  agentvisor-ai:
+  proofvisor:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: agentvisor-ai:local
-    container_name: agentvisor-ai
+    image: proofvisor:local
+    container_name: proofvisor
     # Round-24 F6: parity with docker-compose.yml. The minimal
     # template is advertised as the on-ramp for evaluators; without
-    # these knobs the same agentvisor-ai binary ships with a
+    # these knobs the same proofvisor binary ships with a
     # materially less-hardened surface than the full stack (default
     # capabilities include NET_RAW / CHOWN / DAC_OVERRIDE, no
     # process-cap, no grace budget for the four-phase shutdown).
@@ -49,7 +49,7 @@ services:
       - "127.0.0.1:8484:8484"
     environment:
       RUST_LOG: info
-      AV_CONFIG: /app/config/harness.container.toml
+      PV_CONFIG: /app/config/harness.container.toml
       # ⚠️  ROUND-17 F2 WARNING — MINIMAL / DEMO TEMPLATE ⚠️
       # This file uses a tmpfs /run mount for the signing seed. Every
       # container restart REGENERATES the receipt trust anchor:
@@ -67,17 +67,17 @@ services:
       # `-v bridge-data:/x` cannot read the receipt trust anchor.
       # The seed lives in the tmpfs /run path below; auto-generated
       # by the harness on first boot via load_or_create_signer.
-      AV_SIGNING_SEED_FILE: /run/signing.seed
+      PV_SIGNING_SEED_FILE: /run/signing.seed
       # Shell overrides for a cloud provider (see the header of this
       # file). Compose does NOT forward host env vars unless they are
       # declared here — without these mappings the documented
-      # `AV_UPSTREAM_URL=... AV_UPSTREAM_API_KEY=... docker compose up`
+      # `PV_UPSTREAM_URL=... PV_UPSTREAM_API_KEY=... docker compose up`
       # on-ramp silently kept the Ollama default and ignored the key.
       # Empty renders as unset: the daemon treats empty values as
       # absent (`apply_env_overrides_from`), so leaving them undefined
       # in the shell changes nothing.
-      AV_UPSTREAM_URL: ${AV_UPSTREAM_URL:-}
-      AV_UPSTREAM_API_KEY: ${AV_UPSTREAM_API_KEY:-}
+      PV_UPSTREAM_URL: ${PV_UPSTREAM_URL:-}
+      PV_UPSTREAM_API_KEY: ${PV_UPSTREAM_API_KEY:-}
     volumes:
       - bridge-data:/app/data
       - atif-spool:/app/spool
@@ -98,10 +98,10 @@ services:
       - "host.docker.internal:host-gateway"
     healthcheck:
       # Round-15 F8-mirror: hardcode the URL rather than relying on
-      # `avctl health`'s default matching whatever `listen` says.
+      # `pvctl health`'s default matching whatever `listen` says.
       # /readyz (not /health): a full disk keeps the constant green
       # while every request 503s; readiness's writability probe flips.
-      test: ["CMD", "avctl", "health", "--url", "http://127.0.0.1:8484/readyz"]
+      test: ["CMD", "pvctl", "health", "--url", "http://127.0.0.1:8484/readyz"]
       interval: 10s
       timeout: 3s
       retries: 5

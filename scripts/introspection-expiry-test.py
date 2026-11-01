@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check introspection expiry across an actual delayed Redis response.
 
-Requires previously built agentvisord and local redis-server executables.
+Requires previously built proofvisord and local redis-server executables.
 Creates private files and owned loopback processes only. It never invokes Cargo,
 Docker, a shared Redis, or an external provider. Tokens are never logged.
 """
@@ -122,10 +122,10 @@ def b64(value):
 
 
 def run(args):
-    binary = Path(args.agentvisord).resolve()
+    binary = Path(args.proofvisord).resolve()
     redis_binary = shutil.which(args.redis_server)
     if not binary.is_file() or not os.access(binary, os.X_OK) or not redis_binary:
-        raise ValueError("Built agentvisord and redis-server executables are required")
+        raise ValueError("Built proofvisord and redis-server executables are required")
     output = Path(args.output_dir).absolute()
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     if (output.is_symlink() or output.stat().st_uid != os.getuid()
@@ -158,7 +158,7 @@ def run(args):
         return process
 
     try:
-        environment = {k: v for k, v in os.environ.items() if not k.startswith("AV_")}
+        environment = {k: v for k, v in os.environ.items() if not k.startswith("PV_")}
         redis_port = free_port()
         password = os.urandom(32).hex()
         redis_config = work / "redis.conf"
@@ -249,7 +249,7 @@ def run(args):
                           + '\n[[introspection_tokens]]\nbackend="svc"\nsha256='
                           + json.dumps(hashlib.sha256(backend_secret.encode()).hexdigest()) + '\n')
         daemon = start(binary, config, "daemon", environment | {
-            "AV_SIGNING_SEED_FILE": str(work / "signing.seed"), "RUST_LOG": "info"})
+            "PV_SIGNING_SEED_FILE": str(work / "signing.seed"), "RUST_LOG": "info"})
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -282,7 +282,7 @@ def run(args):
         status, _, live = http(base, "/v1/introspect", backend_secret, {"token": token})
         check("the exchanged token is initially active", status == 200 and live.get("active") is True)
         expires = live["exp"]
-        key = ("av:revoked-exchanged:issuer:" + hashlib.sha256(live["iss"].encode()).hexdigest()
+        key = ("pv:revoked-exchanged:issuer:" + hashlib.sha256(live["iss"].encode()).hexdigest()
                + ":" + hashlib.sha256(live["jti"].encode()).hexdigest()).encode()
         with lock:
             gate.update(key=key, armed=True, expires_s=expires)
@@ -369,7 +369,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agentvisord", default=os.environ.get("AGENTVISORD", "target/release/agentvisord"))
+    parser.add_argument("--proofvisord", default=os.environ.get("PROOFVISORD", "target/release/proofvisord"))
     parser.add_argument("--redis-server", default="redis-server")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()

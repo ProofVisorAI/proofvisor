@@ -31,7 +31,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { env } from "../env.js";
 import { SESSION_COOKIE_OPTS } from "./auth.js";
 
-export const MFA_GATE_COOKIE = "av_mfa_gate";
+export const MFA_GATE_COOKIE = "pv_mfa_gate";
 /** Matches the ceremony-challenge TTL: 5 minutes to touch the key. */
 export const MFA_GATE_TTL_S = 300;
 

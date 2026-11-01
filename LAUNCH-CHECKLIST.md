@@ -1,4 +1,4 @@
-# AgentVisor AI — Launch Checklist
+# ProofVisor — Launch Checklist
 
 This checklist records the implementation and local drills from the rounds
 below. It does not establish that a selected production deployment is ready.
@@ -6,7 +6,7 @@ The [current validation record](docs/PRODUCTION-VALIDATION.md) documents the
 2026-09-24 checks, remaining findings, and external services still to validate.
 Links identify the implementation or the associated runbook entry.
 
-Legend: **✅ verified** · **🟢 configured** · **📋 documented**
+Legend: **✅ verified** · **🟢 configured** · **📋 documented** · **⚠️ not met** (the item is measured and currently fails its own target)
 
 ---
 
@@ -54,7 +54,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 | 2.11 | Cursor pagination on `/sessions` (O(log N)) | ✅ | [server/src/routes/read.ts](server/src/routes/read.ts) |
 | 2.12 | Streaming NDJSON export (bounded memory on huge orgs) | ✅ | [server/src/routes/auth.ts](server/src/routes/auth.ts) |
 | 2.13 | Session.orgId denormalized + compound indexes | ✅ | [server/prisma/schema.prisma](server/prisma/schema.prisma) |
-| 2.14 | Fly.io + Render + Koyeb deploy manifests keyed off `/readyz` | ✅ | [server/fly.toml](server/fly.toml) · [render.yaml](render.yaml) |
+| 2.14 | Render + Fly.io + Koyeb deploy manifests keyed off `/readyz` (only Render is in use; the live service is `agentvisor-api`, and `fly.toml` is an unused template) | ✅ | [render.yaml](render.yaml) · [server/fly.toml](server/fly.toml) |
 | 2.15 | Console image validation, main-only GHCR promotion, and deployment by digest | 🟢 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) · [Validation scope](docs/PRODUCTION-VALIDATION.md#container-security-review) |
 | 2.16 | Runbook covers 7 pre-launch drills | ✅ | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 
@@ -75,7 +75,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 | 3.10 | Timezone: server UTC, browser renders in local TZ | ✅ | [docs/app/app.js](docs/app/app.js) |
 | 3.11 | Long-string table truncation (table-layout fixed + per-cell ellipsis) | ✅ | [docs/app/styles.css](docs/app/styles.css) |
 | 3.12 | Rate-limit UX countdown ("Try again in 5s") | ✅ | [docs/app/app.js](docs/app/app.js) |
-| 3.13 | JWT expiry triggers graceful re-login (av-session-expired event) | ✅ | [docs/app/datasource.js](docs/app/datasource.js) |
+| 3.13 | JWT expiry triggers graceful re-login (pv-session-expired event) | ✅ | [docs/app/datasource.js](docs/app/datasource.js) |
 | 3.14 | 404 route renders proper not-found (not generic error) | ✅ | [docs/app/app.js](docs/app/app.js) |
 | 3.15 | Empty states on every list surface (sessions, policies, deployments, keys, audit) | ✅ | This round · [docs/app/app.js](docs/app/app.js) |
 | 3.16 | Two-line table cells preserved after truncation fix | ✅ | This round · [docs/app/styles.css](docs/app/styles.css) |
@@ -97,7 +97,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 | # | Item | Status | Reference |
 |---|---|---|---|
 | 5.1 | Top-level README explains the product | 📋 | [README.md](README.md) |
-| 5.2 | Server DEPLOY guide (Fly, Render, Koyeb, Docker) | 📋 | [server/DEPLOY.md](server/DEPLOY.md) |
+| 5.2 | Server DEPLOY guide (Render in production; Fly, Koyeb, Docker as templates) | 📋 | [server/DEPLOY.md](server/DEPLOY.md) |
 | 5.3 | CI/CD reference | 📋 | [CI-CD.md](CI-CD.md) |
 | 5.4 | Runbook of pre-launch drills | 📋 | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 | 5.5 | STATUS.md summarizing readiness | 📋 | [docs/STATUS.md](docs/STATUS.md) |
@@ -138,10 +138,10 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 - **HttpOnly cookie**: JS can't read `document.cookie`; ctx shows `httpOnly: true, sameSite: 'Lax'`.
 - **Receipt XSS**: 8 hostile fields via monkey-patched getReceipt — zero alerts, DOM contains `&lt;script`.
 - **Malformed JSON body**: 4 hostile bodies return proper problem+json 400.
-- **Deep-link resume**: `sessionStorage.av_return_to` restores URL after login.
+- **Deep-link resume**: `sessionStorage.pv_return_to` restores URL after login.
 - **Cookie Secure default**: reads NODE_ENV — Secure=true in prod, false in dev; explicit override wins.
 - **Login timing side-channel**: precomputed real argon2id dummy hash keeps missing-user latency within 5% of wrong-password latency.
-- **Cross-tab sign-out sync**: `localStorage.av_signed_out_at` + storage event listener drops peer tab session immediately.
+- **Cross-tab sign-out sync**: `localStorage.pv_signed_out_at` + storage event listener drops peer tab session immediately.
 - **OAuth state**: missing / malformed / provider-mismatch cookies all 400 with proper `errorCode`.
 - **Reset token expired**: 25h-old token → `401 expired_token`; DB untouched.
 - **Sign-out cleanup**: SSE unsub + logout + state null + navigate to /login.
@@ -156,7 +156,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 - **JWT future NBF**: token with `nbf=now+3600s` → 401 (`jwtVerify` honors NBF).
 - **Load-more events**: session detail Load-more accumulates across pages (5 → 8 after click); cursor null hides button.
 - **Email normalization**: `"  AlIcE@T.CoM  "` stored as `alice@t.com`; login with mixed-case/spaces → 200.
-- **Logout cookie clear**: `POST /logout` returns `Set-Cookie: av_session=; Max-Age=0`.
+- **Logout cookie clear**: `POST /logout` returns `Set-Cookie: pv_session=; Max-Age=0`.
 - **CORS disallowed origin**: `Origin: https://evil.com` gets NO `Access-Control-Allow-Origin` header.
 - **CORS preflight**: OPTIONS returns `Allow-Origin`, `Allow-Credentials`, `Allow-Methods`, `Allow-Headers`.
 - **Graceful shutdown**: SIGTERM → `"graceful shutdown starting"` log → clean exit in ~300ms → port freed.
@@ -174,10 +174,10 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented**
 - **/metrics format**: 31 HELP + 31 TYPE lines, well-formed Prometheus scrape target.
 - **Empty events detail**: 0-event session renders cleanly (`|| 1` guard on totalDur).
 - **PII in error body**: no email echo on 401 invalid_credentials.
-- **Ingest without cookie**: daemon auth (X-AV-Deployment + Bearer) works irrespective of session cookie state.
+- **Ingest without cookie**: daemon auth (X-PV-Deployment + Bearer) works irrespective of session cookie state.
 - **Ingest rate-limit exempt**: 30 rapid ingest calls → 30/30 200.
 - **Log redaction**: pino redact + auth-handler discipline keeps passwords, ingest tokens, cookies out of every log line.
 - **Member role forbidden**: non-owner member gets 403 on POST /deployments and DELETE /deployments/:id; still 200 on GET /sessions.
 - **Big session perf**: 500-event mock session renders to DOM in 48ms.
-- **SAML 2.0 end-to-end**: mock IdP with real openssl-generated RSA keypair signs a SAMLResponse XML with xml-crypto → POST to `/saml/<configId>/acs` → 302 with `av_session` cookie, RelayState round-trips (`#/deployments` preserved), JIT provisioning creates user + membership. `/me` confirms mint (email + displayName from attributes). Replay same POST → `400 replay_detected` (saml_replay_records table). Metadata XML valid, discovery-by-email returns config for allowed domains and `null` for others.
+- **SAML 2.0 end-to-end**: mock IdP with real openssl-generated RSA keypair signs a SAMLResponse XML with xml-crypto → POST to `/saml/<configId>/acs` → 302 with `pv_session` cookie, RelayState round-trips (`#/deployments` preserved), JIT provisioning creates user + membership. `/me` confirms mint (email + displayName from attributes). Replay same POST → `400 replay_detected` (saml_replay_records table). Metadata XML valid, discovery-by-email returns config for allowed domains and `null` for others.
 - **SAML hardening**: 5 attack scenarios all rejected — expired assertion (`NotOnOrAfter` in past) → 400 `signature_or_conditions_failed`; wrong `audience` URI → 400; assertion signed by different key → 400; non-owner member on POST/DELETE `/saml` → 403 (list still 200); JIT disabled + brand-new user email → 403 `jit_disabled`.

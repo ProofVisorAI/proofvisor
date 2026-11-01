@@ -4,7 +4,7 @@ name: Publish public tool
 # stays public. This workflow exports the public surface — an explicit
 # INCLUDE list, so nothing private can leak by default — and force-
 # pushes a content snapshot (no monorepo history) to
-# AgentVisorAI/agentvisor.
+# ProofVisorAI/proofvisor.
 #
 # The include list mirrors every path the crates reference at compile
 # time (include_str!/include_bytes!/rerun-if-changed audit):
@@ -92,9 +92,9 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tool_key -o StrictHostKeyChecking=accept-new"
           cd "$RUNNER_TEMP/public"
           git init -q -b main
-          git config user.name "agentvisor-deploy"
-          git config user.email "deploy@agentvisorai.me"
+          git config user.name "proofvisor-deploy"
+          git config user.email "deploy@proofvisor.com"
           git add -A
-          git commit -qm "Publish public tool from agentvisor-ai@${GITHUB_SHA}"
-          git push -f git@github.com:AgentVisorAI/agentvisor.git main
+          git commit -qm "Publish public tool from proofvisor@${GITHUB_SHA}"
+          git push -f git@github.com:ProofVisorAI/proofvisor.git main
           rm -f "$RUNNER_TEMP/tool_key"

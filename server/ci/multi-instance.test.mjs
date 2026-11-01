@@ -120,7 +120,7 @@ test("logout reports a failed revocation and only succeeds after a durable fence
   peer.get("/protected", async (req, reply) => requireSession(req, reply) ? { ok: true } : undefined);
   t.after(() => peer.close());
   const token = await mintSession({ sub: "user-a", orgId: "tenant-a", membershipRole: "owner" });
-  const headers = { cookie: `av_session=${token}` };
+  const headers = { cookie: `pv_session=${token}` };
   await pause(2); // The real millisecond fence must be newer than this cookie.
   const failed = await app.inject({ method: "POST", url: "/logout", headers });
   assert.equal(failed.statusCode, 503, failed.body);

@@ -5,9 +5,9 @@
 
 const API = process.env.API_BASE || "http://127.0.0.1:4346";
 const SPA_ORIGIN = "http://127.0.0.1:8988";
-// CI names its Postgres container av-pg-r44 with role/db avtest; local
+// CI names its Postgres container pv-pg-r44 with role/db avtest; local
 // runs override via env (same pattern as webhook-drill.mjs).
-const PG_CONTAINER = process.env.PG_CONTAINER ?? "av-pg-r44";
+const PG_CONTAINER = process.env.PG_CONTAINER ?? "pv-pg-r44";
 const PG_USER = process.env.PG_USER ?? "avtest";
 const PG_DB = process.env.PG_DB ?? "avtest";
 
@@ -19,7 +19,7 @@ async function signup(email, orgName) {
   });
   if (res.status !== 201) throw new Error("signup " + res.status);
   const set = res.headers.get("set-cookie") ?? "";
-  const cookie = /(av_session=[^;]+)/.exec(set)?.[1];
+  const cookie = /(pv_session=[^;]+)/.exec(set)?.[1];
   return { cookie };
 }
 
@@ -97,7 +97,7 @@ async function main() {
     headers: { "Content-Type": "application/json", Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin" },
     body: JSON.stringify({ email: carolEmail, password: "carolpwd12345678" }),
   });
-  const carolCookie = /(av_session=[^;]+)/.exec(carolLogin.headers.get("set-cookie") ?? "")?.[1];
+  const carolCookie = /(pv_session=[^;]+)/.exec(carolLogin.headers.get("set-cookie") ?? "")?.[1];
   const carolInvite = await fetch(`${API}/api/v1/members/invites`, {
     method: "POST",
     headers: {

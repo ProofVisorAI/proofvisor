@@ -7,7 +7,7 @@ ADD --checksum=sha256:6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616
 ADD --checksum=sha256:be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037 https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json /tmp/models/tokenizer.json
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
-# `av-bridge/src/manifest.rs` embeds the OCSF + manifest JSON Schemas
+# `pv-bridge/src/manifest.rs` embeds the OCSF + manifest JSON Schemas
 # via `include_str!("../../../schemas/...")`, so the build stage needs
 # the schema tree at compile time. (The embedded WAT policy — in-crate
 # since round-45 — and the always-in-crate dashboard assets
@@ -17,13 +17,13 @@ COPY crates ./crates
 COPY schemas ./schemas
 # Bound peak memory on small builders; operators may raise this explicitly.
 ARG CARGO_BUILD_JOBS=2
-RUN cargo build --locked --release -p av-harness --features full --bin agentvisord -p av-cli --bin avctl
+RUN cargo build --locked --release -p pv-harness --features full --bin proofvisord -p pv-cli --bin pvctl
 RUN mkdir -p /tmp/runtime-root/data /tmp/runtime-root/spool
 
 FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:3a06f226c257c2934900ef6a0bff311ceb5fe9df184f6d8159812b2dabb852f9 AS runtime
 WORKDIR /app
-COPY --from=build /src/target/release/agentvisord /usr/local/bin/agentvisord
-COPY --from=build /src/target/release/avctl /usr/local/bin/avctl
+COPY --from=build /src/target/release/proofvisord /usr/local/bin/proofvisord
+COPY --from=build /src/target/release/pvctl /usr/local/bin/pvctl
 COPY --from=build --chown=65532:65532 /tmp/models /app/models
 COPY --from=build --chown=65532:65532 /tmp/runtime-root/ /app/
 COPY --chown=65532:65532 schemas ./schemas
@@ -36,5 +36,5 @@ USER 65532
 EXPOSE 8484
 # Standalone single-container defaults (embedded bridge, in-memory state).
 # The full-stack compose file overrides this with harness.docker.toml.
-ENV AV_CONFIG=/app/config/harness.container.toml
-ENTRYPOINT ["agentvisord"]
+ENV PV_CONFIG=/app/config/harness.container.toml
+ENTRYPOINT ["proofvisord"]

@@ -30,17 +30,17 @@ jobs:
     services:
       postgres:
         image: postgres:16-alpine
-        # Fixed name so drills can `docker exec av-pg-drills psql …`
+        # Fixed name so drills can `docker exec pv-pg-drills psql …`
         options: >-
-          --name av-pg-drills
-          --health-cmd "pg_isready -U av"
+          --name pv-pg-drills
+          --health-cmd "pg_isready -U pv"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
         env:
-          POSTGRES_USER: av
-          POSTGRES_PASSWORD: av
-          POSTGRES_DB: avdb
+          POSTGRES_USER: pv
+          POSTGRES_PASSWORD: pv
+          POSTGRES_DB: pvdb
           # Round-114 TZ guard (drills half of #383): non-UTC database
           # so naive-vs-timestamptz casts regress loudly in the battery.
           TZ: America/New_York
@@ -48,10 +48,10 @@ jobs:
         ports:
           - 5433:5432
     env:
-      DATABASE_URL: postgresql://av:av@localhost:5433/avdb
-      PG_CONTAINER: av-pg-drills
-      PG_USER: av
-      PG_DB: avdb
+      DATABASE_URL: postgresql://pv:pv@localhost:5433/pvdb
+      PG_CONTAINER: pv-pg-drills
+      PG_USER: pv
+      PG_DB: pvdb
       # Round-114: drills run in a fractional-offset zone (+12:45) so
       # daemon/CLI clock handling is exercised off-UTC nightly too.
       TZ: Pacific/Chatham

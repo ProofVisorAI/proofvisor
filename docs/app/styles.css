@@ -1,5 +1,5 @@
 /*
- * AgentVisor AI console.
+ * ProofVisor console.
  * Design system tuned for a 2026 governance console: monochrome + one accent,
  * typography-first, radius 6/8/12, motion 100–160 ms.
  */
@@ -960,7 +960,7 @@ tbody tr[data-clickable] { cursor: pointer; }
 tbody tr[data-clickable]:hover { background: var(--surface-hover); }
 td .id { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--fg-3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; }
 td .actor { display: flex; align-items: center; gap: 6px; }
-td .actor .av { width: 20px; height: 20px; border-radius: 50%; background: var(--surface-hover); border: 1px solid var(--border); display: grid; place-items: center; font-size: 10px; font-weight: 600; color: var(--fg-2); }
+td .actor .pv { width: 20px; height: 20px; border-radius: 50%; background: var(--surface-hover); border: 1px solid var(--border); display: grid; place-items: center; font-size: 10px; font-weight: 600; color: var(--fg-2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .pill {
@@ -1596,7 +1596,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   z-index: 300;
   animation: toastIn 120ms cubic-bezier(.22,1,.36,1);
   /* Unbroken tokens/URLs in a message (a copy-failure echoing an
-     av_live_… token) once stretched a toast to ~885px — off the left
+     pv_live_… token) once stretched a toast to ~885px — off the left
      edge of a phone. Cap and wrap anywhere. */
   max-width: min(420px, calc(100vw - 24px));
   overflow-wrap: anywhere;
@@ -1835,8 +1835,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .evt { grid-template-columns: 32px auto minmax(0, 1fr) auto; }
   .evt .waterfall { display: none; }
   /* Keep the tour launcher compact so it covers less content. */
-  #avTourLauncher button { padding: 9px 6px 9px 14px; font-size: 13px; }
-  #avTourLauncher #avTourDismiss { padding: 9px 12px 9px 4px; }
+  #pvTourLauncher button { padding: 9px 6px 9px 14px; font-size: 13px; }
+  #pvTourLauncher #pvTourDismiss { padding: 9px 12px 9px 4px; }
 }
 
 /* ============================================================
@@ -1860,8 +1860,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
  * heights it sat exactly on a long form's Save/Cancel row (z 900 vs
  * the backdrop's 100). While anything locks the body, the user's
  * intent is the dialog. */
-body.locked #avTourLauncher { display: none; }
-#avTourLauncher {
+body.locked #pvTourLauncher { display: none; }
+#pvTourLauncher {
   position: fixed;
   right: 20px;
   bottom: 20px;
@@ -1877,7 +1877,7 @@ body.locked #avTourLauncher { display: none; }
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
   animation: toastIn 200ms cubic-bezier(.22,1,.36,1);
 }
-#avTourLauncher button {
+#pvTourLauncher button {
   background: none;
   border: 0;
   color: inherit;
@@ -1887,26 +1887,26 @@ body.locked #avTourLauncher { display: none; }
   font-weight: 600;
   font-size: var(--t-body, 14px);
 }
-#avTourLauncher #avTourDismiss {
+#pvTourLauncher #pvTourDismiss {
   padding: 11px 14px 11px 6px;
   opacity: 0.75;
   font-weight: 400;
 }
-#avTourLauncher #avTourDismiss:hover { opacity: 1; }
-#avTourLauncher #avTourStart:hover { text-decoration: underline; }
+#pvTourLauncher #pvTourDismiss:hover { opacity: 1; }
+#pvTourLauncher #pvTourStart:hover { text-decoration: underline; }
 
 /* The overlay absorbs every click outside the card so a stray click
    can't navigate the app underneath a tour step (audit D1). Tour
    advancement is via the card buttons / arrow keys. */
-#avTour { position: fixed; inset: 0; z-index: 950; pointer-events: auto; }
-.av-tour-hole {
+#pvTour { position: fixed; inset: 0; z-index: 950; pointer-events: auto; }
+.pv-tour-hole {
   position: fixed;
   border-radius: 10px;
   /* The spotlight: everything but the hole is dimmed. */
   box-shadow: 0 0 0 9999px rgba(8, 15, 24, 0.55), 0 0 0 2px var(--accent);
   transition: left 200ms ease, top 200ms ease, width 200ms ease, height 200ms ease;
 }
-.av-tour-card {
+.pv-tour-card {
   position: fixed;
   width: 380px;
   max-width: calc(100vw - 24px);
@@ -1919,13 +1919,13 @@ body.locked #avTourLauncher { display: none; }
   pointer-events: auto;
   transition: left 200ms ease, top 200ms ease;
 }
-.av-tour-card.centered {
+.pv-tour-card.centered {
   left: 50% !important;
   top: 50% !important;
   transform: translate(-50%, -50%);
   box-shadow: 0 0 0 9999px rgba(8, 15, 24, 0.55), 0 16px 48px rgba(0, 0, 0, 0.35);
 }
-.av-tour-step {
+.pv-tour-step {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1933,12 +1933,12 @@ body.locked #avTourLauncher { display: none; }
   font-weight: 700;
   margin-bottom: 6px;
 }
-.av-tour-card h3 { margin: 0 0 6px; font-size: 16px; }
-.av-tour-card p { margin: 0 0 14px; font-size: 13.5px; line-height: 1.55; color: var(--fg-2); }
-.av-tour-card p code { font-size: 12px; }
-.av-tour-actions { display: flex; align-items: center; gap: 8px; }
-.av-tour-spacer { flex: 1; }
-.av-tour-actions button {
+.pv-tour-card h3 { margin: 0 0 6px; font-size: 16px; }
+.pv-tour-card p { margin: 0 0 14px; font-size: 13.5px; line-height: 1.55; color: var(--fg-2); }
+.pv-tour-card p code { font-size: 12px; }
+.pv-tour-actions { display: flex; align-items: center; gap: 8px; }
+.pv-tour-spacer { flex: 1; }
+.pv-tour-actions button {
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--fg);
@@ -1948,28 +1948,28 @@ body.locked #avTourLauncher { display: none; }
   font-size: 13px;
   cursor: pointer;
 }
-.av-tour-actions .av-tour-next {
+.pv-tour-actions .pv-tour-next {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
   font-weight: 600;
 }
-.av-tour-actions .av-tour-skip {
+.pv-tour-actions .pv-tour-skip {
   border: 0;
   background: none;
   color: var(--fg-3);
   padding-left: 0;
 }
-.av-tour-actions .av-tour-skip:hover { color: var(--fg-1); }
+.pv-tour-actions .pv-tour-skip:hover { color: var(--fg-1); }
 
 /* Simulated-attack: the savings stat pulses when new money is kept. */
-@keyframes avStatPulse {
+@keyframes pvStatPulse {
   0% { box-shadow: 0 0 0 0 var(--success-bg); }
   50% { box-shadow: 0 0 0 10px transparent; background: var(--success-bg); }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
-.stat.av-pulse { animation: avStatPulse 1.2s ease 2; }
-tr.av-new-row td { animation: avStatPulse 1.2s ease 2; }
+.stat.pv-pulse { animation: pvStatPulse 1.2s ease 2; }
+tr.pv-new-row td { animation: pvStatPulse 1.2s ease 2; }
 
 @media (prefers-reduced-motion: reduce) {
   /* Global kill-switch (WCAG 2.3.3): 18 animation/transition sites and
@@ -1983,9 +1983,9 @@ tr.av-new-row td { animation: avStatPulse 1.2s ease 2; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  .av-tour-hole, .av-tour-card { transition: none; }
-  .stat.av-pulse, tr.av-new-row td { animation: none; }
-  .toast, #avTourLauncher { animation: none; }
+  .pv-tour-hole, .pv-tour-card { transition: none; }
+  .stat.pv-pulse, tr.pv-new-row td { animation: none; }
+  .toast, #pvTourLauncher { animation: none; }
 }
 
 /* ============================================================
@@ -2149,7 +2149,7 @@ a.ob-step:hover { border-color: var(--accent); }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   html, body { background: #fff; }
   /* Chrome + every interactive control off the page. */
-  .topbar, .sidebar, .preview-banner, #toastStack, #avTour, #avTourLauncher,
+  .topbar, .sidebar, .preview-banner, #toastStack, #pvTour, #pvTourLauncher,
   .filter-bar, .evt-filters, .page-header .actions, button, .modal-backdrop,
   .onboard-card, .range-group { display: none !important; }
   .app-shell { display: block; min-height: 0; }
@@ -2235,7 +2235,7 @@ a.ob-step:hover { border-color: var(--accent); }
      overrides live here, after the tour/toast base rules — putting
      them in the main responsive block (earlier in the file) silently
      lost to source order at equal specificity. */
-  #avTourLauncher { bottom: 68px; }
+  #pvTourLauncher { bottom: 68px; }
   #toastStack { bottom: 120px; }
 }
 @media print { .tabbar { display: none !important; } }
@@ -2250,3 +2250,25 @@ a.ob-step:hover { border-color: var(--accent); }
 /* Programmatic focus target for route changes — no ring on the whole
  * content column (focus is managed deliberately; SR still announces). */
 .main:focus { outline: none; box-shadow: none; }
+
+/* ===================================================== * POLICY PUSH + DEMO LABELS
+ * ============================================================ */
+/* Structured spec fields in the policy dialogs: two columns on wide
+   screens, one on phones. */
+.spec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-4); }
+@media (max-width: 640px) { .spec-grid { grid-template-columns: 1fr; } .tpl-row { grid-template-columns: 1fr; } }
+/* Enforcement badges under a policy's description. */
+.enf-row { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.pill.enf { white-space: nowrap; }
+/* "demo" label on rows staged by Simulate an attack. */
+.pill.demo-pill { font-size: 10.5px; padding: 0 6px; vertical-align: 1px; margin-left: 2px; }
+/* Demo-footprint banner on the overview: accent, not warning. */
+.notice.demo-notice {
+  display: flex; align-items: center; gap: var(--s-3);
+  background: var(--accent-bg); border-color: var(--accent-border); color: var(--fg-2);
+}
+=======
+/* Billing usage against plan limits */
+.usage-row { margin: 10px 0; }
+.usage-label { display: flex; justify-content: space-between; font-size: var(--t-sec); color: var(--fg-2); margin-bottom: 4px; }
+.usage-label span { font-variant-numeric: tabular-nums; }

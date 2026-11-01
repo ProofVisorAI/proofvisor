@@ -159,7 +159,7 @@ def inside():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
-    parser.add_argument('--output-dir', type=Path, default=Path('/tmp/agentvisor-backup-results'))
+    parser.add_argument('--output-dir', type=Path, default=Path('/tmp/proofvisor-backup-results'))
     args = parser.parse_args()
 
     def cancelled(_signum, _frame):
@@ -177,7 +177,7 @@ def main():
     os.umask(0o077)
     output = args.output_dir.absolute(); output.mkdir(parents=True, exist_ok=True, mode=0o700)
     token = uuid.uuid4().hex[:12]
-    name = 'av-backup-test-' + token
+    name = 'pv-backup-test-' + token
     tag = name + ':local'
     environment = dict(os.environ)
     if environment.get('DOCKER_HOST'):
@@ -189,21 +189,21 @@ def main():
     primary_failure = None
     phase = 'build'
     try:
-        with tempfile.TemporaryDirectory(prefix='av-backup-build-') as directory:
+        with tempfile.TemporaryDirectory(prefix='pv-backup-build-') as directory:
             context = Path(directory)
             shutil.copy2(ROOT / 'scripts/postgres-backup.py', context)
             shutil.copy2(__file__, context)
             (context / 'Dockerfile').write_text('FROM ' + IMAGE + '\n'
                 'RUN apt-get update && apt-get install -y --no-install-recommends python3 gnupg '
                 '&& rm -rf /var/lib/apt/lists/*\nCOPY *.py /fixture/\n')
-            built = docker('build', '--label', 'agentvisor.backup-test='+token, '-t', tag, str(context), timeout=300)
+            built = docker('build', '--label', 'proofvisor.backup-test='+token, '-t', tag, str(context), timeout=300)
             (output / 'build.log').write_text(built.stdout + built.stderr)
             password = secrets.token_hex(24)
             env_file = context / 'fixture.env'
             env_file.write_text('POSTGRES_USER=fixture\nPOSTGRES_PASSWORD='+password+'\n')
             env_file.chmod(0o600)
             phase = 'create'
-            docker('create', '--name', name, '--label', 'agentvisor.backup-test='+token,
+            docker('create', '--name', name, '--label', 'proofvisor.backup-test='+token,
                    '--memory', '384m', '--cpus', '1', '--security-opt', 'no-new-privileges',
                    '--env-file', str(env_file), tag)
             phase = 'start'
@@ -253,7 +253,7 @@ def main():
                              '--format', '{{.ID}}', timeout=30).stdout.split()
                 for container_id in ids:
                     label = docker('inspect', '--format',
-                                   '{{ index .Config.Labels "agentvisor.backup-test" }}',
+                                   '{{ index .Config.Labels "proofvisor.backup-test" }}',
                                    container_id, timeout=30).stdout.strip()
                     if label != token:
                         raise RuntimeError('Refusing cleanup of a container without the expected ownership label')
@@ -266,7 +266,7 @@ def main():
                              '--format', '{{.ID}}', timeout=30).stdout.split()
                 if ids:
                     label = docker('image', 'inspect', '--format',
-                                   '{{ index .Config.Labels "agentvisor.backup-test" }}',
+                                   '{{ index .Config.Labels "proofvisor.backup-test" }}',
                                    tag, timeout=30).stdout.strip()
                     if label != token:
                         raise RuntimeError('Refusing cleanup of an image without the expected ownership label')

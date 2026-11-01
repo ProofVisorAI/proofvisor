@@ -96,7 +96,7 @@ jobs:
           python3 scripts/postgres-backup.py \
             --pg-dump /usr/lib/postgresql/18/bin/pg_dump \
             --pg-restore /usr/lib/postgresql/18/bin/pg_restore \
-            --output-dir "$RUNNER_TEMP/agentvisor-backup" \
+            --output-dir "$RUNNER_TEMP/proofvisor-backup" \
             --timeout-seconds 900 > "$RUNNER_TEMP/backup-manifest.json"
           python3 - <<'PYTHON'
           import json, os

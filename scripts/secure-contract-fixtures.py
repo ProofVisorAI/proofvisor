@@ -4,12 +4,12 @@
 Run `python3 scripts/secure-contract-fixtures.py start`, then source the printed
 owner-only environment file in the shell running the Rust live contracts:
 
-    cargo test -p av-bridge --all-features --test live_contract nats_contract
-    cargo test -p av-state --features redis --test redis_contract
-    cargo test -p av-harness --all-features --test revocation_redis
+    cargo test -p pv-bridge --all-features --test live_contract nats_contract
+    cargo test -p pv-state --features redis --test redis_contract
+    cargo test -p pv-harness --all-features --test revocation_redis
 
 Run `add-kafka DIRECTORY` to add a pinned Kafka TLS/SCRAM broker to the same
-environment. Then run `cargo test -p av-bridge --all-features --test live_contract
+environment. Then run `cargo test -p pv-bridge --all-features --test live_contract
 kafka_contract`. Run `check DIRECTORY` to repeat transport/topology checks, and `stop DIRECTORY`
 to remove only this fixture's labelled containers and generated files. No Cargo
 command is executed by this script. The six Redis processes intentionally share
@@ -42,8 +42,8 @@ import traceback
 NATS_IMAGE = "nats:2.15.0-alpine@sha256:ac8f88a6494bffc2c2a5289a0ca61cb28a9145c11ba5677cf24265d07f46d8d4"
 REDIS_IMAGE = "redis@sha256:987c376c727652f99625c7d205a1cba3cb2c53b92b0b62aade2bd48ee1593232"
 KAFKA_IMAGE = "docker.redpanda.com/redpandadata/redpanda:v26.2.2@sha256:468bd13a9f2bd24794cb7fddc867c767fb1008b9a07b297b89fde48c564d7d96"
-LABEL = "org.agentvisor.contract-fixture"
-PREFIX = "av-contract-fixtures-"
+LABEL = "org.proofvisor.contract-fixture"
+PREFIX = "pv-contract-fixtures-"
 
 
 class FixtureError(RuntimeError):
@@ -332,7 +332,7 @@ def start(parent: Path | None) -> Path:
         nats_dir.mkdir(mode=0o700)
         redis_dir.mkdir(mode=0o700)
         run(directory, ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2",
-                        "-subj", "/CN=AgentVisor isolated contract CA",
+                        "-subj", "/CN=ProofVisor isolated contract CA",
                         "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", str(nats_dir / "ca.key"), "-out", str(nats_dir / "ca.crt")])
         run(directory, ["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-sha256", "-subj", "/CN=localhost",
                         "-keyout", str(nats_dir / "server.key"), "-out", str(nats_dir / "server.csr")])
@@ -375,7 +375,7 @@ maxmemory-policy noeviction
             ("nats", NATS_IMAGE, nats_dir, [(nats_port, 4222)], ["nats-server", "-c", "/fixture/nats.conf"]),
             ("redis", REDIS_IMAGE, redis_dir, [(port, port) for port in redis_ports], ["sh", "/fixture/start.sh"]),
         ]:
-            name = f"av-contract-{state['fixture_id']}-{role}"
+            name = f"pv-contract-{state['fixture_id']}-{role}"
             args = ["docker", "create", "--name", name, "--label", f"{LABEL}={state['fixture_id']}",
                     "--memory", "768m" if role == "redis" else "192m", "--cpus", "1", "--pids-limit", "128"]
             for host_port, container_port in ports:
@@ -421,11 +421,11 @@ maxmemory-policy noeviction
                 raise FixtureError("Redis replicas did not synchronize")
             time.sleep(0.25)
         env = {
-            "AV_NATS_URL": f"tls://localhost:{nats_port}",
-            "AV_NATS_CA_FILE": str(nats_dir / "ca.crt"),
-            "AV_NATS_USER": credentials["nats_user"], "AV_NATS_PASSWORD": credentials["nats_password"],
-            "AV_REDIS_URL": ",".join(f"redis://:{credentials['redis_password']}@127.0.0.1:{port}" for port in redis_ports),
-            "AV_CONTRACT_FIXTURE_DIR": str(directory),
+            "PV_NATS_URL": f"tls://localhost:{nats_port}",
+            "PV_NATS_CA_FILE": str(nats_dir / "ca.crt"),
+            "PV_NATS_USER": credentials["nats_user"], "PV_NATS_PASSWORD": credentials["nats_password"],
+            "PV_REDIS_URL": ",".join(f"redis://:{credentials['redis_password']}@127.0.0.1:{port}" for port in redis_ports),
+            "PV_CONTRACT_FIXTURE_DIR": str(directory),
         }
         private_write(directory / "env.sh", "# Generated local fixture credentials. Do not commit or print.\n"
                       + "\n".join(f"export {name}={shlex.quote(value)}" for name, value in env.items()) + "\n")
@@ -492,7 +492,7 @@ def add_kafka(directory: Path) -> None:
     credentials = json.loads((directory / "credentials.json").read_text())
     user, password = "contract", secrets.token_hex(32)
     port = allocate_ports(1)[0]
-    container = f"av-contract-{state['fixture_id']}-kafka"
+    container = f"pv-contract-{state['fixture_id']}-kafka"
     for filename in ["server.crt", "server.key", "ca.crt"]:
         shutil.copyfile(directory / "nats" / filename, config_dir / filename)
         (config_dir / filename).chmod(0o600)
@@ -566,9 +566,9 @@ rpk:
         private_write(directory / "credentials.json", json.dumps(credentials))
         save(directory, state)
         env = {
-            "AV_KAFKA_BROKER": f"localhost:{port}", "AV_KAFKA_CA_FILE": str(directory / "nats" / "ca.crt"),
-            "AV_KAFKA_SASL_USERNAME": user, "AV_KAFKA_SASL_PASSWORD": password,
-            "AV_KAFKA_SASL_MECHANISM": "SCRAM-SHA-256",
+            "PV_KAFKA_BROKER": f"localhost:{port}", "PV_KAFKA_CA_FILE": str(directory / "nats" / "ca.crt"),
+            "PV_KAFKA_SASL_USERNAME": user, "PV_KAFKA_SASL_PASSWORD": password,
+            "PV_KAFKA_SASL_MECHANISM": "SCRAM-SHA-256",
         }
         existing = (directory / "env.sh").read_text()
         private_write(directory / "env.sh", existing + "\n" + "\n".join(

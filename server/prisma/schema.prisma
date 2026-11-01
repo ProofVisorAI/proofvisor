@@ -1,4 +1,4 @@
-// AgentVisor AI hosted-console data model.
+// ProofVisor hosted-console data model.
 //
 // PostgreSQL is the canonical datasource — portable across Neon, Supabase,
 // Fly Postgres, Google Cloud SQL, AWS RDS, or a self-hosted docker container.
@@ -16,14 +16,14 @@ datasource db {
 
 // A person with a login. Owns one or more organizations.
 model User {
-  id               String    @id @default(cuid())
-  email            String    @unique
-  passwordHash     String
-  displayName      String?
+  id                    String    @id @default(cuid())
+  email                 String    @unique
+  passwordHash          String
+  displayName           String?
   // Short-lived password-reset token (argon2-hashed). Both the token and the
   // "issuedAt" timestamp are cleared on successful use or expiry (24h).
-  resetTokenHash   String?
-  resetTokenAt     DateTime?
+  resetTokenHash        String?
+  resetTokenAt          DateTime?
   // Pending email change: the NEW address awaiting verification, plus the
   // argon2-hashed token mailed to it. Cleared on confirm/cancel/overwrite;
   // stale requests expire after 24h (checked at confirm time, same TTL
@@ -46,11 +46,24 @@ model User {
   // a captured cookie stops working immediately even though the JWT itself
   // is still cryptographically valid until its 7-day exp.
   sessionRevokedAt DateTime?
+  // SCIM `externalId` the organisation's identity provider assigned to
+  // this user when it provisioned them over /scim/v2. Null for users
+  // created by signup, invite, OAuth or SAML JIT. Looked up by the
+  // `externalId eq "…"` filter IdPs issue before every create.
+  scimExternalId   String?
+  // The organisation whose SCIM endpoint created this account, or null
+  // for accounts made by signup, invite, OAuth or SAML JIT. Only that
+  // organisation's IdP may change the account's login email or re-attach
+  // it after removal: anyone else's account is the person's own, and a
+  // tenant that could re-address it could take it over with a password
+  // reset mailed to the new address.
+  scimProvisionedOrgId String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
   memberships         Membership[]
   webauthnCredentials WebauthnCredential[]
+  scimGroupMembers    ScimGroupMember[]
 
   @@map("users")
 }
@@ -130,7 +143,27 @@ model Org {
   // that would exclude the caller's own current IP.
   ipAllowlist String[] @default([])
 
+  // Billing. `plan` decides the entitlements in lib/entitlements.ts;
+  // `planStatus` mirrors the Stripe subscription state. The Stripe ids
+  // let the webhook handler find the org a Stripe event belongs to
+  // without trusting anything in the event body beyond the signature.
+  plan                 String    @default("free") // free | team | enterprise
+  planStatus           String    @default("active") // active | past_due | canceled | trialing
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  planRenewsAt         DateTime?
+
+  // SCIM 2.0 provisioning settings (RFC 7643/7644). The IdP calls
+  // /scim/v2 with a bearer token from ScimToken; these fields decide
+  // what a provisioned user becomes and what `active: false` does.
+  scimEnabled           Boolean @default(false)
+  scimDefaultRole       String  @default("member") // member | admin
+  scimDeprovisionAction String  @default("deactivate") // deactivate | remove
+
   members           Membership[]
+  scimTokens        ScimToken[]
+  scimGroups        ScimGroup[]
+  billingEvents     BillingEvent[]
   deployments       Deployment[]
   samlConfigs       SamlConfig[]
   samlReplayRecords SamlReplayRecord[]
@@ -145,10 +178,10 @@ model Org {
 
 // Server-side API key for programmatic console access. Wire scripts,
 // CI jobs, and dashboards can authenticate as an org (not a user) with
-// `Authorization: Bearer av_srv_<plaintext>`. Only the argon2 hash is
+// `Authorization: Bearer pv_srv_<plaintext>`. Only the argon2 hash is
 // stored; plaintext is returned once at create time.
 //
-// A hint (first 8 chars) is stored so the UI can show 'av_srv_a091…'
+// A hint (prefix plus first 8 chars (pv_live_XXXXXXXX)) is stored so the UI can show 'pv_srv_a091…'
 // without a lookup. lastUsedAt is bumped opportunistically on
 // authenticate. createdBy snapshots the operator email so a revoked
 // user's audit trail still shows who created what.
@@ -157,7 +190,11 @@ model ApiKey {
   orgId          String
   name           String // "CI runner", "Grafana dashboard"
   tokenHash      String
-  tokenHint      String // first 8 chars for UI display
+  tokenHint      String // first 8 chars after the prefix, for UI display
+  // The prefix the key was minted with: "av_srv_" for keys issued before
+  // the ProofVisor rename (the column default fills them in), "pv_srv_"
+  // since. Both authenticate; the console shows the real one.
+  tokenPrefix    String    @default("av_srv_")
   createdById    String?
   createdByEmail String?
   role           String    @default("admin") // acts as this role for RBAC
@@ -285,7 +322,7 @@ model SamlConfig {
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
-  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org           Org                @relation(fields: [orgId], references: [id], onDelete: Cascade)
   authnRequests SamlAuthnRequest[]
 
   @@unique([orgId, displayName])
@@ -336,18 +373,25 @@ model Membership {
   userId String
   orgId  String
   role   String @default("owner") // "owner" | "admin" | "member" (checked in code)
+  // SCIM deprovisioning with `deprovisionAction = deactivate` flips this
+  // to false instead of deleting the row: the IdP can re-activate the
+  // user later and the audit history stays attached. Every session
+  // path (cookie middleware, login, switch-org, SAML ACS, SSE stream)
+  // refuses an inactive membership.
+  active Boolean @default(true)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([userId, orgId])
   @@index([orgId])
   @@map("memberships")
 }
 
-// A `agentvisord` instance registered with the console. The daemon uses
+// A `proofvisord` instance registered with the console. The daemon uses
 // `ingestToken` to POST events; the org holds `publicKeyHex` so the console
 // can verify receipts offline. Provider secrets never enter this database.
 model Deployment {
@@ -364,17 +408,46 @@ model Deployment {
   // Hash of the plaintext ingest token (argon2). Plaintext is shown once at
   // creation and never stored.
   ingestTokenHash String
-  ingestTokenHint String // first 8 chars for UI display
+  ingestTokenHint String // prefix plus first 8 chars (pv_live_XXXXXXXX) for UI display
   lastIngestAt    DateTime?
+  // True for the "demo-attack" deployment the console's live-mode
+  // "Simulate an attack" creates. Its sessions and receipts are staged
+  // by the server (signed with the public demo key), labeled as demo
+  // everywhere, excluded from policy-enforcement totals, and removed
+  // as a unit by DELETE /api/v1/demo.
+  isDemo          Boolean   @default(false)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  org      Org       @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  sessions Session[]
+  org          Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sessions     Session[]
+  policyStatus DeploymentPolicyStatus?
 
   @@unique([orgId, name])
   @@index([orgId])
   @@map("deployments")
+}
+
+// What a daemon last reported about the policy bundle it pulled from
+// GET /api/v1/ingest/policies. One row per deployment, upserted by
+// POST /api/v1/ingest/policy-status. `etag` is the bundle hash the
+// daemon applied; comparing it with the org's current bundle etag tells
+// the console whether that daemon is current or stale. `applied` is
+// the list of policy ids the daemon enforces; `unsupported` lists the
+// ids it could not enforce with a reason (older daemon, unknown kind).
+model DeploymentPolicyStatus {
+  id            String   @id @default(cuid())
+  deploymentId  String   @unique
+  etag          String
+  appliedAt     DateTime
+  daemonVersion String?
+  applied       Json
+  unsupported   Json
+  updatedAt     DateTime @updatedAt
+
+  deployment Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  @@map("deployment_policy_status")
 }
 
 // One conversation as observed by the checkpoint.
@@ -404,6 +477,10 @@ model Session {
   toolsBlocked           Int       @default(0)
   stopReasonId           Int?
   stopReason             String?
+  // Staged by POST /api/v1/demo/attack (lives under an isDemo
+  // deployment). Denormalized so list queries can label demo rows
+  // without a join.
+  isDemo                 Boolean   @default(false)
 
   deployment Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
   events     Event[]
@@ -462,11 +539,16 @@ model Receipt {
   @@map("receipts")
 }
 
-// Governance policy definitions as authored in the console. The daemon
-// enforces its own local policy files (WASM / schema); these rows are
-// the org's declarative source of truth the console displays and
-// operators edit. Hit/block counters are NOT stored here — the read
-// endpoint aggregates them from ingest events that carry a policyName
+// Governance policy definitions as authored in the console. These rows
+// are the org's declarative source of truth: daemons pull the enabled
+// ones as a signed-hash bundle from GET /api/v1/ingest/policies
+// (`pvctl console-sync --watch --pull-policies`) and report what they
+// applied to POST /api/v1/ingest/policy-status. For the kinds budget,
+// allowlist, rate and schema `body` must be the JSON spec the daemon
+// enforces (validated in lib/policy-bundle.ts); guardrail and
+// transform keep free text and are documentation/attribution only.
+// Hit/block counters are NOT stored here — the read endpoint
+// aggregates them from ingest events that carry a policyName
 // attribution (Event.policyName), scoped through sessions.orgId.
 model Policy {
   id          String   @id @default(cuid())
@@ -488,14 +570,14 @@ model Policy {
   @@map("policies")
 }
 
-// An outbound webhook subscription. Operators wire AgentVisor into their
+// An outbound webhook subscription. Operators wire ProofVisor into their
 // Slack channel, PagerDuty routing key, Datadog event stream, or their
 // own internal notification bus. Each endpoint subscribes to one or more
 // event names (policy.block, session.blocked, apikey.created, etc.).
 //
 // Payloads are signed with HMAC-SHA256 over the raw body using `secret`.
 // Consumers verify by computing the same HMAC and constant-time comparing
-// with the X-AgentVisor-Signature header. A ts-nonce anti-replay
+// with the X-ProofVisor-Signature header. A ts-nonce anti-replay
 // mechanism sits on the same headers.
 model WebhookEndpoint {
   id        String   @id @default(cuid())
@@ -538,4 +620,76 @@ model WebhookDelivery {
   @@index([endpointId, createdAt])
   @@index([status, nextRetryAt])
   @@map("webhook_deliveries")
+}
+
+// Bearer token an identity provider presents on /scim/v2. Same storage
+// discipline as ApiKey: argon2 hash at rest, plaintext shown once,
+// `pv_scim_` prefix plus an 8-char hint so the console can label rows.
+model ScimToken {
+  id             String    @id @default(cuid())
+  orgId          String
+  name           String
+  tokenHash      String
+  tokenHint      String // first 8 chars of the random part
+  createdById    String?
+  createdByEmail String?
+  lastUsedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  revokedAt      DateTime?
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([tokenHint])
+  @@map("scim_tokens")
+}
+
+// SCIM Group resource. Groups map to roles: a group whose displayName
+// is "owner", "admin" or "member" (case-insensitive) grants that role
+// to its members (see routes/scim.ts roleForGroupName). Members of no
+// mapped group fall back to the org's scimDefaultRole when they leave
+// a mapped group.
+model ScimGroup {
+  id          String   @id @default(cuid())
+  orgId       String
+  displayName String
+  externalId  String?
+  role        String? // owner | admin | member | null (unmapped)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org     Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  members ScimGroupMember[]
+
+  @@unique([orgId, displayName])
+  @@index([orgId])
+  @@map("scim_groups")
+}
+
+model ScimGroupMember {
+  groupId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  group ScimGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  @@index([userId])
+  @@map("scim_group_members")
+}
+
+// One row per Stripe webhook event the API has processed. The primary
+// key is Stripe's event id, so a redelivered event hits the unique
+// constraint and is acknowledged without being applied twice.
+model BillingEvent {
+  id          String   @id // Stripe event id (evt_…)
+  type        String
+  orgId       String?
+  processedAt DateTime @default(now())
+
+  org Org? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, processedAt])
+  @@map("billing_events")
 }

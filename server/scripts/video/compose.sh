@@ -66,7 +66,7 @@ add_caption() {
 # into illegible text-on-text right where the money claim lands.
 D2W=$(ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$SCENES/02-overview.webm")
 add_caption "$SCENES/02-overview.webm" "$OUT/norm/02-overview.mp4" \
-  "AgentVisor watches every AI agent. \$31,840 saved from blocked orders." \
+  "ProofVisor watches every AI agent. \$31,840 saved from blocked orders." \
   "lt(t,$(awk "BEGIN{printf \"%.2f\", $D2W - 0.65}"))"
 
 add_caption "$SCENES/03-session.webm" "$OUT/norm/03-session.mp4" \
@@ -107,23 +107,23 @@ ffmpeg -y \
   -map "[vout]" \
   -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart \
   -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
-  "$OUT/agentvisor-mockup-v4.mp4" 2>&1 | tail -3
+  "$OUT/proofvisor-mockup-v4.mp4" 2>&1 | tail -3
 
-ffprobe "$OUT/agentvisor-mockup-v4.mp4" 2>&1 | grep -E "Duration|Stream" | head -3
-ls -lh "$OUT/agentvisor-mockup-v4.mp4"
+ffprobe "$OUT/proofvisor-mockup-v4.mp4" 2>&1 | grep -E "Duration|Stream" | head -3
+ls -lh "$OUT/proofvisor-mockup-v4.mp4"
 
 if [ -f "$OUT/audio/soundtrack-44s.aac" ]; then
   echo "→ Muxing subtle-audio cut (whooshes only)"
-  ffmpeg -y -i "$OUT/agentvisor-mockup-v4.mp4" -i "$OUT/audio/soundtrack-44s.aac" \
+  ffmpeg -y -i "$OUT/proofvisor-mockup-v4.mp4" -i "$OUT/audio/soundtrack-44s.aac" \
     -c:v copy -c:a aac -ar 48000 -shortest -movflags +faststart \
-    "$OUT/agentvisor-mockup-v9-audio.mp4" 2>&1 | tail -1
-  ls -lh "$OUT/agentvisor-mockup-v9-audio.mp4"
+    "$OUT/proofvisor-mockup-v9-audio.mp4" 2>&1 | tail -1
+  ls -lh "$OUT/proofvisor-mockup-v9-audio.mp4"
 fi
 
 if [ -f "$OUT/audio/narration-44s.aac" ]; then
   echo "→ Muxing narrated cut (definitive v21 distilled)"
-  ffmpeg -y -i "$OUT/agentvisor-mockup-v4.mp4" -i "$OUT/audio/narration-44s.aac" \
+  ffmpeg -y -i "$OUT/proofvisor-mockup-v4.mp4" -i "$OUT/audio/narration-44s.aac" \
     -c:v copy -af "volume=4dB" -c:a aac -ar 48000 -shortest -movflags +faststart \
-    "$OUT/agentvisor-mockup-v21-distilled.mp4" 2>&1 | tail -1
-  ls -lh "$OUT/agentvisor-mockup-v21-distilled.mp4"
+    "$OUT/proofvisor-mockup-v21-distilled.mp4" 2>&1 | tail -1
+  ls -lh "$OUT/proofvisor-mockup-v21-distilled.mp4"
 fi

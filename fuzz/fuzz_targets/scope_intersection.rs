@@ -18,14 +18,14 @@ fuzz_target!(|data: &[u8]| {
     };
     let a: Vec<String> = a.split(' ').map(str::to_owned).collect();
     let b: Vec<String> = b.split(' ').map(str::to_owned).collect();
-    let ab = av_identity::exchange::scope_intersection(&a, &b);
-    let ba = av_identity::exchange::scope_intersection(&b, &a);
+    let ab = pv_identity::exchange::scope_intersection(&a, &b);
+    let ba = pv_identity::exchange::scope_intersection(&b, &a);
     // Commutativity: the intersection has the same length regardless of order.
     assert_eq!(ab.len(), ba.len(), "intersection not commutative: {ab:?} vs {ba:?}");
     // Every scope in the result must appear in both inputs (narrowing).
     for scope in &ab {
         assert!(
-            a.contains(scope) || b.iter().any(|bs| av_identity::exchange::scope_intersection(&[bs.clone()], &[scope.clone()]).len() == 1),
+            a.contains(scope) || b.iter().any(|bs| pv_identity::exchange::scope_intersection(&[bs.clone()], &[scope.clone()]).len() == 1),
             "scope {scope:?} not covered by both inputs"
         );
     }

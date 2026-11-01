@@ -74,7 +74,7 @@ ffmpeg -y \
   " \
   -map "[vout]" \
   -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart \
-  "$OUT/agentvisor-mockup-teaser.mp4" 2>&1 | tail -3
+  "$OUT/proofvisor-mockup-teaser.mp4" 2>&1 | tail -3
 
-ffprobe "$OUT/agentvisor-mockup-teaser.mp4" 2>&1 | grep -E "Duration|Stream" | head -3
-ls -lh "$OUT/agentvisor-mockup-teaser.mp4"
+ffprobe "$OUT/proofvisor-mockup-teaser.mp4" 2>&1 | grep -E "Duration|Stream" | head -3
+ls -lh "$OUT/proofvisor-mockup-teaser.mp4"

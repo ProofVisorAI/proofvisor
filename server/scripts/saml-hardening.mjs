@@ -22,7 +22,7 @@ async function signup(email, orgName) {
   });
   if (res.status !== 201) throw new Error("signup failed " + res.status + " " + await res.text());
   const setCookie = res.headers.get("set-cookie") ?? "";
-  return /(av_session=[^;]+)/.exec(setCookie)?.[1];
+  return /(pv_session=[^;]+)/.exec(setCookie)?.[1];
 }
 
 async function createConfig(cookie, opts) {
@@ -157,8 +157,8 @@ async function spInitiate(configId) {
   if (!id) throw new Error("no AuthnRequest ID");
   // Browser-binding txn cookie: the ACS requires the ceremony to flow
   // back through the browser that started it (login-CSRF fix).
-  const txnCookie = /(av_saml_txn=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
-  if (!txnCookie) throw new Error("no av_saml_txn cookie from /login");
+  const txnCookie = /(pv_saml_txn=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
+  if (!txnCookie) throw new Error("no pv_saml_txn cookie from /login");
   return { id, txnCookie };
 }
 
@@ -256,7 +256,7 @@ async function main() {
   const r3b = await postToAcs(cfg.spAcsUrl, wrongIssuerResp, txn_irt_wrongIssuerResp);
   const b3b = await r3b.text();
   const loc3b = r3b.headers.get("location") ?? "";
-  const cookie3b = (r3b.headers.getSetCookie?.() ?? []).some((c) => c.startsWith("av_session="));
+  const cookie3b = (r3b.headers.getSetCookie?.() ?? []).some((c) => c.startsWith("pv_session="));
   results.push({ drill: "issuer-mismatch", status: r3b.status, expect: 302, body: (loc3b || b3b).slice(0, 100), ok: r3b.status === 302 && /err=saml_assertion_issuer_mismatch/.test(loc3b) && !cookie3b });
 
   // ============ 3c. Unsigned assertion ============
@@ -278,14 +278,14 @@ async function main() {
   const r3c = await postToAcs(cfg.spAcsUrl, unsignedResp, txn_irt_unsigned);
   const b3c = await r3c.text();
   const loc3c = r3c.headers.get("location") ?? "";
-  const cookie3c = (r3c.headers.getSetCookie?.() ?? []).some((c) => c.startsWith("av_session="));
+  const cookie3c = (r3c.headers.getSetCookie?.() ?? []).some((c) => c.startsWith("pv_session="));
   results.push({ drill: "unsigned-assertion", status: r3c.status, expect: 302, body: (loc3c || b3c).slice(0, 100), ok: r3c.status === 302 && /err=saml_assertion/.test(loc3c) && !cookie3c });
 
   // ============ 3d. Relayed valid response without the browser txn ============
   // Login-CSRF shape: an attacker completes /login + IdP auth
   // THEMSELVES, then delivers their perfectly valid, unconsumed
   // SAMLResponse through a victim's browser. The victim's browser holds
-  // no av_saml_txn for that request id, so the ACS must refuse — a
+  // no pv_saml_txn for that request id, so the ACS must refuse — a
   // VALID signature, issuer, audience and InResponseTo are not enough.
   console.log("\n[3d] Valid response relayed without the initiating browser's txn cookie");
   const { id: irt_relayed } = await spInitiate(cfg.id);
@@ -300,7 +300,7 @@ async function main() {
   });
   const r3d = await postToAcs(cfg.spAcsUrl, relayedResp /* no txn cookie */);
   const loc3d = r3d.headers.get("location") ?? "";
-  const cookie3d = (r3d.headers.getSetCookie?.() ?? []).some((c) => c.startsWith("av_session="));
+  const cookie3d = (r3d.headers.getSetCookie?.() ?? []).some((c) => c.startsWith("pv_session="));
   results.push({ drill: "relayed-response-refused", status: r3d.status, expect: 302, body: loc3d.slice(0, 100), ok: r3d.status === 302 && /err=saml_assertion_txn_mismatch/.test(loc3d) && !cookie3d });
 
   // ============ 4. Member can't CRUD ============
@@ -324,8 +324,8 @@ async function main() {
     headers: { Origin: SPA_ORIGIN, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
     body: JSON.stringify({ email: memberEmail, token: decodeURIComponent(acceptToken), password: "correcthorse42x-member", displayName: "Drill Member" }),
   });
-  const memberCookie = /av_session=([^;]+)/.exec(acceptRes.headers.get("set-cookie") ?? "")
-    ? `av_session=${/av_session=([^;]+)/.exec(acceptRes.headers.get("set-cookie") ?? "")[1]}`
+  const memberCookie = /pv_session=([^;]+)/.exec(acceptRes.headers.get("set-cookie") ?? "")
+    ? `pv_session=${/pv_session=([^;]+)/.exec(acceptRes.headers.get("set-cookie") ?? "")[1]}`
     : null;
   if (!memberCookie) throw new Error(`invite accept minted no session: ${acceptRes.status} ${(await acceptRes.text()).slice(0, 120)}`);
   const memberListReq = await fetch(`${API}/api/v1/auth/saml`, {
@@ -431,7 +431,7 @@ async function main() {
     body: new URLSearchParams({ SAMLResponse: unsolicited, RelayState: "" }).toString(),
     redirect: "manual",
   });
-  results.push({ drill: "unsolicited-refused", status: rUn.status, expect: 302, ok: rUn.status === 302 && /err=saml_assertion/.test(rUn.headers.get("location") ?? "") && !(rUn.headers.get("set-cookie") ?? "").includes("av_session=") });
+  results.push({ drill: "unsolicited-refused", status: rUn.status, expect: 302, ok: rUn.status === 302 && /err=saml_assertion/.test(rUn.headers.get("location") ?? "") && !(rUn.headers.get("set-cookie") ?? "").includes("pv_session=") });
 
   // Print
   console.log("\n============ RESULTS ============");

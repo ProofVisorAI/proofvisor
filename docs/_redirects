@@ -2,7 +2,7 @@
 # the API + SSE stream to the hosted backend.
 #
 # On Cloudflare Pages you upload `docs/` as the site root and set the
-# custom domain to agentvisorai.me. Pages inherits Cloudflare's global
+# custom domain to proofvisor.com. Pages inherits Cloudflare's global
 # edge network — unlimited bandwidth, HTTP/3, Brotli, automatic Argo.
 #
 # Free tier: 500 builds/month, unlimited bandwidth, unlimited requests.
@@ -14,16 +14,19 @@
 
 # API proxy — keeps the console and API on the same origin so cookies
 # work with SameSite=Lax and no CORS preflight is needed. Change the
-# right-hand side to point at your API host (Fly.io, Cloud Run, Koyeb).
+# right-hand side to point at your API host (Render, Cloud Run, Koyeb).
 #
-# DISABLED until the hosted API launches with the beta:
-# api.agentvisorai.me has no DNS today, and on any host that honors
-# this file the /api/* rule would SHADOW /api/ — which on the current
-# site is the rustdoc export (a working, link-crawled page) — with a
-# proxy to a dead host. Re-enable both lines at beta launch and move
-# the rustdoc to /docs/api/ first.
-# /api/*  https://api.agentvisorai.me/api/:splat  200
-# /healthz  https://api.agentvisorai.me/healthz  200
+# DISABLED. The hosted API is live on Render
+# (https://agentvisor-api.onrender.com), but the custom domain
+# api.proofvisor.com is still pending DNS (CNAME to
+# agentvisor-api.onrender.com), and the site itself is on GitHub
+# Pages, which ignores this file anyway. On any host that honors this
+# file the /api/* rule would also SHADOW /api/ — which on the current
+# site is the rustdoc export (a working, link-crawled page). Before
+# re-enabling both lines: confirm api.proofvisor.com resolves and
+# move the rustdoc to /docs/api/ first.
+# /api/*  https://api.proofvisor.com/api/:splat  200
+# /healthz  https://api.proofvisor.com/healthz  200
 
 # Short-link aliases. NOTE: the site currently deploys to GitHub
 # Pages, which ignores this file; /mockup and /demo actually work via

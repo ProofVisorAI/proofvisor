@@ -15,33 +15,33 @@ SPEC.loader.exec_module(package)
 
 class PackageTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="av-package-")
+        self.temp = tempfile.TemporaryDirectory(prefix="pv-package-")
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name)
 
-    def stub(self, name, data=b"\x7fELF stub avctl"):
+    def stub(self, name, data=b"\x7fELF stub pvctl"):
         path = self.work / name
         path.write_bytes(data)
         return str(path)
 
     def test_packages_include_binaries_with_exec_bits_and_exclude_tests(self):
         out = self.work / "dist"
-        self.assertEqual(package.main(["--avctl-x86_64", self.stub("x"), "--avctl-aarch64", self.stub("a"),
+        self.assertEqual(package.main(["--pvctl-x86_64", self.stub("x"), "--pvctl-aarch64", self.stub("a"),
                                        "--output", str(out)]), 0)
         version = package.version()
-        zipped = out / f"agentvisor-buildpack-{version}.zip"
+        zipped = out / f"proofvisor-buildpack-{version}.zip"
         with zipfile.ZipFile(zipped) as archive:
             names = archive.namelist()
             modes = {info.filename: (info.external_attr >> 16) & 0o777 for info in archive.infolist()}
         self.assertIn("bin/supply", names)
         self.assertIn("lib/outputs.sh", names)
-        self.assertIn("vendor/avctl-linux-x86_64", names)
-        self.assertIn("vendor/avctl-linux-aarch64", names)
+        self.assertIn("vendor/pvctl-linux-x86_64", names)
+        self.assertIn("vendor/pvctl-linux-aarch64", names)
         self.assertFalse(any(name.startswith("tests/") for name in names))
         self.assertEqual(modes["bin/supply"], 0o755)
-        self.assertEqual(modes["vendor/avctl-linux-x86_64"], 0o755)
+        self.assertEqual(modes["vendor/pvctl-linux-x86_64"], 0o755)
         self.assertEqual(modes["lib/binding.sh"], 0o644)
-        with tarfile.open(out / f"agentvisor-buildpack-{version}.tgz") as archive:
+        with tarfile.open(out / f"proofvisor-buildpack-{version}.tgz") as archive:
             members = {member.name: member.mode for member in archive.getmembers()}
         self.assertEqual(members["bin/build"], 0o755)
         self.assertIn("buildpack.toml", members)
@@ -51,7 +51,7 @@ class PackageTests(unittest.TestCase):
 
     def test_non_linux_binaries_and_missing_binaries_are_refused(self):
         with self.assertRaises(SystemExit):
-            package.main(["--avctl-x86_64", self.stub("mac", b"\xcf\xfa\xed\xfe macho"), "--output",
+            package.main(["--pvctl-x86_64", self.stub("mac", b"\xcf\xfa\xed\xfe macho"), "--output",
                           str(self.work / "dist")])
         with self.assertRaises(SystemExit):
             package.main(["--output", str(self.work / "dist")])

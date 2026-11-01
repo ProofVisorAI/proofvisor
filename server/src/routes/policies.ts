@@ -1,10 +1,13 @@
 /**
  * Governance policies — the org's declarative policy inventory.
  *
- * These rows are what the console's Policies surface lists and edits.
- * Enforcement itself happens in the daemon (local WASM / schema policy
- * files); this API is the org-visible source of truth for what SHOULD
- * be enforced, who last touched it, and whether it is enabled. The
+ * These rows are what the console's Policies surface lists and edits,
+ * and what daemons pull as a bundle from GET /api/v1/ingest/policies
+ * (see lib/policy-bundle.ts for the bundle contract and the spec shapes
+ * of the daemon-enforceable kinds budget / allowlist / rate / schema).
+ * Writes validate the spec, so a daemon never receives an unparseable
+ * rule; reads attach `enforcement` (how many daemons run the current
+ * bundle) computed from the deployments' policy-status rows. The
  * hits24h/blocks24h columns the SPA renders are aggregated from ingest
  * events carrying a policyName attribution (see policyCounters below);
  * policies with no attributed events in the window report zero rather
@@ -24,6 +27,14 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { writeAudit, resolveActor } from "../lib/audit.js";
 import { requireSession } from "../lib/session-middleware.js";
+import {
+  enforcementFor,
+  isEnforceableKind,
+  orgEnforcementSnapshot,
+  parseSpecOrNull,
+  validatePolicySpec,
+  type OrgEnforcementSnapshot,
+} from "../lib/policy-bundle.js";
 
 // Same trim-then-min ordering as deployments.ts (R211 F1). Name is an
 // identifier rendered in tables and audit lines; scope/kind are short
@@ -93,12 +104,39 @@ async function policyCounters(
 
 // Counters come from the attribution aggregate when present; zero when
 // the org's daemons haven't attributed any events in the window.
+// `enforcement` counts daemons against the org's CURRENT bundle etag;
+// `enforceable` tells the console whether daemons can act on this kind
+// at all (guardrail/transform are documentation and attribution only);
+// `spec` is the parsed JSON body for enforceable kinds (null otherwise).
 function toWire(
-  p: { name: string } & Record<string, unknown>,
+  p: { id: string; name: string; kind: string; scope: string; body: string } & Record<string, unknown>,
   counters?: Map<string, { hits: number; blocks: number }>,
+  snap?: OrgEnforcementSnapshot,
 ) {
   const c = counters?.get(p.name);
-  return { ...p, hits24h: c?.hits ?? 0, blocks24h: c?.blocks ?? 0 };
+  const enforceable = isEnforceableKind(p.kind);
+  return {
+    ...p,
+    hits24h: c?.hits ?? 0,
+    blocks24h: c?.blocks ?? 0,
+    enforceable,
+    spec: enforceable ? parseSpecOrNull(p.kind, p.scope, p.body) : null,
+    enforcement: snap
+      ? enforcementFor(snap, p.id)
+      : { deployments: 0, applied: 0, current: 0, stale: 0, unsupported: 0 },
+  };
+}
+
+// 400 with the human-readable reason the spec was refused. The RFC 7807
+// transform in index.ts keeps `issues` and any extra fields on the
+// body while curating `detail`, so the explanation travels in both the
+// zod-style `issues` list and a `specError` string the console shows.
+function specRejected(detail: string) {
+  return {
+    error: "invalid_input",
+    specError: detail,
+    issues: [{ path: ["body"], message: detail }],
+  };
 }
 
 export async function policyRoutes(app: FastifyInstance): Promise<void> {
@@ -110,8 +148,14 @@ export async function policyRoutes(app: FastifyInstance): Promise<void> {
       orderBy: [{ enabled: "desc" }, { updatedAt: "desc" }],
       select: policySelect,
     });
-    const counters = await policyCounters(claims.orgId);
-    return reply.send({ policies: rows.map((p) => toWire(p, counters)) });
+    const [counters, snap] = await Promise.all([
+      policyCounters(claims.orgId),
+      orgEnforcementSnapshot(claims.orgId),
+    ]);
+    return reply.send({
+      policies: rows.map((p) => toWire(p, counters, snap)),
+      bundleEtag: snap.etag,
+    });
   });
 
   app.get("/:id", async (req, reply) => {
@@ -126,8 +170,11 @@ export async function policyRoutes(app: FastifyInstance): Promise<void> {
       select: policySelect,
     });
     if (!row) return reply.code(404).send({ error: "not_found" });
-    const counters = await policyCounters(claims.orgId);
-    return reply.send({ policy: toWire(row, counters) });
+    const [counters, snap] = await Promise.all([
+      policyCounters(claims.orgId),
+      orgEnforcementSnapshot(claims.orgId),
+    ]);
+    return reply.send({ policy: toWire(row, counters, snap), bundleEtag: snap.etag });
   });
 
   app.post("/", async (req, reply) => {
@@ -147,6 +194,8 @@ export async function policyRoutes(app: FastifyInstance): Promise<void> {
       })
       .safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const spec = validatePolicySpec(body.data.kind, body.data.scope, body.data.body);
+    if (!spec.ok) return reply.code(400).send(specRejected(spec.detail));
 
     const actor = await resolveActor(claims.sub);
     let policy;
@@ -182,7 +231,9 @@ export async function policyRoutes(app: FastifyInstance): Promise<void> {
       },
       req.log,
     );
-    return reply.code(201).send({ policy: toWire(policy) });
+    return reply.code(201).send({
+      policy: toWire(policy, undefined, await orgEnforcementSnapshot(claims.orgId)),
+    });
   });
 
   app.patch("/:id", async (req, reply) => {
@@ -207,9 +258,23 @@ export async function policyRoutes(app: FastifyInstance): Promise<void> {
 
     const owned = await db.policy.findFirst({
       where: { id: params.data.id, orgId: claims.orgId },
-      select: { id: true, name: true, enabled: true },
+      select: { id: true, name: true, enabled: true, kind: true, scope: true, body: true },
     });
     if (!owned) return reply.code(404).send({ error: "not_found" });
+    // Validate the spec that will be stored after the patch: a kind,
+    // scope or body change can each turn a valid rule into one the
+    // daemon cannot enforce.
+    const nextKind = body.data.kind ?? owned.kind;
+    const nextScope = body.data.scope ?? owned.scope;
+    const nextBody = body.data.body ?? owned.body;
+    if (
+      body.data.kind !== undefined ||
+      body.data.scope !== undefined ||
+      body.data.body !== undefined
+    ) {
+      const spec = validatePolicySpec(nextKind, nextScope, nextBody);
+      if (!spec.ok) return reply.code(400).send(specRejected(spec.detail));
+    }
 
     const actor = await resolveActor(claims.sub);
     let policy;
@@ -248,7 +313,9 @@ export async function policyRoutes(app: FastifyInstance): Promise<void> {
       },
       req.log,
     );
-    return reply.send({ policy: toWire(policy) });
+    return reply.send({
+      policy: toWire(policy, undefined, await orgEnforcementSnapshot(claims.orgId)),
+    });
   });
 
   app.delete("/:id", async (req, reply) => {

@@ -82,7 +82,7 @@ swap ranged from 25,364.62 to 29,486.12 MiB. Those swap samples include other
 applications and do not establish isolated daemon memory use or production
 memory requirements.
 
-The reported percentiles come from `x-av-middleware-us`. Its timer starts after
+The reported percentiles come from `x-pv-middleware-us`. Its timer starts after
 authentication, duplicate-key scanning, JSON parsing, and depth checks. It ends
 before forwarding. It includes preparation and any queue wait within that
 preparation, but excludes persistence of the response marker, upstream waiting,
@@ -142,19 +142,19 @@ Start working Redis and Kafka endpoints before running these commands.
 variables, the core/concurrent fixture uses memory and an embedded broker.
 
 ```sh
-export AV_REDIS_URL=redis://127.0.0.1:6379
-export AV_KAFKA_BROKER=127.0.0.1:19092
+export PV_REDIS_URL=redis://127.0.0.1:6379
+export PV_KAFKA_BROKER=127.0.0.1:19092
 
-cargo test --locked -p av-harness --release --features full --test sla \
+cargo test --locked -p pv-harness --release --features full --test sla \
   sla_core_metrics -- --ignored --nocapture
 
-cargo test --locked -p av-harness --release --features full --test sla_security \
+cargo test --locked -p pv-harness --release --features full --test sla_security \
   authenticated_admission_with_live_revocation_and_quota -- --ignored --nocapture
 
 ulimit -n 65536
-RUN_HEAVY_PERF=1 AV_SLA_CONNECTIONS=10000 AV_SLA_ARRIVAL_TIMEOUT_S=900 \
-  AV_SLA_STREAMING_P95_US=5000 AV_SLA_STREAMING_P99_US=8000 \
-  cargo test --locked -p av-harness --release --features full --test sla \
+RUN_HEAVY_PERF=1 PV_SLA_CONNECTIONS=10000 PV_SLA_ARRIVAL_TIMEOUT_S=900 \
+  PV_SLA_STREAMING_P95_US=5000 PV_SLA_STREAMING_P99_US=8000 \
+  cargo test --locked -p pv-harness --release --features full --test sla \
   sla_10k_streaming_connections -- --ignored --nocapture
 ```
 
@@ -164,7 +164,7 @@ bundle; it is not literally every Cargo feature. Correctness and lint checks
 also ran separately with `--all-features`.
 
 The exact commands, exit codes, and logs are retained on the validation host
-under `/tmp/agentvisor-production-validation`. The earlier complete pass is
+under `/tmp/proofvisor-production-validation`. The earlier complete pass is
 in `final-performance.json` and the three `sla-*-current.log` files. The
 intermediate measurements and interrupted concurrent run remain in
 `followup-performance.json` and `followup-sla-*.log`. The preceding revocation-fix

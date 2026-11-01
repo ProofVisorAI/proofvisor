@@ -14,7 +14,7 @@ unmaintained = "workspace"
 # this feature monolithic — no way to opt out of `rsa` while keeping
 # ed25519+hmac).
 #
-# Our JWT validator at crates/av-identity/src/validator.rs:395-413
+# Our JWT validator at crates/pv-identity/src/validator.rs:395-413
 # whitelists exactly two algorithms — `Algorithm::EdDSA` (for Ed25519
 # key material) and `Algorithm::HS256` (for HMAC secrets) — and
 # explicitly rejects any other `alg` header BEFORE calling
@@ -28,8 +28,17 @@ unmaintained = "workspace"
 # https://github.com/RustCrypto/RSA/issues/626 . Revisit if either
 # (a) jsonwebtoken splits the `rust_crypto` feature so we can drop
 # `rsa`, or (b) an RSA-fixed release ships.
+#
+# RUSTSEC-2026-0387 (timing variability in `crypto-bigint` 0.5.x) has the
+# same shape. `crypto-bigint` 0.5 reaches the lock file only through
+# jsonwebtoken -> p256/p384 -> elliptic-curve 0.13, i.e. the ECDSA
+# (ES256/ES384) code path, which the same whitelist rejects before
+# decoding. The patched line (0.7.6+) needs p256/p384 0.14, which
+# jsonwebtoken 11.1 does not use yet. Revisit when jsonwebtoken moves to
+# elliptic-curve 0.14.
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa crate is a transitive dep of jsonwebtoken's rust_crypto feature; our JWT validator whitelists only EdDSA and HS256 and rejects other algs before decoding, so the RSA timing side-channel code path is unreachable at runtime" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 is reached only via jsonwebtoken's p256/p384 (ECDSA) dependency; the JWT validator whitelists EdDSA and HS256 and rejects ES* algs before decoding, so the ECDSA timing side-channel path is unreachable at runtime; no jsonwebtoken release uses the patched 0.7 line yet" },
 ]
 
 [licenses]

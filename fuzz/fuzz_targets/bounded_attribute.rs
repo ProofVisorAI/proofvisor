@@ -9,7 +9,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    let bounded = av_harness::otel_content::bounded(text);
+    let bounded = pv_harness::otel_content::bounded(text);
     // The result must never exceed the limit by more than the marker.
     const MAX_ATTRIBUTE_BYTES: usize = 256 * 1024;
     const MARKER_OVERHEAD: usize = 64;

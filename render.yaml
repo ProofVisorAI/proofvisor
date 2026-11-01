@@ -1,4 +1,11 @@
-# Render blueprint — one-click deploy for the AgentVisor API + Postgres.
+# Render blueprint — one-click deploy for the ProofVisor API + Postgres.
+#
+# The service, database and domain names below are still the AgentVisor
+# ones on purpose: they are what production runs today. Renaming the
+# service or database here would make a blueprint sync create new, empty
+# resources, and changing the domains moves the passkey relying party,
+# SAML SP endpoints and OAuth redirects. Move to proofvisor.com as its own
+# planned step (DNS, Render custom domain, IdP and OAuth app updates).
 #
 # https://render.com/docs/blueprint-spec
 #

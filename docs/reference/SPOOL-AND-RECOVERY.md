@@ -1,6 +1,6 @@
-# AgentVisor AI Spool and Recovery
+# ProofVisor Spool and Recovery
 
-The spool is where AgentVisor AI's audit chain becomes durable. This
+The spool is where ProofVisor's audit chain becomes durable. This
 document explains what lives there, what the reconciler does on
 every tick, and how to reason about incidents that touch it.
 
@@ -60,7 +60,7 @@ inventory:
 
 | File | Contents | Written by | Removed by |
 | --- | --- | --- | --- |
-| `.agentvisord.lock` | Exclusive process lock at the spool root; boot refuses if another daemon holds it | `main::acquire_spool_lock` at process start | on clean process exit; stale locks are healed by fresh boots |
+| `.proofvisord.lock` | Exclusive process lock at the spool root; boot refuses if another daemon holds it | `main::acquire_spool_lock` at process start | on clean process exit; stale locks are healed by fresh boots |
 | `{stem}.session.json` | Sealed metadata: session id, identity, workflow, journal version | worker (`append_active_event_journal`) at first event | `remove_step_journal` after successful close |
 | `{stem}.events.ndjson` | Append-only sealed journal — one JSON line per audit event | worker (`append_journal`) | `remove_step_journal` after successful close |
 | `{stem}.json` | ATIF trajectory (unsigned workflow) | finalizer at close | retention sweep OR archive on collision |
@@ -126,13 +126,13 @@ folded in to skip re-emitting events the previous incarnation
 already published.
 
 Skips (with metrics):
-* Per-session decryption failures → `av_signed_recovery_skipped_total`
-  or `av_unsigned_recovery_skipped_total`. The broken session stays
+* Per-session decryption failures → `pv_signed_recovery_skipped_total`
+  or `pv_unsigned_recovery_skipped_total`. The broken session stays
   on disk for forensic inspection; other sessions continue to be
   processed.
-* Corrupt receipt → `av_atif_trajectory_recovery_skipped_total`.
+* Corrupt receipt → `pv_atif_trajectory_recovery_skipped_total`.
 * Failed pending-close completion tail →
-  `av_pending_close_completion_failed_total`.
+  `pv_pending_close_completion_failed_total`.
 
 ### 2. Reap signed candidates
 
@@ -162,7 +162,7 @@ rename to `{stem}.json.corrupt-{uid}`. The 60s age gate is defense
 against races on an in-flight close's mid-write; the live-stem
 check is defense in depth for closes that started after the
 snapshot but before the rename. Corrupt files are counted in
-`av_atif_recovery_skipped_total{reason="unauthenticated"}` and
+`pv_atif_recovery_skipped_total{reason="unauthenticated"}` and
 never automatically deleted — they're on-disk forensics.
 
 ### 5. Retention sweep (independent task, hourly)
@@ -176,8 +176,8 @@ without its artifact bytes). Unpaired remnants
 are left for step 4 to quarantine. Archived collision evidence
 (`.archived-…` names) and signed receipts under `receipts/` are
 never retention targets. Counted in
-`av_atif_retention_pruned_total`. The identical sweep runs manually
-via `avctl spool-prune --spool <atif_spool_dir> --retention-days N`
+`pv_atif_retention_pruned_total`. The identical sweep runs manually
+via `pvctl spool-prune --spool <atif_spool_dir> --retention-days N`
 — useful when `atif_retention_days` is unset and retention is
 managed by external cron.
 
@@ -222,7 +222,7 @@ without dedup capability WILL land the event twice — this is a
 known limit; operators alerting on emit-then-ack-loss should
 watch the broker-side per-topic ack-loss counter (or Kafka
 `records-lag-max`) rather than an in-process metric, because the
-harness's `av_events_dropped_total` only labels admission-side
+harness's `pv_events_dropped_total` only labels admission-side
 failures (`stage="worker_queue"` / `stage="response_slot"`), not
 post-emit ack loss.
 
@@ -252,7 +252,7 @@ Rebuild the audit chain from a fresh disk:
 1. `stat atif_spool_dir/*.json | count` — should be roughly the
    number of `agent.receipt` events the broker has for the same
    window.
-2. `avctl receipt-verify` against a known-trusted receipt (from
+2. `pvctl receipt-verify` against a known-trusted receipt (from
    before the incident) — proves the signer's public key is intact.
 3. For each recovered session on disk, tail the broker and diff
    `subject.event_count` — divergence is a torn recovery.

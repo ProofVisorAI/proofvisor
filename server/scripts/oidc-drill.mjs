@@ -14,7 +14,7 @@
  *   ALLOWED_ORIGINS=http://127.0.0.1:8988 \
  *   API_PUBLIC_URL=http://127.0.0.1:4477 \
  *   OIDC_ISSUER_URL=http://127.0.0.1:4478 \
- *   OIDC_CLIENT_ID=av-console \
+ *   OIDC_CLIENT_ID=pv-console \
  *   OIDC_CLIENT_SECRET=drill-secret-123 \
  *   OIDC_DISPLAY_NAME=Keycloak \
  *   npx tsx src/index.ts
@@ -50,12 +50,12 @@ import { execFileSync } from "node:child_process";
 const API = process.env.API_BASE || "http://127.0.0.1:4477";
 const IDP_PORT = Number(process.env.IDP_PORT || 4478);
 const ISSUER = `http://127.0.0.1:${IDP_PORT}`;
-const CLIENT_ID = "av-console";
+const CLIENT_ID = "pv-console";
 const CLIENT_SECRET = "drill-secret-123";
 const APP_BASE = "http://127.0.0.1:8988";
 const PG_CONTAINER = process.env.PG_CONTAINER || "";
-const PG_USER = process.env.PG_USER || "agentvisor";
-const PG_DB = process.env.PG_DB || "agentvisor";
+const PG_USER = process.env.PG_USER || "proofvisor";
+const PG_DB = process.env.PG_DB || "proofvisor";
 
 let passed = 0;
 let failed = 0;
@@ -237,7 +237,7 @@ async function runFlow({ provider = "oidc", omitCookie = false, forgeState = fal
   if (!authUrl.startsWith(ISSUER)) {
     return { startStatus: 302, startLocation: authUrl };
   }
-  const stateCookie = cookieFrom(start, "av_oauth_state");
+  const stateCookie = cookieFrom(start, "pv_oauth_state");
   const authz = await fetch(authUrl, { redirect: "manual" });
   let cbUrl = new URL(authz.headers.get("location"));
   if (forgeState) cbUrl.searchParams.set("state", "forged-state-value");
@@ -250,7 +250,7 @@ async function runFlow({ provider = "oidc", omitCookie = false, forgeState = fal
     headers: omitCookie ? {} : { cookie: stateCookie },
   });
   const clearedState = (cb.headers.getSetCookie?.() || []).some(
-    (c) => c.startsWith("av_oauth_state=") && /max-age=0|expires=thu, 01 jan 1970/i.test(c),
+    (c) => c.startsWith("pv_oauth_state=") && /max-age=0|expires=thu, 01 jan 1970/i.test(c),
   );
   return {
     startStatus: 302,
@@ -258,7 +258,7 @@ async function runFlow({ provider = "oidc", omitCookie = false, forgeState = fal
     stateCookie,
     status: cb.status,
     finalLocation: cb.headers.get("location"),
-    sessionCookie: cookieFrom(cb, "av_session"),
+    sessionCookie: cookieFrom(cb, "pv_session"),
     stateCookieCleared: clearedState,
   };
 }
@@ -270,16 +270,21 @@ async function me(sessionCookie) {
 
 // writeAudit is fire-and-forget server-side; poll briefly so a read
 // issued right after the audited action doesn't race the insert.
-async function auditEvents(sessionCookie, limit, wantedEvent) {
+async function auditEvents(sessionCookie, limit, wantedEvents) {
+  // Audit rows are written fire-and-forget after the response, so two
+  // rows issued back to back can land in either order. Wait until every
+  // wanted event is visible (or the budget runs out) instead of stopping
+  // at the first one, otherwise a loaded machine produces a false FAIL.
+  const wanted = Array.isArray(wantedEvents) ? wantedEvents : [wantedEvents];
   let events = [];
   let entries = [];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 40; i++) {
     const audit = await fetch(`${API}/api/v1/audit?limit=${limit}`, {
       headers: { cookie: sessionCookie },
     }).then((r) => r.json());
     entries = audit.entries || audit.items || [];
     events = entries.map((e) => e.event);
-    if (events.includes(wantedEvent)) break;
+    if (wanted.every((w) => events.includes(w))) break;
     await new Promise((r) => setTimeout(r, 150));
   }
   return { events, entries };
@@ -317,7 +322,7 @@ async function main() {
   check("PKCE S256", authUrl.searchParams.get("code_challenge_method") === "S256" && (authUrl.searchParams.get("code_challenge") || "").length >= 40);
   check("state + nonce present", !!authUrl.searchParams.get("state") && !!authUrl.searchParams.get("nonce"));
   check("redirect_uri is API callback", authUrl.searchParams.get("redirect_uri") === `${API}/api/v1/auth/oauth/oidc/callback`);
-  const sc = cookieFrom(start, "av_oauth_state");
+  const sc = cookieFrom(start, "pv_oauth_state");
   check("signed state cookie set", !!sc && sc.includes("."));
 
   console.log("[3] happy path: JIT signup");
@@ -334,7 +339,7 @@ async function main() {
   const { events, entries: auditEntries } = await auditEvents(
     flow1.sessionCookie,
     50,
-    "auth.oauth_signin",
+    ["org.created", "auth.oauth_signin"],
   );
   check("org.created audited", events.includes("org.created"), events);
   check("auth.oauth_signin audited", events.includes("auth.oauth_signin"), events);

@@ -41,10 +41,10 @@ jobs:
         run: |
           set -eu
           VERSION="${TAG#v}"
-          CURRENT=$(sed -n 's/^AV_VERSION="\${AV_VERSION:-\(.*\)}"$/\1/p' docs/install.sh)
+          CURRENT=$(sed -n 's/^PV_VERSION="\${PV_VERSION:-\(.*\)}"$/\1/p' docs/install.sh)
           echo "current pin: $CURRENT → release: $VERSION"
           if [ -z "$CURRENT" ]; then
-            echo "::error::could not parse the AV_VERSION pin out of docs/install.sh — pattern drifted"
+            echo "::error::could not parse the PV_VERSION pin out of docs/install.sh — pattern drifted"
             exit 1
           fi
           if [ "$CURRENT" = "$VERSION" ]; then

@@ -17,7 +17,7 @@
  *                                     allowCredentials matching the user, sets
  *                                     a challenge cookie tied to that user id.
  *     POST /authenticate/verify     — client posts the assertion. Server
- *                                     verifies, mints an av_session.
+ *                                     verifies, mints an pv_session.
  *
  *   CRUD:
  *     GET    /credentials
@@ -96,8 +96,8 @@ function acceptedOrigins(): string[] {
 // attached header. Signing removes minting; the embedded issued-at,
 // enforced server-side in readChallengeCookie, bounds replay of a
 // captured cookie+assertion pair to CHALLENGE_TTL_S.
-const REG_CHALLENGE_COOKIE = "av_wa_reg_challenge";
-const AUTH_CHALLENGE_COOKIE = "av_wa_auth_challenge";
+const REG_CHALLENGE_COOKIE = "pv_wa_reg_challenge";
+const AUTH_CHALLENGE_COOKIE = "pv_wa_auth_challenge";
 const CHALLENGE_TTL_S = 300; // 5 min — plenty for user prompt
 
 function setChallengeCookie(
@@ -303,7 +303,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     const claims = requireSession(req, reply);
     if (!claims) return;
     // R107 F1: API-key sessions have no user row and can't own a
-    // passkey (the auth material is the plaintext av_srv_ token,
+    // passkey (the auth material is the plaintext pv_srv_ token,
     // not a hardware credential). Reject up-front with the same
     // slug siblings use — /saml/slo (R105 F5), /logout (R106 F2),
     // stream (R100). The prior implicit guard here (findUnique
@@ -320,7 +320,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     if (!user) return reply.code(401).send({ error: "unauthenticated" });
 
     const options = await generateRegistrationOptions({
-      rpName: "AgentVisor AI",
+      rpName: "ProofVisor",
       rpID: rpID(),
       userID: Buffer.from(user.id, "utf8"),
       userName: user.email,
@@ -357,7 +357,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     // fires only on success). Same primitive R86 F3 hardened
     // for /login. Also amplifies argon2 CPU spend for DoS.
     // R142 F2: use perIpCookieOnly so a Bearer-header hammer
-    // from an attacker with any valid av_srv_ token can't burn
+    // from an attacker with any valid pv_srv_ token can't burn
     // the legitimate cookie caller's budget — R141 F4's
     // covert lock-out primitive fix generalized to every
     // step-up sibling.
@@ -379,7 +379,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     }
     const body = z
       .object({
-        response: z.record(z.unknown()),
+        response: z.record(z.string(), z.unknown()),
         // R113 F2: trim before min(1) so whitespace-only labels
         // are rejected. Prior shape z.string().min(1).max(80)
         // accepted '   ' (3 spaces, length 3) which passed
@@ -472,7 +472,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     // R135 F3: filter WebAuthn transports to the WebAuthn Level 3
     // spec-defined enum and bound array length. Prior shape cast
     // through `as { response?: { transports?: string[] } }` on
-    // body.data.response (which zod-typed as z.record(z.unknown())
+    // body.data.response (which zod-typed as z.record(z.string(), z.unknown())
     // at line 264 — untyped nested object), then unconditionally
     // .join(",")'d the raw values into an unbounded Prisma column.
     // An authenticated attacker POSTing
@@ -660,7 +660,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
       // outcome. Parse the body, burn a DB lookup, clear cookie,
       // return the same `unknown_credential` string.
       const bodyDecoy = z
-        .object({ response: z.record(z.unknown()) })
+        .object({ response: z.record(z.string(), z.unknown()) })
         .safeParse(req.body);
       void bodyDecoy; // parsed for timing parity only
       // Match the real path's DB timing by running a lookup that
@@ -699,7 +699,7 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     // cookie, return unknown_credential) whenever the real path
     // would take an early exit before the credential lookup.
     const body = z
-      .object({ response: z.record(z.unknown()) })
+      .object({ response: z.record(z.string(), z.unknown()) })
       .safeParse(req.body);
     const rawId = body.success
       ? ((body.data.response as { rawId?: string; id?: string }).rawId
@@ -863,7 +863,8 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     const user = await db.user.findUnique({
       where: { id: cred.userId },
       // R105 F4: deterministic membership ordering (see auth.ts).
-      include: { memberships: { include: { org: true }, orderBy: { createdAt: "asc" } } },
+      // SCIM-deactivated memberships are not login targets.
+      include: { memberships: { where: { active: true }, include: { org: true }, orderBy: { createdAt: "asc" } } },
     });
     if (!user) return reply.code(401).send({ error: "user_disappeared" });
     const membership = user.memberships[0];
@@ -1048,13 +1049,13 @@ export async function webauthnRoutes(app: FastifyInstance): Promise<void> {
     //      check on enrollment). Attacker's own hardware key is
     //      now enrolled on the victim's user row.
     //   3. If attacker's cookie role is admin+, they mint an
-    //      av_srv_ token as their persistence primitive.
+    //      pv_srv_ token as their persistence primitive.
     //   4. Victim opens Settings, sees an unfamiliar passkey
     //      label ("Yubikey #2" they never enrolled), clicks
     //      Delete. Prior shape: only the credential row was
     //      removed — victim's cookie still worked, attacker's
     //      cookie still worked (up to 7-day exp), and any
-    //      av_srv_ token from step 3 kept authenticating.
+    //      pv_srv_ token from step 3 kept authenticating.
     // Fix mirrors R123 F3 (reset-confirm apikey fence): wrap
     // the credential delete + sessionRevokedAt bump +
     // apiKey.updateMany in one db.$transaction so a crash

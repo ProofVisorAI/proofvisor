@@ -11,23 +11,23 @@
   -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'none'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; frame-src 'none'">
-  <title>AgentVisor AI. AI agents you can hand to an auditor</title>
-  <meta name="description" content="AgentVisor AI sits in front of your AI agent's LLM and tool calls. Point your OpenAI client at it, and every session can end with a signed receipt anyone can verify offline.">
+  <title>ProofVisor. AI agents you can hand to an auditor</title>
+  <meta name="description" content="ProofVisor sits in front of your AI agent's LLM and tool calls. Point your OpenAI client at it, and every session can end with a signed receipt anyone can verify offline.">
   <link rel="stylesheet" href="style.css">
   <link rel="icon" type="image/png" href="logo.png">
-  <link rel="canonical" href="https://agentvisorai.me/">
-  <meta property="og:title" content="AgentVisor AI. AI agents you can hand to an auditor">
+  <link rel="canonical" href="https://proofvisor.com/">
+  <meta property="og:title" content="ProofVisor. AI agents you can hand to an auditor">
   <meta property="og:description" content="One line of code. Every session recorded, capped, and verifiable.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://agentvisorai.me/">
-  <meta property="og:image" content="https://agentvisorai.me/social-preview.png">
+  <meta property="og:url" content="https://proofvisor.com/">
+  <meta property="og:image" content="https://proofvisor.com/social-preview.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
 <body>
 
   <nav aria-label="Primary">
     <div class="wrap nav-inner">
-      <a class="brand" href="#top"><img src="logo.png" alt="" width="26" height="26" style="vertical-align:-6px;margin-right:8px">AgentVisor AI</a>
+      <a class="brand" href="#top"><img src="logo.png" alt="" width="26" height="26" style="vertical-align:-6px;margin-right:8px">ProofVisor</a>
       <div class="nav-links">
         <a href="#one-line">How it works</a>
         <a href="#what-you-get">What you get</a>
@@ -36,7 +36,7 @@
         <a href="pitch/">Watch the pitch</a>
         <a href="verify/">Verify a receipt</a>
         <a href="app/">Console</a>
-        <a href="https://github.com/AgentVisorAI/agentvisor">GitHub</a>
+        <a href="https://github.com/ProofVisorAI/proofvisor">GitHub</a>
       </div>
     </div>
   </nav>
@@ -45,11 +45,12 @@
     <div class="wrap">
       <h1>AI agents you can hand to an auditor.</h1>
       <p class="lede">
-        AgentVisor AI is a small server you drop in front of your agent&rsquo;s LLM
+        ProofVisor is a small server you drop in front of your agent&rsquo;s LLM
         and tool calls. Every request is recorded. Every limit you set is
         enforced before the call goes out. Every session can end with a signed
-        receipt anyone can verify offline. Without asking you or us for
-        anything except a public key.
+        receipt (the shipped configs sign by default). Anyone who holds your
+        deployment&rsquo;s public key can verify that receipt offline, without
+        asking you or us for anything else.
       </p>
       <p class="cta-row">
         <a class="cta primary" href="app/?tour=1">See the full flow</a>
@@ -58,7 +59,7 @@
         <a class="cta" href="verify/">Verify a receipt</a>
       </p>
       <p class="hero-meta">
-        v0.1.0 &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
+        v0.1.0&#8209;rc.5 (pre&#8209;release) &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
       </p>
     </div>
   </header>
@@ -71,7 +72,7 @@
           <p class="section-kicker">Point your existing OpenAI client at it</p>
           <h2>One line of code. Zero SDK.</h2>
           <p>
-            AgentVisor AI speaks OpenAI&rsquo;s <code>chat/completions</code> and
+            ProofVisor speaks OpenAI&rsquo;s <code>chat/completions</code> and
             MCP over plain HTTP. Change the base URL your client points at.
             Nothing else in your app moves. (Long histories are compacted
             by default before forwarding. Auditable, and one config
@@ -80,9 +81,12 @@
           <p class="muted">
             Works the same way for Ollama, LM&nbsp;Studio, Azure OpenAI,
             vLLM, LiteLLM, and anything else that speaks the OpenAI
-            <code>chat/completions</code> wire format. (Anthropic&rsquo;s
-            native API is not OpenAI-shaped. Front it with a
-            LiteLLM-style shim.)
+            <code>chat/completions</code> wire format. Requests are
+            forwarded unchanged; the <code>provider</code> setting
+            (<code>openai</code>, <code>anthropic</code>, or
+            <code>gemini</code>) only selects how the upstream response
+            frames are parsed. The Anthropic and Gemini presets point at
+            those vendors&rsquo; OpenAI-compatible endpoints.
           </p>
         </div>
         <div>
@@ -112,15 +116,25 @@
             <h3>A signed record of every session</h3>
             <p>
               When the agent&rsquo;s session finishes, whether that&rsquo;s a single
-              chat completion or a 40-step tool-using conversation, AgentVisor AI
+              chat completion or a 40-step tool-using conversation, ProofVisor
               hands back a receipt like the one on the right. It commits to
               the full event chain, the cost, and how many tool calls were
               allowed vs blocked.
             </p>
             <p>
-              Verification is one <code>avctl receipt-verify</code> call with
-              your public key. Or 30 lines of your language&rsquo;s Ed25519 library.
-              You don&rsquo;t need to trust AgentVisor AI to trust the receipt.
+              Verification is one <code>pvctl receipt-verify</code> call with
+              your public key. Or about 30 lines of your language&rsquo;s Ed25519
+              library. You don&rsquo;t need to trust ProofVisor to trust the
+              receipt; you only need the public key, obtained from the
+              operator out of band.
+            </p>
+            <p class="muted">
+              The browser verifier at <a href="verify/">/verify/</a> checks
+              the signature and the receipt&rsquo;s internal consistency, but
+              it only knows the sample and demo keys. For a real deployment
+              it reports &ldquo;internally consistent, trust anchor not
+              verified&rdquo; until you compare the key fingerprint with the
+              deployment page in the console.
             </p>
           </div>
           <div class="feature-visual">
@@ -164,7 +178,8 @@
             <h3>Hard limits, refused at the door</h3>
             <p>
               That <code>blocked: 1</code> in the receipt was a tool call that
-              would have blown past the session&rsquo;s cost cap. Your agent
+              would have blown past the session&rsquo;s payout cap
+              (<code>max_payout_usd_micros</code>). Your agent
               received a plain HTTP&nbsp;403 and moved on. The provider was
               never contacted; the money was never spent.
             </p>
@@ -183,7 +198,7 @@ Content-Type: application/json
 {
   <span class="k">"error"</span>: {
     <span class="k">"code"</span>: -32001,
-    <span class="k">"message"</span>: <span class="s">"tool call blocked by AgentVisor AI policy"</span>,
+    <span class="k">"message"</span>: <span class="s">"tool call blocked by ProofVisor policy"</span>,
     <span class="k">"data"</span>: {
       <span class="k">"reason"</span>: <span class="s">"max_payout_usd_micros (cap 50000000)"</span>
     }
@@ -197,15 +212,19 @@ Content-Type: application/json
             <h3>Evidence you can send anywhere</h3>
             <p>
               Every event is written as OCSF-shaped JSON. The same
-              schema your SIEM already speaks. Every session that never
-              finishes becomes an ATIF trajectory file compatible with the
-              Harbor validator. Every artifact is just a file on
-              disk.
+              schema your SIEM already speaks. A session on the signed
+              workflow (the default in every shipped config) ends in a
+              receipt; a session on the unsigned workflow ends in an ATIF
+              trajectory file compatible with the Harbor validator, and can
+              be promoted to a receipt later. Every artifact is just a file
+              on disk.
             </p>
             <p>
               Ship the files to S3, feed them into Vector, hand them to
               a customer&rsquo;s evidence locker, or archive them for the seven
-              years your industry demands. AgentVisor AI does not phone home.
+              years your industry demands. The daemon does not phone home;
+              uploading evidence to the hosted console is a separate,
+              opt-in <code>pvctl console-sync</code> step.
             </p>
           </div>
           <div class="feature-visual">
@@ -231,7 +250,7 @@ data/bridge/
           <p class="section-kicker">See what&rsquo;s happening</p>
           <h2>A dashboard for the agent you already deployed.</h2>
           <p>
-            Every AgentVisor AI instance ships a small operator dashboard at
+            Every ProofVisor instance ships a small operator dashboard at
             <code>/dashboard</code>. Open it in a browser and you can see the
             sessions your agent is running right now: which prompts, how
             many tokens, how much money, which tools were called, which
@@ -261,7 +280,7 @@ data/bridge/
               <span class="dot red"></span>
               <span class="dot yellow"></span>
               <span class="dot green"></span>
-              <span class="mock-url">agent&#8209;bridge.internal / dashboard</span>
+              <span class="mock-url">proofvisor.internal / dashboard</span>
             </header>
             <div class="mock-body">
               <div class="mock-stats">
@@ -325,7 +344,7 @@ data/bridge/
             <h3>The 3 AM cost spike</h3>
             <p>
               Your agent gets stuck in a retry loop and burns $2,400 on a
-              Sunday. AgentVisor AI&rsquo;s loop breaker plus the payout cap would
+              Sunday. ProofVisor&rsquo;s loop breaker plus the payout cap would
               have cut it off at $10, logged what happened, and let your
               on-call sleep.
             </p>
@@ -344,7 +363,7 @@ data/bridge/
             <p>
               A customer wants to know whether the agent you built for
               them called any model or tool other than the ones you
-              promised. You give them a session receipt and 20 lines
+              promised. You give them a session receipt and about 30 lines
               of verification code.
             </p>
           </article>
@@ -358,12 +377,13 @@ data/bridge/
           <p class="section-kicker">Get started</p>
           <h2>60 seconds, one prompt at a time.</h2>
           <p>
-            Requires <a href="https://rustup.rs/">Rust</a>. Clone the
-            <a href="https://github.com/AgentVisorAI/agentvisor">repo</a> and
-            install both binaries with <code>cargo install --path</code>
-            (two commands, shown in the README).
-            The wizard asks one thing at a time and writes the config
-            file for you. When it finishes, AgentVisor AI is running on
+            One command installs both binaries. The installer downloads
+            prebuilt releases for Linux and macOS, checks their SHA&#8209;256
+            checksums, and falls back to <code>cargo install --git</code>
+            (which needs <a href="https://rustup.rs/">Rust</a>) on any
+            other platform. Then run <code>pvctl</code>: the wizard asks
+            one thing at a time and writes the config file for you. When
+            it finishes, ProofVisor is running on
             <code>http://127.0.0.1:8484</code>.
           </p>
           <p>
@@ -372,11 +392,10 @@ data/bridge/
           </p>
         </div>
         <div>
-<pre class="code-shell" tabindex="0" role="region" aria-label="Shell output example"><code><span class="prompt">$</span> git clone https://github.com/AgentVisorAI/agentvisor &amp;&amp; cd agentvisor
-<span class="prompt">$</span> cargo install --path crates/av-harness &amp;&amp; cargo install --path crates/av-cli
-<span class="prompt">$</span> avctl
+<pre class="code-shell" tabindex="0" role="region" aria-label="Shell output example"><code><span class="prompt">$</span> curl -fsSL https://proofvisor.com/install.sh | sh
+<span class="prompt">$</span> pvctl
 
-  Welcome to AgentVisor AI! A couple of quick questions and you're done.
+  Welcome to ProofVisor! A couple of quick questions and you're done.
 
   Where do your AI models come from?
   <span class="c">1) OpenAI (GPT models)</span>
@@ -392,11 +411,11 @@ data/bridge/
   Paste your OpenAI API key: <span class="in">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span>
 
   All set!
-  API key:  ~/.agentvisor/keys/openai.key (private to your user account)
+  API key:  ~/.proofvisor/keys/openai.key (private to your user account)
 
-  Start AgentVisor AI now? <span class="c">[Y/n]</span>: <span class="in">y</span>
+  Start ProofVisor now? <span class="c">[Y/n]</span>: <span class="in">y</span>
 
-  &check; AgentVisor AI is running at http://127.0.0.1:8484
+  &check; ProofVisor is running at http://127.0.0.1:8484
   Use it from any OpenAI-compatible app:
     Base URL: http://127.0.0.1:8484/v1
     API key:  anything (your real key stays on this machine)
@@ -410,9 +429,10 @@ data/bridge/
         <p class="section-kicker">Under the hood</p>
         <h2>Boring, on purpose.</h2>
         <p class="lede lede-secondary">
-          AgentVisor AI is a Rust workspace of twelve crates. No hosted
-          service, no phone-home telemetry, no vendored dashboard. It
-          writes files. You keep the signing key.
+          ProofVisor is a Rust workspace of thirteen crates. The daemon
+          never phones home and needs no hosted service: it writes files,
+          and you keep the signing key. The hosted console is opt-in; your
+          daemon only talks to it if you run <code>pvctl console-sync</code>.
         </p>
         <div class="tech-grid">
           <div>
@@ -460,14 +480,14 @@ data/bridge/
         <p class="section-kicker">Read more</p>
         <h2>Everything else.</h2>
         <ul class="link-columns">
-          <li><a href="https://github.com/AgentVisorAI/agentvisor#readme">README</a>. Full setup, configuration, CLI reference.</li>
-          <li><a href="https://github.com/AgentVisorAI/agentvisor/blob/main/ARCHITECTURE.md">Architecture</a>. How the pipeline fits together.</li>
-          <li><a href="https://github.com/AgentVisorAI/agentvisor/blob/main/SECURITY.md">Security model</a>. Trust boundaries and threat model.</li>
-          <li><a href="https://github.com/AgentVisorAI/agentvisor/blob/main/docs/reference/VERIFYING-A-RECEIPT.md">Verifying a receipt</a>. Verifying a receipt from scratch.</li>
-          <li><a href="https://github.com/AgentVisorAI/agentvisor/blob/main/CONFORMANCE-STATUS.md">Conformance status</a>. The compliance / MVP verdict record.</li>
-          <li><a href="https://github.com/AgentVisorAI/agentvisor/blob/main/BENCHMARKS.md">Benchmarks</a>. Hot-path latency and 10&#x00A0;000-connection SLA.</li>
-          <li><a href="https://github.com/AgentVisorAI/agentvisor/releases">Releases</a>. Pre-built binaries with SHA-256 checksums.</li>
-          <li><a href="api/">API documentation</a>. Rust crate reference. Skip unless you&rsquo;re embedding AgentVisor AI as a library.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor#readme">README</a>. Full setup, configuration, CLI reference.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/ARCHITECTURE.md">Architecture</a>. How the pipeline fits together.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY.md">Security model</a>. Trust boundaries and threat model.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/docs/reference/VERIFYING-A-RECEIPT.md">Verifying a receipt</a>. Verifying a receipt from scratch.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/CONFORMANCE-STATUS.md">Conformance status</a>. The compliance / MVP verdict record.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/BENCHMARKS.md">Benchmarks</a>. Hot-path latency and 10&#x00A0;000-connection SLA.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/releases">Releases</a>. Pre-built binaries with SHA-256 checksums.</li>
+          <li><a href="api/">API documentation</a>. Rust crate reference. Skip unless you&rsquo;re embedding ProofVisor as a library.</li>
         </ul>
       </div>
     </section>
@@ -479,15 +499,15 @@ data/bridge/
         <a href="pitch/">Pitch</a> &middot;
         <a href="app/">Console</a> &middot;
         <a href="verify/">Verifier</a> &middot;
-        <a href="https://github.com/AgentVisorAI/agentvisor">GitHub</a> &middot;
-        <a href="https://github.com/AgentVisorAI/agentvisor/blob/main/LICENSE">Apache&nbsp;2.0</a> &middot;
+        <a href="https://github.com/ProofVisorAI/proofvisor">GitHub</a> &middot;
+        <a href="https://github.com/ProofVisorAI/proofvisor/blob/main/LICENSE">Apache&nbsp;2.0</a> &middot;
         <a href="legal/privacy.html">Privacy</a> &middot;
         <a href="legal/terms.html">Terms</a> &middot;
-        <a href="https://github.com/AgentVisorAI/agentvisor/security/advisories/new">Report a vulnerability</a>
+        <a href="https://github.com/ProofVisorAI/proofvisor/security/advisories/new">Report a vulnerability</a>
       </p>
       <p class="muted">
-        AgentVisor AI is open source and free to use. If it saves you
-        from a 3&nbsp;AM incident, please <a href="https://github.com/AgentVisorAI/agentvisor">star the repo</a>.
+        ProofVisor is open source and free to use. If it saves you
+        from a 3&nbsp;AM incident, please <a href="https://github.com/ProofVisorAI/proofvisor">star the repo</a>.
       </p>
     </div>
   </footer>

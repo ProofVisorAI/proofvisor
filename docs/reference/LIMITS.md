@@ -26,7 +26,7 @@ before you know the knob.
 | Identity scopes | 64 entries × 256 UTF-8 code points each | Bounded so delegation-chain subset checks stay per-request cheap and no single scope pollutes logs. |
 | Concurrent sessions per process | unbounded (RAM-limited) | Idle sweeper reaps at `session_idle_close_s`. |
 | Concurrent worker slots | `worker_channel_capacity` (default 32768), sharded over `max(16, available_parallelism)` shards | Additional concurrency queues in the request pipeline. |
-| Concurrent response slots | mirrors worker capacity | Backpressure surfaces as `av_events_dropped_total{stage="response_slot"}`. |
+| Concurrent response slots | mirrors worker capacity | Backpressure surfaces as `pv_events_dropped_total{stage="response_slot"}`. |
 
 ## Budgets
 
@@ -95,7 +95,7 @@ tests exercised.
 
 | Limit | Default | Notes |
 | --- | --- | --- |
-| Orphan file bytes to read during recovery | 256 MiB (`MAX_ATIF_RECOVERY_BYTES`) | Larger files are refused with `av_atif_recovery_skipped_total{reason="too_large"}` and left in place for operator inspection. |
+| Orphan file bytes to read during recovery | 256 MiB (`MAX_ATIF_RECOVERY_BYTES`) | Larger files are refused with `pv_atif_recovery_skipped_total{reason="too_large"}` and left in place for operator inspection. |
 | Orphan age gate | 60s | Files newer than this are skipped this tick (defense against quarantining in-progress closes). |
 | Live-session-stem check | on always | Sidecar-less .json files whose stem matches a currently-open session are skipped even if aged (round 51 §8.5). |
 | Retention max sleep between prunes | 1 hour | Fixed. |
@@ -106,6 +106,7 @@ tests exercised.
 | Limit | Default | Notes |
 | --- | --- | --- |
 | Kafka payload | 1 MiB per record | Set by broker; the harness never emits records larger than 512 KiB. |
+| Kafka compression | None, gzip, LZ4 or Snappy when reading | The harness writes uncompressed records. Reading a zstd-compressed batch fails with "Unimplemented compression", because the zstd version our Kafka client depends on has open security advisories. Do not set `compression.type=zstd` on ProofVisor topics. |
 | NATS payload | 1 MiB per message | Set by broker. |
 | Embedded Bridge partition file size | 1 GiB per segment | Rolled over automatically. |
 
@@ -141,18 +142,17 @@ Under crash (SIGKILL) and restart, exactly-once semantics hold for:
   lifecycle lock).
 
 Repeated restarts do NOT duplicate any of these; they DO extend the
-window during which `av_atif_recovery_skipped_total{reason="unauthenticated"}`
+window during which `pv_atif_recovery_skipped_total{reason="unauthenticated"}`
 ticks by 60s per orphan (the MIN_ORPHAN_AGE gate). This is
 intentional (round 51 §8.5).
 
 ## Audit-fidelity notes
 
-* **`n > 1` responses concatenate.** Multi-choice completions relay
-  verbatim to the client, and tool-call deltas are keyed per choice
-  in the audit record — but the recorded response *text* is the
-  concatenation of every choice's content (round-51 §9.3). If your
-  compliance story requires per-choice message attribution, use
-  `n = 1` (the near-universal default).
+* **`n > 1` is limited to 8 choices.** Each choice is audited as its
+  own message, with its own tool calls and finish reason. With
+  `provider = "anthropic"`, each choice is a separate upstream request,
+  so the prompt is billed once per choice. See
+  [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md#multiple-choices-n--1).
 
 ## What the harness will NEVER limit
 

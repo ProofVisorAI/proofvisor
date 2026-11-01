@@ -35,7 +35,7 @@ const auth = await signup();
 const created = await request("/deployments", "POST", { name: "crash-drill", environment: "development" }, auth);
 assert.equal(created.status, 201);
 const deployment = created.body.deployment.id;
-const daemon = { Authorization: "Bearer " + created.body.ingestToken, "X-AV-Deployment": deployment };
+const daemon = { Authorization: "Bearer " + created.body.ingestToken, "X-PV-Deployment": deployment };
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const publicKeyHex = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
 const keyIdHex = createHash("sha256").update(Buffer.from(publicKeyHex, "hex")).digest("hex").slice(0, 32);

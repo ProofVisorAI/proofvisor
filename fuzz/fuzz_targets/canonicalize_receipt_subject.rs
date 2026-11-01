@@ -17,12 +17,12 @@ fuzz_target!(|data: &[u8]| {
     let Ok(value) = serde_json::from_slice::<Value>(data) else {
         return;
     };
-    let Ok(first) = av_receipts::canonicalize(&value) else {
+    let Ok(first) = pv_receipts::canonicalize(&value) else {
         return;
     };
     let reparsed: Value =
         serde_json::from_str(&first).expect("canonical output must be valid JSON");
     let second =
-        av_receipts::canonicalize(&reparsed).expect("canonical output must re-canonicalize");
+        pv_receipts::canonicalize(&reparsed).expect("canonical output must re-canonicalize");
     assert_eq!(first, second, "canonicalization must be idempotent");
 });

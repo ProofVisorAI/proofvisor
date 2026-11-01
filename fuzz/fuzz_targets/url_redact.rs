@@ -9,12 +9,12 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
-    let redacted = av_core::url_redact::redact_userinfo(text);
+    let redacted = pv_core::url_redact::redact_userinfo(text);
 
     // Redaction is a pure rewrite. Running it again must change nothing,
     // so a log pipeline that redacts twice cannot behave differently from
     // one that redacts once.
-    let again = av_core::url_redact::redact_userinfo(&redacted);
+    let again = pv_core::url_redact::redact_userinfo(&redacted);
     assert_eq!(again, redacted, "redaction is not idempotent on {text:?}");
 
     // Inputs with no URL scheme are returned verbatim.

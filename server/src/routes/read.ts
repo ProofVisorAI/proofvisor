@@ -53,6 +53,30 @@ const TRUNC_SQL: Record<string, Prisma.Sql> = {
   day: Prisma.sql`'day'`,
 };
 
+// Distinct policy names attributed to each session's events (the
+// daemon sets Event.policyName on block verdicts and allowlist hits).
+// One GROUP BY over the page's session ids, so the list endpoint stays
+// a single extra round trip instead of N+1. The console's policy detail
+// page uses this to list the sessions a policy actually fired on.
+async function policiesFiredBySession(
+  sessionIds: string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (sessionIds.length === 0) return out;
+  const rows = await db.event.groupBy({
+    by: ["sessionId", "policyName"],
+    where: { sessionId: { in: sessionIds }, policyName: { not: null } },
+  });
+  for (const r of rows) {
+    if (!r.policyName) continue;
+    const list = out.get(r.sessionId);
+    if (list) list.push(r.policyName);
+    else out.set(r.sessionId, [r.policyName]);
+  }
+  for (const list of out.values()) list.sort();
+  return out;
+}
+
 export async function readRoutes(app: FastifyInstance): Promise<void> {
   // Fleet overview: aggregate all matching sessions in the selected
   // time window, independently of the bounded recent-session preview.
@@ -120,15 +144,16 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
         toolsAllowed: true,
         toolsBlocked: true,
         stopReason: true,
+        isDemo: true,
         _count: { select: { events: true } },
-        deployment: { select: { id: true, name: true, environment: true } },
+        deployment: { select: { id: true, name: true, environment: true, isDemo: true } },
       },
     });
 
     // Aggregate in Postgres rather than hydrating every matching row
     // into JavaScript. The selected window and tenant constrain each
     // scan, while fleet counts include deployments without sessions.
-    const [countByStatus, sums, deploymentCount, connectedDeploymentCount] = await Promise.all([
+    const [countByStatus, sums, deploymentCount, connectedDeploymentCount, demoDeploymentCount, demoSessionCount, eventCount] = await Promise.all([
       db.session.groupBy({
         by: ["status"],
         where: sessionFilter,
@@ -148,6 +173,13 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
       db.deployment.count({
         where: { ...fleetFilter, lastIngestAt: { gte: new Date(nowMs - 5 * 60_000) } },
       }),
+      // Demo footprint, so the console can label the overview and offer
+      // "Remove demo data" without a second round trip.
+      db.deployment.count({ where: { ...fleetFilter, isDemo: true } }),
+      db.session.count({ where: { ...sessionFilter, isDemo: true } }),
+      // Journaled events across the sessions in the window. The console
+      // used to hard-code this tile to 0 in live mode.
+      db.event.count({ where: { session: sessionFilter } }),
     ]);
 
     const byStatus: Record<string, number> = {};
@@ -201,6 +233,7 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
       deployments: deploymentCount,
       deploymentsHealthy: connectedDeploymentCount,
       sessions: sums._count._all,
+      events: eventCount,
       live: byStatus["live"] ?? 0,
       sealed: byStatus["sealed"] ?? 0,
       blocked: byStatus["blocked"] ?? 0,
@@ -208,6 +241,8 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
       toolsAllowed: sums._sum.toolsAllowed ?? 0,
       toolsBlocked: sums._sum.toolsBlocked ?? 0,
       blockedPayoutUsdMicros: sums._sum.blockedPayoutUsdMicros ?? 0n,
+      demoDeployments: demoDeploymentCount,
+      demoSessions: demoSessionCount,
     };
 
     // R114 F3: redact spend/blocked-payout counters for members.
@@ -366,8 +401,9 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
           toolsAllowed: true,
           toolsBlocked: true,
           stopReason: true,
+          isDemo: true,
           _count: { select: { events: true } },
-          deployment: { select: { id: true, name: true, environment: true } },
+          deployment: { select: { id: true, name: true, environment: true, isDemo: true } },
         },
       });
     } catch (err) {
@@ -388,10 +424,12 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
 
     // R114 F3: same member redaction as /overview.
     const isMemberList = claims.membershipRole === "member";
+    const firedList = await policiesFiredBySession(page.map((s) => s.id));
     return reply.send({
       sessions: page.map((s) => ({
         ...s,
         eventCount: s._count.events,
+        policiesFired: firedList.get(s.id) ?? [],
         costUsdMicros: isMemberList ? "0" : s.costUsdMicros.toString(),
         payoutUsdMicros: isMemberList ? "0" : s.payoutUsdMicros.toString(),
         blockedPayoutUsdMicros: isMemberList ? "0" : s.blockedPayoutUsdMicros.toString(),
@@ -436,7 +474,7 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
       },
       include: {
         _count: { select: { events: true } },
-        deployment: { select: { id: true, name: true, environment: true } },
+        deployment: { select: { id: true, name: true, environment: true, isDemo: true } },
         events: {
           where: query.data.eventCursor !== undefined
             ? { seq: { gt: query.data.eventCursor } }
@@ -475,12 +513,14 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
           sub: e.sub == null ? null : MEMBER_REDACTED,
         }))
       : eventsPage;
+    const firedDetail = await policiesFiredBySession([session.id]);
 
     return reply.send({
       session: {
         ...session,
         events: displayedEvents,
         eventCount: session._count.events,
+        policiesFired: firedDetail.get(session.id) ?? [],
         // R114 F3: redact spend counters for members matching
         // /overview and /sessions LIST posture.
         costUsdMicros: isMember ? "0" : session.costUsdMicros.toString(),
@@ -870,7 +910,7 @@ export async function readRoutes(app: FastifyInstance): Promise<void> {
         },
         req.log,
       );
-      const fname = `agentvisor-audit-${claims.orgId}-${new Date()
+      const fname = `proofvisor-audit-${claims.orgId}-${new Date()
         .toISOString()
         .replace(/[:.]/g, "-")}.csv`;
       const escape = (v: unknown): string => {

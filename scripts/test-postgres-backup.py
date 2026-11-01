@@ -59,7 +59,7 @@ else:
 
 class BackupTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='av-backup-unit-')
+        self.temporary = tempfile.TemporaryDirectory(prefix='pv-backup-unit-')
         self.work = Path(self.temporary.name)
         self.tools = self.work / 'tools'
         self.tools.mkdir()
@@ -137,7 +137,7 @@ class BackupTests(unittest.TestCase):
         password = BACKUP.connection_service(
             'postgresql://user:p%40ss@Example.COM:5433/my%20database?sslmode=require&password=a+b%20c', service)
         self.assertEqual(password, 'a+b c')
-        self.assertEqual(service.read_text(), '[agentvisor_backup]\nhost=Example.COM\nport=5433\nuser=user\ndbname=my database\nsslmode=require\n')
+        self.assertEqual(service.read_text(), '[proofvisor_backup]\nhost=Example.COM\nport=5433\nuser=user\ndbname=my database\nsslmode=require\n')
         self.assertEqual(service.stat().st_mode & 0o777, 0o600)
         BACKUP.connection_service('postgresql://%2FUsers%2FFixture/database', service)
         self.assertIn('host=/Users/Fixture\n', service.read_text())

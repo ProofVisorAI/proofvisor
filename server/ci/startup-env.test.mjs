@@ -16,7 +16,7 @@ const loader = fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", impo
 
 async function parseEnvironment(overrides = {}) {
   // No inherited application settings or .env file may influence these cases.
-  const cwd = await mkdtemp(join(tmpdir(), "av-startup-env-"));
+  const cwd = await mkdtemp(join(tmpdir(), "pv-startup-env-"));
   const env = {
     PATH: process.env.PATH,
     NODE_ENV: "production", JWT_SECRET: "synthetic-startup-secret-at-least-32-characters",

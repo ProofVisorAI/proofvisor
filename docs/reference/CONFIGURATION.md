@@ -1,20 +1,20 @@
-# AgentVisor AI Configuration Reference
+# ProofVisor Configuration Reference
 
 The harness reads its TOML from the first path that exists in this
 order:
 
-1. `$AV_CONFIG` (an absolute path to a specific file)
-2. `./agentvisor.toml`
+1. `$PV_CONFIG` (an absolute path to a specific file)
+2. `./proofvisor.toml`
 3. `./config/harness.toml`
-4. `$HOME/.agentvisor/agentvisor.toml`
+4. `$HOME/.proofvisor/proofvisor.toml`
 5. built-in defaults
 
 `config/harness.example.toml` is documentation only and is NOT
 searched — see engineering review round 51 §9.4. If you were relying
 on that rank swap, copy it to one of the searched paths.
 
-`avctl config-validate path/to/harness.toml` runs the same parser,
-`validate()` gates, and JSON-schema fidelity checks that `agentvisord`
+`pvctl config-validate path/to/harness.toml` runs the same parser,
+`validate()` gates, and JSON-schema fidelity checks that `proofvisord`
 runs at startup and fails with the same diagnostics.
 
 ## Environment variables
@@ -24,12 +24,12 @@ source. All are optional.
 
 | Variable | Read by | Meaning |
 | --- | --- | --- |
-| `AV_SIGNING_SEED_FILE` | `agentvisord` | Path to the 32-byte Ed25519 signing seed — **the root of the entire trust story**. Default `config/signing.seed` relative to the working directory. If the file is missing, a fresh seed is generated and a WARN names the new key id: every receipt signed after an unintended regeneration verifies only against the NEW key, so mount this from a Secret in production and treat the WARN as a compliance incident outside first boot. |
-| `AV_CONFIG` | `agentvisord`, `avctl` | Absolute path to the config file; rank 1 in the search order above. |
-| `AV_UPSTREAM_URL` | `agentvisord` | Overrides `upstream_url` (useful in containers where the config file is baked). |
-| `AV_BEARER_TOKEN_FILE` | `avctl` | Path to a file holding the NHI bearer used by `avctl loadgen`/probe commands. |
-| `RUST_LOG` | `agentvisord` | Tracing filter (default `info`). A parse failure falls back to `info` with a warning. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `agentvisord` | OTLP trace export target. Requires a build with `--features otel`; a default-features binary warns loudly instead of silently ignoring them. |
+| `PV_SIGNING_SEED_FILE` | `proofvisord` | Path to the 32-byte Ed25519 signing seed — **the root of the entire trust story**. Default `config/signing.seed` relative to the working directory. If the file is missing, a fresh seed is generated and a WARN names the new key id: every receipt signed after an unintended regeneration verifies only against the NEW key, so mount this from a Secret in production and treat the WARN as a compliance incident outside first boot. |
+| `PV_CONFIG` | `proofvisord`, `pvctl` | Absolute path to the config file; rank 1 in the search order above. |
+| `PV_UPSTREAM_URL` | `proofvisord` | Overrides `upstream_url` (useful in containers where the config file is baked). |
+| `PV_BEARER_TOKEN_FILE` | `pvctl` | Path to a file holding the NHI bearer used by `pvctl loadgen`/probe commands. |
+| `RUST_LOG` | `proofvisord` | Tracing filter (default `info`). A parse failure falls back to `info` with a warning. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `proofvisord` | OTLP trace export target. Requires a build with `--features otel`; a default-features binary warns loudly instead of silently ignoring them. |
 
 
 ## Networking
@@ -41,7 +41,7 @@ source. All are optional.
 | `require_identity` | `false` | Refuse any request without a valid NHI bearer. The **default is off** (development posture): the shipped safety net is the loopback `listen` default plus the wildcard-bind refusal. Set to `true` (with a JWKS/HMAC source) for any deployment reachable by anyone but the operator. |
 | `identity_jwks_url` | none | JWKS URL for validating NHI tokens. Rotated JWKS entries are recognized within `identity_jwks_refresh_s` (default 300). |
 | `identity_allowed_issuers` | `[]` | If non-empty, only tokens whose `iss` matches one of these are accepted. |
-| `audience` | `agentvisor-ai` | Required token audience. |
+| `audience` | `agentvisor-ai` | Required token audience, and the `iss` of the intent and exchange tokens the daemon signs. The value predates the ProofVisor name and is kept so existing identity providers and backends keep working. |
 | `enforce_identity_scopes` | `false` | Requires per-route scope claims. Applies only when `require_identity = true`. |
 | `allowed_hosts` | `[]` (disabled) | Host-header allowlist (DNS-rebinding defense). Non-empty: requests whose `Host` (port stripped, case-insensitive) isn't listed are refused 403 before any handler. Leave empty for loopback binds or when the ingress enforces Host. |
 | `chat_scope` / `session_close_scope` / `session_promote_scope` | `chat:write` / `session:close` / `session:promote` | Scope claims required on each route. |
@@ -57,9 +57,10 @@ source. All are optional.
 | Key | Default | Notes |
 | --- | --- | --- |
 | `config_version` | `1` | Config format version; unknown versions are refused at boot. |
-| `upstream_url` | required | Base URL of the model backend (OpenAI, vLLM, LiteLLM, Ollama, Anthropic via a shim, …). |
-| `upstream_chat_path` | `/v1/chat/completions` | Path appended to `upstream_url` for chat traffic. |
-| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters. |
+| `upstream_url` | required | Base URL of the model backend (OpenAI, vLLM, LiteLLM, Ollama, …). For `provider = "anthropic"` use `https://api.anthropic.com`; for `provider = "gemini"` use `https://generativelanguage.googleapis.com`. |
+| `upstream_chat_path` | `/v1/chat/completions` | Path appended to `upstream_url` for chat traffic when `provider = "openai"`. The native adapters own their paths (`/v1/messages` for Anthropic, `/v1beta/models/{model}:generateContent` or `:streamGenerateContent?alt=sse` for Gemini) and ignore this key. |
+| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters, which translate each OpenAI request into the provider's own API and translate the response back into OpenAI chat-completion objects and chunks (see [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md)). |
+| `provider_default_max_tokens` | `4096` | Output-token limit sent to Anthropic when a request sets neither `max_tokens` nor `max_completion_tokens`; the Anthropic Messages API refuses requests without one. Must be at least 1. Other providers ignore it. |
 | `upstream_authorization_passthrough` | `false` | Forward the client's `Authorization` header verbatim to the upstream. **Incompatible with `require_identity = true`** (the header carries the NHI identity token there, not an upstream credential) and with the static upstream key options — boot refuses those combinations. |
 | `ignore_client_authorization` | `false` | Accept and DISCARD a client `Authorization` bearer when no identity validator is configured (stock OpenAI SDKs always send a placeholder key; without this a keyless dev upstream 401s the documented quickstart on request one). The header never reaches the upstream. Refused in combination with `require_identity = true` or `upstream_authorization_passthrough = true`. |
 | `upstream_http2_prior_knowledge` | `false` | Skip HTTP/1 → HTTP/2 upgrade negotiation on the outbound connection. |
@@ -68,7 +69,7 @@ source. All are optional.
 | `shutdown_drain_timeout_s` | `max(30, max(upstream_read_timeout_s, mcp_request_timeout_s) + 5)` | Graceful-shutdown drain budget, using the network settings' defaults when unset. Long chat streams and audit work can exceed this budget; an explicit value overrides the derivation. |
 | `shutdown_ready_drain_s` | `0` | Readiness-controlled pre-drain window: on SIGTERM, `/readyz` serves 503 while the listener keeps accepting for this long before the drain begins. Needed for every deployment target where the LB polls `/readyz` — this includes Kubernetes distroless images (no `/bin/sh` for a `preStop` sleep hook), docker-compose, systemd, and bare-VM LBs. The shipped k8s manifest sets this to `5`. |
 | `upstream_api_key_env` / `upstream_api_key_file` | none | Where to pull the outbound API key from. `_file` wins over `_env` when both are set. |
-| `upstream_auth_header` | `authorization` | Header carrying the upstream API key — `authorization` (OpenAI), `api-key` (Azure), `x-api-key` (Anthropic). |
+| `upstream_auth_header` | `authorization` | Header carrying the upstream API key — `authorization` (OpenAI), `api-key` (Azure). When this key and `upstream_auth_scheme` are left at their defaults, the native adapters send the raw key in the provider's own header instead: `x-api-key` for Anthropic and `x-goog-api-key` for Gemini. |
 | `upstream_auth_scheme` | `Bearer` | Prefix inserted before the key in the auth header; an empty string sends the raw key (Azure style). |
 | `max_request_bytes` | `4194304` (4 MiB) | Maximum request body accepted on `/v1/chat/completions` and `/mcp`, matching the sandbox's payload cap so both routes carry the same effective limit. Raise for very-long-context models. |
 
@@ -76,7 +77,7 @@ source. All are optional.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `default_workflow` | `unsigned` | Workflow when the `X-AV-Workflow` header is absent. **`unsigned` produces ATIF trajectories but NO signed receipts** — every shipped config (example, container, docker, K8s) overrides this to `signed`; set it explicitly if you need verifiable receipts and cannot send the header. |
+| `default_workflow` | `unsigned` | Workflow when the `X-PV-Workflow` header is absent. **`unsigned` produces ATIF trajectories but NO signed receipts** — every shipped config (example, container, docker, K8s) overrides this to `signed`; set it explicitly if you need verifiable receipts and cannot send the header. |
 | `consequential_tools` | `["db_write", "payout", "merge", "deploy"]` | Tool names that require a signed workflow because they have real-world consequences. |
 
 ## Identity (development HMAC)
@@ -92,7 +93,7 @@ source. All are optional.
 | Key | Default | Notes |
 | --- | --- | --- |
 | `tool_upstream_url` | none | Downstream MCP/REST tool server. When absent, `/v1/mcp` operates as a policy decision endpoint (allow/deny + audit, no forwarding). |
-| `tool_upstream_bearer_env` / `tool_upstream_bearer_file` | none | Bearer credential for `tool_upstream_url` requests; `_file` is enforced owner-only on Unix. `avctl doctor` checks whichever is configured. |
+| `tool_upstream_bearer_env` / `tool_upstream_bearer_file` | none | Bearer credential for `tool_upstream_url` requests; `_file` is enforced owner-only on Unix. `pvctl doctor` checks whichever is configured. |
 | `tool_schema_dir` | `config/tool-schemas` | Directory of one JSON Schema per tool, named `<tool>.json`. |
 | `require_tool_schema` | `true` | Reject tool calls with no matching schema (fail closed). `false` skips the schema gate — policy and budget gates still apply. |
 | `payout_field` | `amount_usd` | Tool-call argument field carrying a payout in USD, charged against `max_payout_usd_micros`. Set this to match YOUR tool schema — the cap only fires on calls carrying this exact field. |
@@ -111,7 +112,7 @@ source. All are optional.
   supported, otherwise the latest) and returns an `MCP-Session-Id`. The id
   is an HMAC-signed value bound to the caller's identity (issuer and
   subject) and valid for 24 hours. It also names the audited session, so
-  every call of one MCP session lands in one AgentVisor session. A request
+  every call of one MCP session lands in one ProofVisor session. A request
   with an id that is forged, expired, or issued to another principal gets
   `404`, which tells the client to initialize again.
 - `ping` returns an empty result. Notifications and client responses are
@@ -122,13 +123,13 @@ source. All are optional.
   covered by the caller's scopes when `enforce_identity_scopes` is on, and
   permitted by the intent map, the missions, and the external AuthZEN PDP
   when one is configured. Withheld tools are counted in
-  `av_mcp_tools_withheld_total{reason}`; a backend whose discovery fails is
-  counted in `av_mcp_discovery_failures_total{backend}` and skipped.
+  `pv_mcp_tools_withheld_total{reason}`; a backend whose discovery fails is
+  counted in `pv_mcp_discovery_failures_total{backend}` and skipped.
   Backends on the `mcp` transport are asked with their own `tools/list`;
   `json_rpc` backends list their configured `tools`, with `inputSchema`
   and `description` taken from `tool_schema_dir`.
 - `tools/call` runs through the audited tool path. A forwarded call needs
-  a session: an `MCP-Session-Id`, or the `X-AV-Session` header.
+  a session: an `MCP-Session-Id`, or the `X-PV-Session` header.
 - `GET` answers `405` (the gateway opens no server-to-client stream).
   `DELETE` with an `MCP-Session-Id` closes the audited session exactly like
   `POST /v1/sessions/{id}/close` (it requires `session_close_scope`).
@@ -142,7 +143,7 @@ audited denial with the code `NO_BACKEND` (policy `backend.route`).
 
 ## Budgets
 
-There are **two** budget ledgers. Both share the same `av_state::BudgetSpec`
+There are **two** budget ledgers. Both share the same `pv_state::BudgetSpec`
 shape (`{ max_tokens, max_tool_calls, max_total_tool_calls,
 max_payout_usd_micros }`).
 
@@ -151,6 +152,13 @@ max_payout_usd_micros }`).
 | `budget` | permissive | Session-scoped budget. Debited per accepted request, refunded on upstream failure, checked **after** compression (see round 51 §6.3). |
 | `principal_budget` | unset | Optional principal-scoped budget layered on top. Its key is derived from the validated NHI identity — same principal, same key across session-id rotation (round 51 §3.2). Refused-by-session refunds bring the principal ledger back to whole. |
 | `allow_anonymous_principal_budget` | `false` | Opt-in for setting `principal_budget` while `require_identity = false`. Otherwise the harness refuses to boot — anonymous callers all share one key and DoS each other. |
+
+## Console-pushed policy
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `policy_bundle_file` | none | File that `pvctl console-sync --watch --pull-policies` writes the console's policy bundle to (owner-only; a group- or world-writable file is refused). The daemon applies it at boot and refuses to start if the file exists but cannot be applied, then polls it for changes and writes what it enforces to `<file>.status.json`, which `pvctl` reports to the console. Pushed policies only tighten the local config: `budget` caps merge with `[budget]` (the stricter cap wins), `allowlist` and `schema` rules run after the local policy chain and schemas, and `rate` policies limit model tokens per principal over a sliding window. `guardrail` and `transform` policies are not enforced. A newer file that cannot be applied leaves the rules in force unchanged. Unset: nothing is pulled. |
+| `policy_bundle_poll_s` | `5` | Seconds between checks of `policy_bundle_file` (1–3600). |
 
 ## Storage
 
@@ -173,7 +181,7 @@ max_payout_usd_micros }`).
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `[breaker]` | see `av_loopdetect::BreakerConfig` | Loop-detection circuit-breaker thresholds. Tune only after reviewing `docs/reference/OPERATIONS.md`. |
+| `[breaker]` | see `pv_loopdetect::BreakerConfig` | Loop-detection circuit-breaker thresholds. Tune only after reviewing `docs/reference/OPERATIONS.md`. |
 | `embedder_backend` | `hash` | Embedding backend for loop detection: `hash` (dependency-free) or `onnx`. |
 | `onnx_model_path` / `onnx_tokenizer_path` | none | Customer-supplied ONNX model and its paired Hugging Face `tokenizer.json`; required when `embedder_backend = "onnx"` (build with `--features onnx`). |
 | `onnx_dimension` | `384` | ONNX model output width. |
@@ -212,10 +220,10 @@ answers `503` with `temporarily_unavailable` and `Retry-After`.
 ## Platform workload identity (Cloud Foundry)
 
 With `[workload_identity]`, an application instance on Cloud Foundry can
-obtain an AgentVisor agent token without any stored secret, by proving the
+obtain a ProofVisor agent token without any stored secret, by proving the
 instance identity certificate the platform gives every container
 (`CF_INSTANCE_CERT` / `CF_INSTANCE_KEY`, rotated before expiry). The
-`avctl sidecar` that the buildpack starts beside the application does this
+`pvctl sidecar` that the buildpack starts beside the application does this
 automatically; see [the buildpack instructions](../../buildpack/README.md).
 The settings are `workload_identity` (TOML `[workload_identity]`) and
 `workload_identities` (TOML `[[workload_identities]]`).
@@ -249,9 +257,9 @@ that matches (none or several is refused). It answers with a standard token
 response (`access_token`, `token_type`, `expires_in`, `scope`). An optional
 `scope` parameter can only narrow the entry's scopes. Refusals use the
 OAuth `invalid_grant` or `invalid_scope` errors with a generic description;
-the reason is counted in `av_workload_assertions_rejected_total{reason}`
-and logged under the `agentvisor.workload` target, and issued tokens are
-counted in `av_workload_tokens_issued_total{workload}`.
+the reason is counted in `pv_workload_assertions_rejected_total{reason}`
+and logged under the `proofvisor.workload` target, and issued tokens are
+counted in `pv_workload_tokens_issued_total{workload}`.
 
 The agent token is signed with `token_exchange_seed_file` (required), its
 issuer is `<audience>#workload` (added to `identity_allowed_issuers` when an
@@ -311,10 +319,10 @@ remain refused during an outage. A locally requested revocation enters this
 cache before the shared write, but a failed write still returns `503` and
 must be retried to reach other replicas.
 
-Monitor `av_revocation_lookups_total{namespace,outcome}`,
-`av_revocation_breaker_opened_total{namespace}`,
-`av_revocation_list_available{namespace}`, and
-`av_revocation_local_entries{namespace}`. The `/readyz` response reports
+Monitor `pv_revocation_lookups_total{namespace,outcome}`,
+`pv_revocation_breaker_opened_total{namespace}`,
+`pv_revocation_list_available{namespace}`, and
+`pv_revocation_local_entries{namespace}`. The `/readyz` response reports
 `checks.revocation_available` and `checks.revocation_local_entries` without
 changing its HTTP status for a revocation outage. Requests still fail
 closed while storage is unavailable; reporting the outage does not remove
@@ -324,10 +332,10 @@ Each new holder revocation creates an `agent.identity` event and an
 ordinary signed receipt. The event records the action, token identifier,
 issuer, subject, and lifetime, but never the token or its parent tokens.
 Repeated holder revocations do not create duplicate receipts. The receipt
-can be checked with `avctl receipt-verify` and the independent receipt
+can be checked with `pvctl receipt-verify` and the independent receipt
 public key. The revocation takes effect even if audit capacity is
-exhausted. Alert on `av_tokens_revoked_unaudited_total{reason=...}` and
-`av_revocation_audit_close_failures_total`; these identify missing capture
+exhausted. Alert on `pv_tokens_revoked_unaudited_total{reason=...}` and
+`pv_revocation_audit_close_failures_total`; these identify missing capture
 and delayed receipt finalization. There is no atomic transaction between
 the revocation store and the journal, so a process failure between those
 writes can leave a revocation without a receipt.
@@ -394,18 +402,18 @@ is false, the revocation still took effect but its signed receipt was not
 completed; inspect the audit metrics and logs. Every operator action, including a repeat of an earlier command, identifies
 the configured operator in its signed event. There is no undo operation.
 
-The CLI exposes `avctl token-revoke` and `avctl instance-revoke`. It reads
+The CLI exposes `pvctl token-revoke` and `pvctl instance-revoke`. It reads
 an owner-only credential file from `--operator-token-file` or
-`AV_OPERATOR_TOKEN_FILE`, or falls back to `AV_OPERATOR_TOKEN`. It trims
+`PV_OPERATOR_TOKEN_FILE`, or falls back to `PV_OPERATOR_TOKEN`. It trims
 surrounding whitespace before hashing the bearer; configure the digest of
 the secret itself, without a trailing newline.
 
 ```sh
-avctl token-revoke --jti token-id --operator-token-file /run/secrets/operator-token \
+pvctl token-revoke --jti token-id --operator-token-file /run/secrets/operator-token \
   --url https://gateway.example.com
-avctl token-revoke --jti exchanged-token-id --token-kind exchanged \
+pvctl token-revoke --jti exchanged-token-id --token-kind exchanged \
   --operator-token-file /run/secrets/operator-token --url https://gateway.example.com
-avctl instance-revoke --instance-uid agent-instance \
+pvctl instance-revoke --instance-uid agent-instance \
   --operator-token-file /run/secrets/operator-token --url https://gateway.example.com
 ```
 
@@ -457,10 +465,10 @@ false}` is an audited denial with the code `PDP_DENIED`; a reason from the
 response context (`reason_admin`, `reason_user`, or `reason`) is included
 in the error. A timeout, a non-200 status, or a body without a boolean
 `decision` fails closed with `503`. Outcomes are counted in
-`av_authzen_decisions_total{decision}`.
+`pv_authzen_decisions_total{decision}`.
 
 When `token_exchange_seed_file` is set, every forwarded tool call carries a
-signed intent token in the `x-av-intent-token` header. It is an EdDSA JWT
+signed intent token in the `x-pv-intent-token` header. It is an EdDSA JWT
 with the header `typ: av-intent+jwt`, so a backend can tell it apart from
 an access token signed by the same key. Its claims are `iss` (the harness
 `audience`), `aud` (the receiving backend's `name`, or `default` for
@@ -529,8 +537,24 @@ out of debug output and HTTP/2 header compression tables.
 | `otel_tenant_endpoint` | none | Tenant OTLP/HTTP trace endpoint (including `/v1/traces`), exported alongside any operational collector. Requires the `otel` build feature. Operational authentication headers are not forwarded to this endpoint. |
 | `otel_tenant_auth_file` | none | Bearer token file for the tenant OTEL endpoint (owner-only permissions enforced). |
 | `otel_tenant_content` | `redacted` | What the tenant endpoint receives beyond request metadata spans. `redacted` also exports every audited step as an OpenTelemetry GenAI span with its content, after redaction (see below). `off` exports metadata spans only. |
-| `redaction_patterns` | `[]` | Regex patterns for sensitive-data stripping. Applied to event payloads and ATIF step fields before journal write. Setting either patterns or pointer paths also enables the builtin patterns (API keys, email, SSN, cards, and IPv4 addresses). |
-| `redaction_paths` | `[]` | JSON pointer paths to always redact in event payloads and their ATIF observation copies. Configuring paths also enables builtins. |
+| `redaction_patterns` | `[]` (compiled-in default: no redaction); every shipped config, and the config `pvctl init` / `pvctl setup` write, set the recommended list | A list of raw regular expressions (not pattern names) for sensitive-data stripping, applied to event payloads and ATIF step fields before the journal write. Whenever this list or `redaction_paths` is non-empty, the built-in set is always included as well: `Bearer` tokens, `sk-`/`key-` style API keys, email addresses, Luhn-valid card numbers, US SSNs, and public IPv4 addresses. The shipped list adds AWS access key IDs, GitHub tokens, Google API keys, Slack tokens, and bare JWTs; it is the constant `pv_harness::config::RECOMMENDED_REDACTION_PATTERNS`. |
+| `redaction_paths` | `[]` | JSON pointer paths to always redact in event payloads and their ATIF observation copies. Configuring paths also enables the built-in patterns. |
+
+Redaction changes only the copies ProofVisor persists for audit — the
+journal, the ATIF trajectory, the OCSF events, the exports, and what
+`pvctl console-sync` uploads. The request forwarded to the model and the
+response returned to the client are never altered by redaction.
+
+The compiled-in default is no redaction: a config file that simply omits
+`redaction_patterns` has no redaction at all. Every shipped configuration
+file (`config/harness.example.toml`, `harness.docker.toml`,
+`harness.container.toml`), the config written by `pvctl init` and `pvctl
+setup`, and the Cloud Foundry and Kubernetes manifests under `deploy/`
+carry the same `redaction_patterns` block, so a deployment that starts
+from any of them redacts out of the box with the built-in set plus the
+recommended additions. To disable redaction deliberately, set
+`redaction_patterns = []` and leave `redaction_paths` unset; either one
+being non-empty turns the engine (and the built-in set) back on.
 
 ### Full-content tenant telemetry
 
@@ -549,10 +573,10 @@ that follows the OpenTelemetry
   calls).
 - A tool authorization becomes an `execute_tool {tool}` span with
   `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.call.arguments`,
-  and the gateway's verdict (`agentvisor.tool.allowed`, `denial_code`,
+  and the gateway's verdict (`proofvisor.tool.allowed`, `denial_code`,
   `policy`, `stage`, `reason`). A tool completion becomes an
   `execute_tool.result` span with `gen_ai.tool.call.result`.
-- Every other audit event becomes an `agentvisor.{class}` span that carries
+- Every other audit event becomes an `proofvisor.{class}` span that carries
   the event as JSON.
 
 Every span carries `gen_ai.conversation.id` (the session id, so a whole
@@ -573,9 +597,9 @@ Tenant export requires the `otel` build feature.
 | Key | Default | Notes |
 | --- | --- | --- |
 | `compression_enabled` | `true` | Context-compression pipeline on the chat path. |
-| `worker_channel_capacity` | `32768` | Bounded audit-worker channel; overflow is counted (`av_events_dropped_total`), never blocking. |
-| `mcp_concurrency` | `128` | Max concurrent `mcp_call_inner` executions. Each admitted call can buffer up to `MAX_TOOL_RESPONSE_BYTES = 16 MiB` in `read_limited_tool_response`, so this cap bounds worst-case MCP resident memory (default: ~2 GiB). Refused admissions increment `av_mcp_admission_refusals_total` and respond `503` with `Retry-After: 1` — a server-side capacity signal (mirrors the breaker-open discipline). |
-| `strict_stage_budget` | `false` | Strict per-stage latency assertions (`AV_STRICT_BUDGET=1` also enables). Development diagnostics, not a production knob. |
+| `worker_channel_capacity` | `32768` | Bounded audit-worker channel; overflow is counted (`pv_events_dropped_total`), never blocking. |
+| `mcp_concurrency` | `128` | Max concurrent `mcp_call_inner` executions. Each admitted call can buffer up to `MAX_TOOL_RESPONSE_BYTES = 16 MiB` in `read_limited_tool_response`, so this cap bounds worst-case MCP resident memory (default: ~2 GiB). Refused admissions increment `pv_mcp_admission_refusals_total` and respond `503` with `Retry-After: 1` — a server-side capacity signal (mirrors the breaker-open discipline). |
+| `strict_stage_budget` | `false` | Strict per-stage latency assertions (`PV_STRICT_BUDGET=1` also enables). Development diagnostics, not a production knob. |
 
 ## Development-only knobs
 

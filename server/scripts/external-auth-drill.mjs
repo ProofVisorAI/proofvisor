@@ -16,7 +16,7 @@ const image = process.env.CONSOLE_AUTH_IMAGE;
 assert.ok(image, "CONSOLE_AUTH_IMAGE must select an already-built production image");
 const pgImage = process.env.AUTH_POSTGRES_IMAGE || "postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const id = "av-auth-" + randomBytes(6).toString("hex");
+const id = "pv-auth-" + randomBytes(6).toString("hex");
 const output = await mkdtemp(join(process.env.AUTH_DRILL_OUTPUT_PARENT || tmpdir(), id + "-"));
 await chmod(output, 0o700);
 const password = randomBytes(24).toString("hex"), jwt = randomBytes(48).toString("hex");
@@ -80,7 +80,7 @@ async function runContainer(label, args, copies = []) {
   // its response fails or the caller is cancelled.
   containers.push(name);
   await command("docker", ["create", "--pull=never", "--name", name,
-    "--label", `agentvisor.auth-drill=${id}`, "--network", id, ...args]);
+    "--label", `proofvisor.auth-drill=${id}`, "--network", id, ...args]);
   // Copy through the Docker API, so remote engines need not share host /tmp.
   for (const [source, destination] of copies) await command("docker", ["cp", source, `${name}:${destination}`]);
   await command("docker", ["start", name]);
@@ -126,7 +126,7 @@ async function tenant(app, label) {
   const email = `${id}-${label}@example.test`;
   const result = await request(app, "/auth/signup", { method: "POST", expected: 201,
     body: { email, password, orgName: label } });
-  const cookie = result.headers.getSetCookie().find((value) => value.startsWith("av_session="))?.split(";")[0];
+  const cookie = result.headers.getSetCookie().find((value) => value.startsWith("pv_session="))?.split(";")[0];
   assert.ok(cookie); secrets.add(cookie.split("=")[1]);
   return { email, cookie, userId: result.data.user.id, orgId: result.data.org.id };
 }
@@ -175,7 +175,7 @@ try {
   networkAttempted = true;
   // A separate bridge and loopback-only published ports keep fixture traffic
   // isolated from other containers. All configured services are owned here.
-  await command("docker", ["network", "create", "--label", `agentvisor.auth-drill=${id}`, id]);
+  await command("docker", ["network", "create", "--label", `proofvisor.auth-drill=${id}`, id]);
   const cert = join(output, "provider-ca.pem"), key = join(output, "provider-key.pem");
   privateFiles.push(cert, key);
   await command("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
@@ -208,11 +208,11 @@ try {
   const unavailable = "https://console.example.test/app/#/login?err=oauth_provider_unavailable";
   const failedStart = await request(a, "/auth/oauth/oidc/start", { expected: 302 });
   check("OIDC discovery failure redirects the browser without a session", failedStart.headers.get("location") === unavailable &&
-    !failedStart.headers.getSetCookie().some((value) => value.startsWith("av_session=")));
+    !failedStart.headers.getSetCookie().some((value) => value.startsWith("pv_session=")));
   await control({ discoveryAvailable: true });
   const start = await request(a, "/auth/oauth/oidc/start", { expected: 302 });
   const location = new URL(start.headers.get("location"));
-  const stateCookie = start.headers.getSetCookie().find((value) => value.startsWith("av_oauth_state="))?.split(";")[0];
+  const stateCookie = start.headers.getSetCookie().find((value) => value.startsWith("pv_oauth_state="))?.split(";")[0];
   check("OIDC discovery recovers and begins PKCE with a signed state cookie", location.origin === "https://auth-provider:8443" &&
     location.searchParams.has("code_challenge") && !!stateCookie);
   secrets.add(stateCookie.split("=")[1]);
@@ -220,7 +220,7 @@ try {
   const failedCallback = await request(b, `/auth/oauth/oidc/callback?code=fixture&state=${encodeURIComponent(location.searchParams.get("state"))}`,
     { cookie: stateCookie, expected: 302 });
   check("Fresh replica callback discovery failure redirects without a session", failedCallback.headers.get("location") === unavailable &&
-    !failedCallback.headers.getSetCookie().some((value) => value.startsWith("av_session=")));
+    !failedCallback.headers.getSetCookie().some((value) => value.startsWith("pv_session=")));
   await control({ discoveryAvailable: true });
   const retry = await request(b, "/auth/oauth/oidc/start", { expected: 302 });
   check("Fresh replica retries discovery successfully", new URL(retry.headers.get("location")).origin === "https://auth-provider:8443");
@@ -315,9 +315,9 @@ try {
   // Login deliberately returns the decoy MFA response for invalid credentials.
   // A 200 alone is not evidence of authentication; check the minted authority.
   assert.equal(oldLogin.data.mfaRequired, true);
-  assert.ok(!oldLogin.headers.getSetCookie().some((value) => value.startsWith("av_session=")));
+  assert.ok(!oldLogin.headers.getSetCookie().some((value) => value.startsWith("pv_session=")));
   const newLogin = await request(b, "/auth/login", { method: "POST", body: { email: resetUser.email, password: newPassword } });
-  const newCookie = newLogin.headers.getSetCookie().find((value) => value.startsWith("av_session="))?.split(";")[0];
+  const newCookie = newLogin.headers.getSetCookie().find((value) => value.startsWith("pv_session="))?.split(";")[0];
   assert.ok(newCookie); secrets.add(newCookie.split("=")[1]);
   await request(a, "/auth/me", { cookie: newCookie });
   check("Only the replacement password authenticates after reset", newLogin.data.user.id === resetUser.userId);
@@ -352,7 +352,7 @@ try {
       const found = await command("docker", ["container", "ls", "--all", "--filter", `name=^/${name}$`, "--format", "{{.ID}}"]);
       if (!found) continue;
       assert.ok(!found.includes("\n"), "ambiguous owned container query");
-      const owner = await command("docker", ["inspect", "--format", '{{index .Config.Labels "agentvisor.auth-drill"}}', found]);
+      const owner = await command("docker", ["inspect", "--format", '{{index .Config.Labels "proofvisor.auth-drill"}}', found]);
       assert.equal(owner, id, "refusing to remove a container with the wrong ownership label");
       try {
         const logs = await command("docker", ["logs", found]);
@@ -366,7 +366,7 @@ try {
       const found = await command("docker", ["network", "ls", "--filter", `name=^${id}$`, "--format", "{{.ID}}"]);
       if (found) {
         assert.ok(!found.includes("\n"), "ambiguous owned network query");
-        const owner = await command("docker", ["network", "inspect", "--format", '{{index .Labels "agentvisor.auth-drill"}}', found]);
+        const owner = await command("docker", ["network", "inspect", "--format", '{{index .Labels "proofvisor.auth-drill"}}', found]);
         assert.equal(owner, id, "refusing to remove a network with the wrong ownership label");
         await command("docker", ["network", "rm", found]);
       }

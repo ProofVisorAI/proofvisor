@@ -80,7 +80,7 @@ if not ok("list deployments", s, 200): fails += 1
 print(f"      count={len(json.loads(body)['deployments'])}")
 
 # ingest headers
-daemon = {"Authorization": f"Bearer {token}", "X-AV-Deployment": dep_id}
+daemon = {"Authorization": f"Bearer {token}", "X-PV-Deployment": dep_id}
 
 # upsert session
 s, _, _ = call("POST", "/api/v1/ingest/sessions", {
@@ -113,7 +113,7 @@ if not ok("ingest duplicate events (idempotent)", s, 200): fails += 1
 # ingest bad token
 s, _, _ = call("POST", "/api/v1/ingest/sessions", {
     "externalId": "x", "agent": "a", "openedAt": NOW,
-}, headers={"Authorization": "Bearer nope", "X-AV-Deployment": dep_id})
+}, headers={"Authorization": "Bearer nope", "X-PV-Deployment": dep_id})
 if not ok("ingest bad token", s, 401): fails += 1
 
 # ingest missing headers
@@ -173,13 +173,13 @@ new_token = json.loads(body)["ingestToken"]
 # old token no longer works
 s, _, _ = call("POST", "/api/v1/ingest/sessions", {
     "externalId": "x", "agent": "a", "openedAt": NOW,
-}, headers={"Authorization": f"Bearer {token}", "X-AV-Deployment": dep_id})
+}, headers={"Authorization": f"Bearer {token}", "X-PV-Deployment": dep_id})
 if not ok("old token revoked", s, 401): fails += 1
 
 # new token works
 s, _, _ = call("POST", "/api/v1/ingest/sessions", {
     "externalId": "sess-real-2", "agent": "a", "openedAt": NOW,
-}, headers={"Authorization": f"Bearer {new_token}", "X-AV-Deployment": dep_id})
+}, headers={"Authorization": f"Bearer {new_token}", "X-PV-Deployment": dep_id})
 if not ok("new token works", s, 200): fails += 1
 
 print()

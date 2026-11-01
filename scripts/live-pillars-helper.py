@@ -2,7 +2,7 @@
 """Live checks using real processes and HTTP; Python 3.9, standard library only.
 
 JWT decoding here inspects claims, not signatures. The Rust suite verifies the
-exchanged/intent signatures; avctl verifies the actual signed receipt here.
+exchanged/intent signatures; pvctl verifies the actual signed receipt here.
 """
 import argparse
 import base64
@@ -203,26 +203,26 @@ class Response:
 class LiveChecks:
     def __init__(self, args):
         self.args = args
-        self.binary = Path(os.environ.get("AGENTVISORD", str(ROOT / "target/release/agentvisord"))).resolve()
-        self.avctl = Path(os.environ.get("AVCTL", str(ROOT / "target/release/avctl"))).resolve()
-        for path in (self.binary, self.avctl):
+        self.binary = Path(os.environ.get("PROOFVISORD", str(ROOT / "target/release/proofvisord"))).resolve()
+        self.pvctl = Path(os.environ.get("PVCTL", str(ROOT / "target/release/pvctl"))).resolve()
+        for path in (self.binary, self.pvctl):
             if not path.is_file() or not os.access(path, os.X_OK):
-                raise ValueError("missing executable {} (build binaries first, or set AGENTVISORD/AVCTL)".format(path))
+                raise ValueError("missing executable {} (build binaries first, or set PROOFVISORD/PVCTL)".format(path))
         if not shutil.which("curl"):
             raise ValueError("curl is required")
         self.redis = loopback_redis(args.redis) if args.redis else None
         if self.redis and not redis_ping(self.redis[1], self.redis[2]):
             raise ValueError("the requested local Redis did not answer PING")
-        parent = os.environ.get("AV_LIVE_TMPDIR")
+        parent = os.environ.get("PV_LIVE_TMPDIR")
         if parent:
             Path(parent).mkdir(parents=True, exist_ok=True)
-        self.work = Path(tempfile.mkdtemp(prefix="av-live-pillars-", dir=parent)).resolve()
+        self.work = Path(tempfile.mkdtemp(prefix="pv-live-pillars-", dir=parent)).resolve()
         # Cargo can replace target/debug binaries while another suite runs.
-        # Every daemon restart and avctl invocation must use this exact pair.
+        # Every daemon restart and pvctl invocation must use this exact pair.
         executable_dir = self.work / "bin"
         executable_dir.mkdir()
         try:
-            for attribute in ("binary", "avctl"):
+            for attribute in ("binary", "pvctl"):
                 source = getattr(self, attribute)
                 target = executable_dir / attribute
                 shutil.copy2(source, target)
@@ -247,7 +247,7 @@ class LiveChecks:
         (self.work / "hmac.secret").write_bytes(self.secret)
         (self.work / "exchange.seed").write_text(os.urandom(32).hex())
         (self.work / "static.token").write_text("static-backend-secret\n")
-        self.environment = {k: v for k, v in os.environ.items() if not k.startswith("AV_")}
+        self.environment = {k: v for k, v in os.environ.items() if not k.startswith("PV_")}
         self.environment["RUST_LOG"] = "info"
         print("Live checks use {}".format(self.work), flush=True)
 
@@ -355,13 +355,13 @@ class LiveChecks:
         return path
 
     def start_daemon(self, name, config):
-        env = dict(self.environment, AV_CONFIG=str(config),
-                   AV_SIGNING_SEED_FILE=str(config.parent / "signing.seed"))
+        env = dict(self.environment, PV_CONFIG=str(config),
+                   PV_SIGNING_SEED_FILE=str(config.parent / "signing.seed"))
         return self.start(name, [str(self.binary), "--config", str(config)], env)
 
     def call(self, token, tool="read_open", session=None, base=None):
         return self.request("/v1/mcp", token=token, base=base,
-                            headers={"x-av-session": session or "live-" + self.run_id + "-" + uuid.uuid4().hex},
+                            headers={"x-pv-session": session or "live-" + self.run_id + "-" + uuid.uuid4().hex},
                             data={"jsonrpc": "2.0", "id": self.request_id + 1, "method": "tools/call",
                                   "params": {"name": tool, "arguments": {}}})
 
@@ -378,7 +378,7 @@ class LiveChecks:
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
     def command(self, args, log_name):
-        result = subprocess.run([str(self.avctl)] + args, env=self.environment, cwd=self.work,
+        result = subprocess.run([str(self.pvctl)] + args, env=self.environment, cwd=self.work,
                                 capture_output=True, text=True, timeout=30)
         (self.work / log_name).write_text(result.stdout + result.stderr)
         return result
@@ -428,7 +428,7 @@ class LiveChecks:
         self.check("the exchanged token preserves the human and agent identities",
                    lambda: claims["sub"] == "user:live-" + self.run_id and claims["act"]["sub"] == "inst-" + self.run_id)
         self.check("the exchanged token has the configured lifetime", lambda: claims["exp"] - claims["iat"] == 120)
-        intent = request["headers"].get("x-av-intent-token", "")
+        intent = request["headers"].get("x-pv-intent-token", "")
         self.check("the intent token has type av-intent+jwt", lambda: decode_part(intent, 0)["typ"] == "av-intent+jwt")
         self.check("the intent token is bound to the backend, the human, and the agent",
                    lambda: decode_part(intent)["aud"] == "secure-backend"
@@ -491,7 +491,7 @@ class LiveChecks:
         self.check("another token for the same agent still works", self.call(self.token()).status == 200)
         metrics = self.request("/metrics")
         self.check("only one token revocation was counted",
-                   re.search(r"^av_tokens_revoked_total 1$", metrics.body, re.MULTILINE) is not None)
+                   re.search(r"^pv_tokens_revoked_total 1$", metrics.body, re.MULTILINE) is not None)
         self.check("the gateway logged the revocation", "token authority revoked" in (self.work / "daemon-a.log").read_text())
         event = self.wait_event("agent.identity", lambda event: event.get("payload", {}).get("action") == "token_revoked"
                                 and event.get("payload", {}).get("jti") == decode_part(token)["jti"])
@@ -530,7 +530,7 @@ class LiveChecks:
 
     def validation_count(self):
         response = self.request("/metrics")
-        match = re.search(r"^av_identity_validations_total ([0-9]+)$", response.body, re.MULTILINE)
+        match = re.search(r"^pv_identity_validations_total ([0-9]+)$", response.body, re.MULTILINE)
         return int(match.group(1)) if match else 0
 
     def wait_event(self, topic, predicate, replica="a"):
@@ -735,7 +735,7 @@ class LiveChecks:
             for path in sorted(self.work.glob("*.log")):
                 print("\n--- {} (last 60 lines) ---".format(path.name), file=sys.stderr)
                 print("\n".join(path.read_text(errors="replace").splitlines()[-60:]), file=sys.stderr)
-        if successful and os.environ.get("AV_KEEP_TMP") != "1":
+        if successful and os.environ.get("PV_KEEP_TMP") != "1":
             shutil.rmtree(self.work)
         else:
             print("Artifacts retained at {}".format(self.work), flush=True)
@@ -827,14 +827,14 @@ class HelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             daemon = root / "daemon"
-            avctl = root / "avctl"
+            pvctl = root / "pvctl"
             # These executables isolate the driver's startup failure behavior.
             daemon.write_text("#!/bin/sh\necho deliberate-daemon-failure >&2\nexit 7\n")
-            avctl.write_text('#!/bin/sh\ncase "$2" in *bad.toml) echo "no [[backends]]"; exit 1;; esac\nexit 0\n')
+            pvctl.write_text('#!/bin/sh\ncase "$2" in *bad.toml) echo "no [[backends]]"; exit 1;; esac\nexit 0\n')
             daemon.chmod(0o700)
-            avctl.chmod(0o700)
-            environment = dict(os.environ, AGENTVISORD=str(daemon), AVCTL=str(avctl),
-                               AV_LIVE_TMPDIR=str(root / "artifacts"))
+            pvctl.chmod(0o700)
+            environment = dict(os.environ, PROOFVISORD=str(daemon), PVCTL=str(pvctl),
+                               PV_LIVE_TMPDIR=str(root / "artifacts"))
             result = subprocess.run([sys.executable, str(HERE), "run"], env=environment,
                                     capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -844,11 +844,11 @@ class HelperTests(unittest.TestCase):
             self.assertIn("Artifacts retained", result.stdout)
 
     def test_missing_binary_and_closed_redis_are_prerequisite_errors(self):
-        environment = dict(os.environ, AGENTVISORD="/nonexistent/agentvisord", AVCTL=sys.executable)
+        environment = dict(os.environ, PROOFVISORD="/nonexistent/proofvisord", PVCTL=sys.executable)
         result = subprocess.run([sys.executable, str(HERE), "run"], env=environment,
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 2)
-        environment["AGENTVISORD"] = sys.executable
+        environment["PROOFVISORD"] = sys.executable
         # Reserve a port without listening so no other process can take it.
         with socket.socket() as unavailable:
             unavailable.bind(("127.0.0.1", 0))
@@ -862,22 +862,22 @@ class HelperTests(unittest.TestCase):
             executable = Path(directory) / "build-output"
             executable.write_text("#!/bin/sh\nprintf old-binary\n")
             executable.chmod(0o700)
-            with patch.dict(os.environ, {"AGENTVISORD": str(executable), "AVCTL": str(executable),
-                                         "AV_LIVE_TMPDIR": directory, "AV_KEEP_TMP": "0"}):
+            with patch.dict(os.environ, {"PROOFVISORD": str(executable), "PVCTL": str(executable),
+                                         "PV_LIVE_TMPDIR": directory, "PV_KEEP_TMP": "0"}):
                 checks = LiveChecks(argparse.Namespace(redis=None))
                 try:
                     executable.write_text("#!/bin/sh\nprintf replacement-binary\n")
                     result = subprocess.run([str(checks.binary)], text=True, capture_output=True, timeout=5)
                     self.assertEqual(result.stdout, "old-binary")
-                    result = subprocess.run([str(checks.avctl)], text=True, capture_output=True, timeout=5)
+                    result = subprocess.run([str(checks.pvctl)], text=True, capture_output=True, timeout=5)
                     self.assertEqual(result.stdout, "old-binary")
                 finally:
                     checks.cleanup(True)
 
     def test_cleanup_reaps_child_processes(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
-                "AGENTVISORD": sys.executable, "AVCTL": sys.executable, "AV_LIVE_TMPDIR": directory,
-                "AV_KEEP_TMP": "0"}):
+                "PROOFVISORD": sys.executable, "PVCTL": sys.executable, "PV_LIVE_TMPDIR": directory,
+                "PV_KEEP_TMP": "0"}):
             checks = LiveChecks(argparse.Namespace(redis=None))
             process = checks.start("sleeper", [sys.executable, "-c", "import time; time.sleep(60)"])
             checks.cleanup(True)

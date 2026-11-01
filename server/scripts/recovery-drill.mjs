@@ -18,7 +18,7 @@ import pg from "pg";
 import { closeDrillClient } from "./auth-drill-cleanup.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const id = "av-console-recovery-" + randomBytes(6).toString("hex");
+const id = "pv-console-recovery-" + randomBytes(6).toString("hex");
 const output = await mkdtemp(join(tmpdir(), id + "-"));
 await chmod(output, 0o700);
 const password = randomBytes(24).toString("hex");
@@ -99,7 +99,7 @@ async function startApi(database, label) {
       .map(([key, value]) => `${key}=${value}`).join("\n") + "\n", { mode: 0o600 });
     containerIntents.push(container);
     await command("docker", ["run", "--detach", "--pull=never", "--name", container,
-      "--label", `agentvisor.drill=${id}`, "--network", networkName,
+      "--label", `proofvisor.drill=${id}`, "--network", networkName,
       "--read-only", "--tmpfs", "/tmp:uid=65532,gid=65532,mode=0700",
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
       "--memory", "512m", "--cpus", "1", "--env-file", envFile, "-p", "127.0.0.1::8080", apiImage]);
@@ -139,7 +139,7 @@ async function startApi(database, label) {
 async function stopApi(app) {
   if (app.container) {
     if (app.stopped) return;
-    const owner = await command("docker", ["inspect", "--format", '{{ index .Config.Labels "agentvisor.drill" }}', app.container]);
+    const owner = await command("docker", ["inspect", "--format", '{{ index .Config.Labels "proofvisor.drill" }}', app.container]);
     assert.equal(owner, id, "refusing to stop a container without this drill's ownership label");
     await command("docker", ["stop", "--time", "5", app.container]);
     const info = JSON.parse(await command("docker", ["inspect", app.container]))[0];
@@ -176,13 +176,13 @@ async function request(app, path, { method = "GET", body, auth, expected = 200 }
 async function tenant(app, label) {
   const signup = await request(app, "/auth/signup", { method: "POST", expected: 201,
     body: { email: `${id}-${label}@example.test`, password, orgName: label } });
-  const cookie = signup.headers.getSetCookie().find((c) => c.startsWith("av_session="))?.split(";")[0];
+  const cookie = signup.headers.getSetCookie().find((c) => c.startsWith("pv_session="))?.split(";")[0];
   assert.ok(cookie);
   const auth = { Cookie: cookie };
   const deployment = await request(app, "/deployments", { method: "POST", expected: 201, auth,
     body: { name: label, environment: "development" } });
   return { auth, userId: signup.data.user.id, orgId: signup.data.org.id,
-    daemon: { Authorization: "Bearer " + deployment.data.ingestToken, "X-AV-Deployment": deployment.data.deployment.id } };
+    daemon: { Authorization: "Bearer " + deployment.data.ingestToken, "X-PV-Deployment": deployment.data.deployment.id } };
 }
 async function stream(app, owner) {
   const abort = new AbortController();
@@ -220,12 +220,12 @@ try {
   await writeFile(envFile, `POSTGRES_USER=avrecovery\nPOSTGRES_PASSWORD=${password}\nPOSTGRES_DB=avrecovery\n`, { mode: 0o600 });
   if (apiImage) {
     networkCreationAttempted = true;
-    await command("docker", ["network", "create", "--label", `agentvisor.drill=${id}`, networkName]);
+    await command("docker", ["network", "create", "--label", `proofvisor.drill=${id}`, networkName]);
   }
   // The daemon can accept creation before the CLI response fails or is
   // cancelled. Record intent before dispatch and inspect ownership later.
   containerIntents.push(id);
-  await command("docker", ["run", "--detach", "--pull=never", "--name", id, "--label", `agentvisor.drill=${id}`,
+  await command("docker", ["run", "--detach", "--pull=never", "--name", id, "--label", `proofvisor.drill=${id}`,
     ...(apiImage ? ["--network", networkName] : []),
     "--memory", "512m", "--cpus", "2", "--env-file", envFile, "-p", "127.0.0.1::5432", process.env.PG_IMAGE || "postgres:15"]);
   const info = JSON.parse(await command("docker", ["inspect", id]))[0];
@@ -242,13 +242,13 @@ try {
   const alpha = await tenant(a, "alpha"), beta = await tenant(b, "beta");
   const feed = await stream(a, alpha), foreign = await stream(b, beta);
   await until(async () => {
-    const rows = (await admin.query("SELECT pid FROM pg_stat_activity WHERE datname='avrecovery' AND application_name=$1 AND state='idle' AND query='SELECT 1 /* av_bus listener heartbeat */'", [`${id}-api-a`])).rows;
+    const rows = (await admin.query("SELECT pid FROM pg_stat_activity WHERE datname='avrecovery' AND application_name=$1 AND state='idle' AND query='SELECT 1 /* pv_bus listener heartbeat */'", [`${id}-api-a`])).rows;
     return rows.length === 1;
   }, "the fixture listener heartbeat reaches actual PostgreSQL", 20_000);
   check("the dedicated listener heartbeat completes against PostgreSQL", true);
   // The dedicated listener periodically probes its established connection;
   // either exact statement identifies it, within this fixture's application.
-  const listener = (await admin.query("SELECT pid FROM pg_stat_activity WHERE datname='avrecovery' AND application_name=$1 AND query IN ('LISTEN av_bus', 'SELECT 1 /* av_bus listener heartbeat */')", [`${id}-api-a`])).rows;
+  const listener = (await admin.query("SELECT pid FROM pg_stat_activity WHERE datname='avrecovery' AND application_name=$1 AND query IN ('LISTEN pv_bus', 'SELECT 1 /* pv_bus listener heartbeat */')", [`${id}-api-a`])).rows;
   assert.equal(listener.length, 1, "identify only this fixture instance's LISTEN socket");
   await admin.query("SELECT pg_terminate_backend($1)", [listener[0].pid]);
   const session = await request(b, "/ingest/sessions", { method: "POST", auth: alpha.daemon,
@@ -323,7 +323,7 @@ try {
     // must remain a cleanup error, rather than claiming the container is gone.
     const ids = (await command("docker", ["container", "ls", "--all", "--filter", `name=^/${container}$`, "--format", "{{.ID}}"])).split(/\s+/).filter(Boolean);
     for (const containerId of ids) {
-      const owner = await command("docker", ["inspect", "--format", '{{ index .Config.Labels "agentvisor.drill" }}', containerId]);
+      const owner = await command("docker", ["inspect", "--format", '{{ index .Config.Labels "proofvisor.drill" }}', containerId]);
       assert.equal(owner, id, "refusing cleanup of a container without this drill's ownership label");
       if (container !== id) {
         // A log read failure must not prevent removal of the owned resource.
@@ -340,7 +340,7 @@ try {
   if (networkCreationAttempted) cleanup.push(...await Promise.allSettled([(async () => {
     const ids = (await command("docker", ["network", "ls", "--filter", `name=^${networkName}$`, "--format", "{{.ID}}"])).split(/\s+/).filter(Boolean);
     for (const networkId of ids) {
-      const owner = await command("docker", ["network", "inspect", "--format", '{{ index .Labels "agentvisor.drill" }}', networkId]);
+      const owner = await command("docker", ["network", "inspect", "--format", '{{ index .Labels "proofvisor.drill" }}', networkId]);
       assert.equal(owner, id, "refusing cleanup of a network without this drill's ownership label");
       await command("docker", ["network", "rm", networkId]);
     }

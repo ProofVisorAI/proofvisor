@@ -112,7 +112,7 @@ try {
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${dep.ingestToken}`,
-        "X-AV-Deployment": dep.deployment.id,
+        "X-PV-Deployment": dep.deployment.id,
       },
       body: JSON.stringify(body),
     });
@@ -166,6 +166,19 @@ try {
   const pubRaw = publicKey.export({ type: "spki", format: "der" }).subarray(-32);
   const pkRes = await ingest("/api/v1/ingest/pubkey", { publicKeyHex: pubRaw.toString("hex"), daemonVersion: "0.1.0-e2e" });
   check("ingest pubkey", pkRes.status === 200, JSON.stringify(pkRes.data));
+  {
+    // Receipt trust anchor: the pinned key is public, CORS-open, and
+    // exposes nothing beyond key material and labels.
+    const pub = await origFetch(`${API_BASE}/api/v1/public/receipt-keys/${dep.deployment.id}`, { headers: { Origin: "https://elsewhere.example" } });
+    const pubBody = await pub.json();
+    check("public receipt key served", pub.status === 200 && pubBody.publicKeyHex === pubRaw.toString("hex"));
+    check("public receipt key is CORS-open without credentials",
+      pub.headers.get("access-control-allow-origin") === "*" && !pub.headers.get("access-control-allow-credentials"));
+    check("public receipt key exposes only key fields",
+      JSON.stringify(Object.keys(pubBody).sort()) === JSON.stringify(["deploymentId","deploymentName","keyId","orgName","pinnedAt","publicKeyB64","publicKeyHex"]));
+    const missing = await origFetch(`${API_BASE}/api/v1/public/receipt-keys/does-not-exist`);
+    check("public receipt key 404 for an unknown deployment", missing.status === 404);
+  }
   // Daemon version round-trips into the deployments list.
   const depsAfterPubkey = await ds.listDeployments();
   check("deployment reports daemon version", depsAfterPubkey[0].version === "0.1.0-e2e", depsAfterPubkey[0].version);
@@ -217,7 +230,7 @@ try {
   check("overview range=7d has 7 daily buckets", Array.isArray(ov7.series) && ov7.series.length === 7, "len="+(ov7.series||[]).length);
   const historical = await ds.createDeployment({ name: "historical", environment: "development" });
   const oldTime = new Date(Date.now() - 3 * 24 * 3600000).toISOString();
-  const oldHeaders = { "Content-Type": "application/json", Authorization: "Bearer " + historical.ingestToken, "X-AV-Deployment": historical.deployment.id };
+  const oldHeaders = { "Content-Type": "application/json", Authorization: "Bearer " + historical.ingestToken, "X-PV-Deployment": historical.deployment.id };
   const oldSession = await origFetch(`${API_BASE}/api/v1/ingest/sessions`, { method: "POST", headers: oldHeaders, body: JSON.stringify({ externalId: "old-session", agent: "historical", openedAt: oldTime }) });
   check("historical session fixture accepted", oldSession.status === 200);
   const oldEvents = await origFetch(`${API_BASE}/api/v1/ingest/events`, { method: "POST", headers: oldHeaders, body: JSON.stringify([{ sessionExternalId: "old-session", seq: 0, kind: "tool", tag: "OLD", body: "old activity", occurredAt: oldTime, addToolsAllowed: 9, addCostUsdMicros: 9000000 }]) });
@@ -244,7 +257,14 @@ try {
   check("detail marks blocked event", !!blocked, blocked?.msg);
 
   // Policies — full CRUD through the real API (was mock-only).
-  const created = await ds.createPolicy({ name: "e2e.vendor_allowlist", kind: "allowlist", scope: "tool.create_po", description: "e2e", body: "effect = block" });
+  // allowlist is a daemon-enforceable kind: its body is a JSON spec.
+  const allowlistBody = '{"allow_only":["create_po"]}';
+  let freeTextCode = "";
+  try {
+    await ds.createPolicy({ name: "e2e.free_text_allowlist", kind: "allowlist", scope: "tool.create_po", body: "effect = block" });
+  } catch (e) { freeTextCode = e.errorCode || e.message; }
+  check("enforceable policy with a free-text body is refused", freeTextCode === "invalid_input", freeTextCode);
+  const created = await ds.createPolicy({ name: "e2e.vendor_allowlist", kind: "allowlist", scope: "tool.create_po", description: "e2e", body: allowlistBody });
   check("policy create returns id", !!created.id && created.enabled === true, created.id);
   const pols = await ds.listPolicies();
   check("policy list has 1", pols.length === 1 && pols[0].name === "e2e.vendor_allowlist");
@@ -254,14 +274,15 @@ try {
   const toggled = await ds.togglePolicy(created.id);
   check("policy toggle disables", toggled.enabled === false);
   const fetched = await ds.getPolicy(created.id);
-  check("policy get reflects toggle", fetched.enabled === false && fetched.body === "effect = block");
+  check("policy get reflects toggle", fetched.enabled === false && fetched.body === allowlistBody);
+  check("policy read carries the parsed spec", fetched.enforceable === true && fetched.spec?.allow_only?.[0] === "create_po");
   let dupCode = "";
   try { await ds.createPolicy({ name: "e2e.vendor_allowlist" }); } catch (e) { dupCode = e.errorCode || e.message; }
   check("policy duplicate name 409", dupCode === "policy_name_in_use", dupCode);
 
   // Full-field edit + delete (completes policy CRUD through the ds)
-  const polEdited = await ds.updatePolicy(created.id, { name: "e2e.vendor_allowlist.v2", description: "edited", body: "effect = block\nreason = \"e2e\"" });
-  check("policy edit fields", polEdited.name === "e2e.vendor_allowlist.v2" && polEdited.description === "edited" && /reason/.test(polEdited.body));
+  const polEdited = await ds.updatePolicy(created.id, { name: "e2e.vendor_allowlist.v2", description: "edited", body: '{"allow_only":["create_po","lookup_vendor"]}', scope: "tool.*" });
+  check("policy edit fields", polEdited.name === "e2e.vendor_allowlist.v2" && polEdited.description === "edited" && /lookup_vendor/.test(polEdited.body));
   const secondPol = await ds.createPolicy({ name: "e2e.other" });
   let dupEdit = "";
   try { await ds.updatePolicy(created.id, { name: "e2e.other" }); } catch (e) { dupEdit = e.errorCode || e.message; }
@@ -269,6 +290,31 @@ try {
   await ds.deletePolicy(secondPol.id);
   const polsAfterDel = await ds.listPolicies();
   check("policy delete removes", !polsAfterDel.some(x => x.id === secondPol.id));
+
+  // Policy push contract: the daemon bundle, 304, the status report and
+  // the enforcement counts the console reads back.
+  {
+    await ds.togglePolicy(created.id); // enabled again
+    const daemonHeaders = { "Authorization": `Bearer ${dep.ingestToken}`, "X-PV-Deployment": dep.deployment.id };
+    const pulled = await origFetch(`${API_BASE}/api/v1/ingest/policies`, { headers: daemonHeaders });
+    const bundle = await pulled.json();
+    check("policy bundle served to the daemon", pulled.status === 200 && bundle.version === 1 && bundle.deploymentId === dep.deployment.id);
+    check("policy bundle etag is a sha256", /^[0-9a-f]{64}$/.test(bundle.etag), bundle.etag);
+    check("policy bundle lists the enabled policy with its spec",
+      bundle.policies.length === 1 && bundle.policies[0].spec?.allow_only?.length === 2, JSON.stringify(bundle.policies));
+    const notModified = await origFetch(`${API_BASE}/api/v1/ingest/policies`, { headers: { ...daemonHeaders, "If-None-Match": `"${bundle.etag}"` } });
+    check("policy bundle 304 on a matching etag", notModified.status === 304);
+    const statusRes = await ingest("/api/v1/ingest/policy-status", {
+      etag: bundle.etag, appliedAt: new Date().toISOString(), daemonVersion: "0.1.0-e2e",
+      applied: [bundle.policies[0].id], unsupported: [],
+    });
+    check("policy status accepted", statusRes.status === 200 && statusRes.data.stale === false, JSON.stringify(statusRes.data));
+    const withEnforcement = (await ds.listPolicies()).find(x => x.id === created.id);
+    check("policy enforcement counts the daemon", withEnforcement.enforcement?.applied === 1 && withEnforcement.enforcement.deployments === 1,
+      JSON.stringify(withEnforcement.enforcement));
+    const depRow = (await ds.listDeployments()).find(d => d.id === dep.deployment.id);
+    check("deployment shows its applied bundle", depRow.policyBundle?.etag === bundle.etag && depRow.policyBundle.stale === false);
+  }
 
   // PostgreSQL TEXT refuses NUL. Validation must reject it before any
   // event in the batch or its counters commit, while preserving real text.
@@ -526,22 +572,22 @@ try {
   check("audit cursor walk distinct", aud2.entries.length > 0 && aud2.entries[0].at !== aud1.entries[0].at);
 
   // Workspace-context pin (header form): a mutation stamped with a
-  // stale X-AV-Org (another tab switched the shared cookie) must 409
+  // stale X-PV-Org (another tab switched the shared cookie) must 409
   // before side effects; the matching stamp passes. The real
-  // ApiDataSource's apiFetch reads window.__avActiveOrgId — set it the
+  // ApiDataSource's apiFetch reads window.__pvActiveOrgId — set it the
   // way the SPA's live getter would.
   {
     const sess = await ds.getSession();
-    globalThis.window.__avActiveOrgId = "org_stale_from_other_tab";
+    globalThis.window.__pvActiveOrgId = "org_stale_from_other_tab";
     let pinErr = "";
     try { await ds.createApiKey("pin-probe-stale"); }
     catch (e) { pinErr = e.errorCode || e.message; }
-    check("stale X-AV-Org mutation refused", pinErr === "org_context_changed", pinErr);
-    globalThis.window.__avActiveOrgId = sess.org.id;
+    check("stale X-PV-Org mutation refused", pinErr === "org_context_changed", pinErr);
+    globalThis.window.__pvActiveOrgId = sess.org.id;
     const pinOkKey = await ds.createApiKey("pin-probe-live");
-    check("matching X-AV-Org mutation ok", !!(pinOkKey && pinOkKey.key), JSON.stringify(pinOkKey).slice(0, 80));
+    check("matching X-PV-Org mutation ok", !!(pinOkKey && pinOkKey.key), JSON.stringify(pinOkKey).slice(0, 80));
     await ds.revokeApiKey(pinOkKey.key.id);
-    delete globalThis.window.__avActiveOrgId;
+    delete globalThis.window.__pvActiveOrgId;
   }
 
   await ds.logout();

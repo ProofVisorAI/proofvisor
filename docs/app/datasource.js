@@ -1,5 +1,5 @@
 /*
- * AgentVisor AI console. Data source layer.
+ * ProofVisor console. Data source layer.
  *
  * MockDataSource (Northwind Traders fixtures) and ApiDataSource (real API
  * adapter). Choice driven by window.MOCK_MODE from index.html.
@@ -39,6 +39,11 @@
   };
   var MIN = 60000;
   function iso(delta) { return new Date(NOW - delta).toISOString(); }
+  // Bundle hashes the mock daemons report (see MOCK_POLICIES). Real etags
+  // are sha256 hex of the canonical policies array; these are stable
+  // stand-ins so the staging daemon can be shown one bundle behind.
+  var MOCK_BUNDLE_ETAG = "7f3a9c1e5b2d8046a1c3e5f7092b4d6e8f1a3c5b7d9e0f2a4c6e8b0d2f4a6c8e";
+  var MOCK_BUNDLE_ETAG_OLD = "1337c0de4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
   function isoMinsAgo(m) { return iso(m * MIN); }
 
   function bytesToHex(bytes) {
@@ -101,12 +106,14 @@
     var digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
     return pub + "|" + sig + "|" + bytesToHex(new Uint8Array(digest));
   }
-  // R190 F1: match the Rust `av-receipts` signing framing.
+  // R190 F1: match the Rust `pv-receipts` signing framing.
   // See docs/verify/verify.js for the full rationale — Rust
   // defaults to receipt_version=2 which prepends a domain tag
   // and length prefix before the canonical body; prior JS
   // verifier used bare-body semantics (v1 only) and would show
   // every v2 receipt as INVALID.
+  // Wire format: every v2 receipt is signed over these bytes; they predate
+  // the ProofVisor name and must never be renamed.
   var _RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("agentvisor-receipt-v2\0");
   function _receiptSigningMessage(rawBody) {
     var canonical = new TextEncoder().encode(rawBody);
@@ -129,7 +136,7 @@
   }
   // R193 F1: identity-binding check — see docs/verify/verify.js
   // for rationale. Mirrors Rust `verify_embedded()` at
-  // crates/av-receipts/src/receipt.rs:415-418 (equivalently
+  // crates/pv-receipts/src/receipt.rs:415-418 (equivalently
   // `verify()` at :371-374 — both re-derive the key id from the
   // embedded pubkey and reject on `derived_id != body.key_id`).
   async function _deriveKeyIdFromPubHex(hex) {
@@ -182,7 +189,7 @@
       return errResult;
     }
   }
-  window.avVerifyReceipt = verifyReceiptSignature;
+  window.pvVerifyReceipt = verifyReceiptSignature;
 
 
   /* ============================================================
@@ -205,11 +212,11 @@
   };
 
   var MOCK_MEMBERS = [
-    { id: "usr_olivia", userId: "usr_olivia", email: "olivia.tan@northwind.com", displayName: "Olivia Tan", role: "owner", lastActive: iso(2 * MIN), mfaEnrolled: true },
-    { id: "usr_raj", userId: "usr_raj", email: "raj.patel@northwind.com", displayName: "Raj Patel", role: "admin", lastActive: iso(18 * MIN), mfaEnrolled: true },
-    { id: "usr_sam", userId: "usr_sam", email: "sam.lee@northwind.com", displayName: "Sam Lee", role: "member", lastActive: iso(4 * HOUR), mfaEnrolled: true },
-    { id: "usr_priya", userId: "usr_priya", email: "priya.iyer@northwind.com", displayName: "Priya Iyer", role: "member", lastActive: iso(2 * 24 * HOUR) },
-    { id: "usr_marc", userId: "usr_marc", email: "marc.dubois@northwind.com", displayName: "Marc Dubois", role: "member", lastActive: iso(6 * 24 * HOUR) },
+    { id: "usr_olivia", userId: "usr_olivia", email: "olivia.tan@northwind.com", displayName: "Olivia Tan", role: "owner", joinedAt: iso(38 * 24 * HOUR), mfaEnrolled: true },
+    { id: "usr_raj", userId: "usr_raj", email: "raj.patel@northwind.com", displayName: "Raj Patel", role: "admin", joinedAt: iso(37 * 24 * HOUR), mfaEnrolled: true },
+    { id: "usr_sam", userId: "usr_sam", email: "sam.lee@northwind.com", displayName: "Sam Lee", role: "member", joinedAt: iso(30 * 24 * HOUR), mfaEnrolled: true },
+    { id: "usr_priya", userId: "usr_priya", email: "priya.iyer@northwind.com", displayName: "Priya Iyer", role: "member", joinedAt: iso(21 * 24 * HOUR) },
+    { id: "usr_marc", userId: "usr_marc", email: "marc.dubois@northwind.com", displayName: "Marc Dubois", role: "member", joinedAt: iso(9 * 24 * HOUR) },
   ];
 
   var MOCK_INVITES = [
@@ -217,8 +224,8 @@
   ];
 
   var MOCK_API_KEYS = [
-    { id: "key_ci", name: "CI runner", createdAt: iso(14 * 24 * HOUR), lastUsedAt: iso(28 * MIN), hint: "av_srv_a091…" },
-    { id: "key_ops", name: "Ops dashboard", createdAt: iso(3 * 24 * HOUR), lastUsedAt: iso(6 * HOUR), hint: "av_srv_c412…" },
+    { id: "key_ci", name: "CI runner", role: "member", createdAt: iso(14 * 24 * HOUR), lastUsedAt: iso(28 * MIN), hint: "pv_srv_a091…" },
+    { id: "key_ops", name: "Ops dashboard", role: "admin", createdAt: iso(3 * 24 * HOUR), lastUsedAt: iso(6 * HOUR), hint: "pv_srv_c412…" },
   ];
 
   var MOCK_WEBHOOKS = [
@@ -255,6 +262,10 @@
    * DEPLOYMENTS
    * ============================================================ */
 
+  var MOCK_SCIM = {
+    settings: { enabled: false, defaultRole: "member", deprovisionAction: "deactivate" },
+    tokens: [],
+  };
   var MOCK_DEPLOYMENTS = [
     {
       id: "dep_prod",
@@ -266,11 +277,13 @@
       version: "0.4.2",
       lastSeenAt: iso(1 * MIN),
       createdAt: iso(38 * 24 * HOUR),
-      ingestTokenHint: "av_live_9HpD…",
+      ingestTokenHint: "pv_live_9HpDk2Qm…",
       publicKeyHex: "573c8f249012fbb08b3d79973411bb93141f32719c86ada25306fde5e59e8d57",
       keyFingerprint: "kf_573c8f24",
       sessions24h: 18,
       spend24h: "$0.62",
+      isDemo: false,
+      policyBundle: { etag: MOCK_BUNDLE_ETAG, appliedAt: iso(14 * MIN), daemonVersion: "0.4.2", stale: false, applied: 6, unsupported: [] },
     },
     {
       id: "dep_stage",
@@ -282,11 +295,14 @@
       version: "0.4.2",
       lastSeenAt: iso(4 * MIN),
       createdAt: iso(38 * 24 * HOUR),
-      ingestTokenHint: "av_live_7bK2…",
+      ingestTokenHint: "pv_live_7bK2nR4t…",
       publicKeyHex: "8c9b0a1e2f3d4c5b6a7e8f9d0c1b2a3e3a5f7e2d1b8c9a4e6f1d2c3b4a5e6f7d",
       keyFingerprint: "kf_8c9b0a1e",
       sessions24h: 9,
       spend24h: "$0.14",
+      isDemo: false,
+      // One bundle behind: it last pulled before Raj edited the vendor list.
+      policyBundle: { etag: MOCK_BUNDLE_ETAG_OLD, appliedAt: iso(2 * 24 * HOUR), daemonVersion: "0.4.2", stale: true, applied: 5, unsupported: [] },
     },
     {
       id: "dep_dev",
@@ -298,11 +314,13 @@
       version: "0.4.1",
       lastSeenAt: iso(38 * MIN),
       createdAt: iso(11 * 24 * HOUR),
-      ingestTokenHint: "av_live_3xF9…",
+      ingestTokenHint: "pv_live_3xF9wL8c…",
       publicKeyHex: "1e2f3d4c5b6a7e8f9d0c1b2a3e3a5f7e2d1b8c9a4e6f1d2c3b4a5e6f7d8c9b0a1",
       keyFingerprint: "kf_1e2f3d4c",
       sessions24h: 3,
       spend24h: "$0.02",
+      isDemo: false,
+      policyBundle: { etag: MOCK_BUNDLE_ETAG, appliedAt: iso(31 * MIN), daemonVersion: "0.4.1", stale: false, applied: 6, unsupported: [] },
     },
   ];
 
@@ -310,11 +328,101 @@
    * POLICIES
    * ============================================================ */
 
+  /* Daemon-enforceable policy kinds and their JSON spec shapes. This is
+   * the same contract server/src/lib/policy-bundle.ts enforces on
+   * write and ships to daemons in GET /api/v1/ingest/policies:
+   *   budget    {"max_total_tool_calls"?, "max_payout_usd_micros"?, "max_tokens"?, "per_tool_max_calls"?: {tool: n}}
+   *   allowlist {"allow_only"?: [tools], "deny_tools"?: [tools]}   (at least one)
+   *   rate      {"max_tokens_per_window": n, "window_s": n}
+   *   schema    {"tool": "<name>", "json_schema": {…}}
+   * guardrail and transform keep free text: daemons cannot enforce
+   * them, they document intent and attribute events. The console
+   * validates before saving (same messages as the server) so a typo
+   * never reaches a daemon. */
+  var PV_ENFORCEABLE_KINDS = ["budget", "allowlist", "rate", "schema"];
+  function pvIsEnforceableKind(kind) { return PV_ENFORCEABLE_KINDS.indexOf(kind) >= 0; }
+  var PV_TOOL_NAME_RE = /^[A-Za-z0-9_.:\/-]{1,80}$/;
+  function pvToolPattern(scope) {
+    var m = /^tool(?:\.(.*))?$/.exec(String(scope || "").trim());
+    if (!m) return null;
+    var pat = m[1] === undefined || m[1] === "" ? "*" : m[1];
+    var re = pat.split("*").map(function (part) { return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }).join(".*");
+    return new RegExp("^" + re + "$");
+  }
+  function pvIsInt(v, min) { return typeof v === "number" && isFinite(v) && Math.floor(v) === v && v >= min; }
+  function pvCheckTools(list, label) {
+    if (!Array.isArray(list)) return label + " must be a list of tool names";
+    if (!list.length) return label + " must name at least one tool";
+    for (var i = 0; i < list.length; i++) {
+      if (typeof list[i] !== "string" || !PV_TOOL_NAME_RE.test(list[i])) return label + ": \"" + String(list[i]).slice(0, 40) + "\" is not a valid tool name (letters, digits, _ . : / -)";
+    }
+    return null;
+  }
+  function pvValidatePolicySpec(kind, scope, body) {
+    if (!pvIsEnforceableKind(kind)) return { ok: true, spec: null };
+    var text = String(body == null ? "" : body);
+    if (!text.trim()) return { ok: false, detail: "a " + kind + " policy needs a JSON spec in its body" };
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { return { ok: false, detail: "body is not valid JSON (" + e.message + ")" }; }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, detail: "a " + kind + " spec must be a JSON object" };
+    var allowed = { budget: ["max_total_tool_calls", "max_payout_usd_micros", "max_tokens", "per_tool_max_calls"], allowlist: ["allow_only", "deny_tools"], rate: ["max_tokens_per_window", "window_s"], schema: ["tool", "json_schema"] }[kind];
+    var keys = Object.keys(parsed);
+    for (var k = 0; k < keys.length; k++) if (allowed.indexOf(keys[k]) < 0) return { ok: false, detail: kind + " spec: unknown field \"" + keys[k] + "\" (allowed: " + allowed.join(", ") + ")" };
+    var named = [];
+    var err = null;
+    if (kind === "budget") {
+      var any = false;
+      ["max_total_tool_calls", "max_payout_usd_micros", "max_tokens"].forEach(function (f) {
+        if (parsed[f] === undefined) return;
+        any = true;
+        if (!pvIsInt(parsed[f], 0)) err = err || ("budget spec: " + f + " must be a non-negative integer");
+      });
+      if (parsed.per_tool_max_calls !== undefined) {
+        if (!parsed.per_tool_max_calls || typeof parsed.per_tool_max_calls !== "object" || Array.isArray(parsed.per_tool_max_calls)) err = err || "budget spec: per_tool_max_calls must be an object of tool → count";
+        else {
+          var tools = Object.keys(parsed.per_tool_max_calls);
+          if (tools.length) any = true;
+          tools.forEach(function (t) {
+            if (!PV_TOOL_NAME_RE.test(t)) err = err || ("budget spec: \"" + t + "\" is not a valid tool name");
+            else if (!pvIsInt(parsed.per_tool_max_calls[t], 0)) err = err || ("budget spec: per_tool_max_calls." + t + " must be a non-negative integer");
+          });
+          named = named.concat(tools);
+        }
+      }
+      if (!err && !any) err = "a budget needs at least one limit (max_total_tool_calls, max_payout_usd_micros, max_tokens or per_tool_max_calls)";
+    } else if (kind === "allowlist") {
+      if (parsed.allow_only !== undefined) { err = err || pvCheckTools(parsed.allow_only, "allow_only"); named = named.concat(parsed.allow_only || []); }
+      if (parsed.deny_tools !== undefined) { err = err || pvCheckTools(parsed.deny_tools, "deny_tools"); named = named.concat(parsed.deny_tools || []); }
+      if (!err && parsed.allow_only === undefined && parsed.deny_tools === undefined) err = "an allowlist needs allow_only and/or deny_tools with at least one tool name";
+      if (err) err = "allowlist spec: " + err;
+    } else if (kind === "rate") {
+      if (!pvIsInt(parsed.max_tokens_per_window, 1)) err = "rate spec: max_tokens_per_window must be a positive integer";
+      else if (!pvIsInt(parsed.window_s, 1) || parsed.window_s > 30 * 24 * 3600) err = "rate spec: window_s must be a positive integer (seconds, at most 30 days)";
+    } else if (kind === "schema") {
+      if (typeof parsed.tool !== "string" || !PV_TOOL_NAME_RE.test(parsed.tool)) err = "schema spec: tool must be a valid tool name";
+      else if (!parsed.json_schema || typeof parsed.json_schema !== "object" || Array.isArray(parsed.json_schema)) err = "schema spec: json_schema must be a JSON Schema object";
+      else named.push(parsed.tool);
+    }
+    if (err) return { ok: false, detail: err };
+    if (named.length) {
+      var pat = pvToolPattern(scope);
+      if (!pat) return { ok: false, detail: kind + " spec names tools but the policy scope \"" + scope + "\" is not a tool scope (use tool.* or tool.<name>)" };
+      for (var n = 0; n < named.length; n++) if (!pat.test(named[n])) return { ok: false, detail: kind + " spec names tool \"" + named[n] + "\" which is outside the policy scope \"" + scope + "\"" };
+    }
+    return { ok: true, spec: parsed };
+  }
+  window.pvValidatePolicySpec = pvValidatePolicySpec;
+  window.pvIsEnforceableKind = pvIsEnforceableKind;
+
+  // Bundle hashes the mock daemons report. Real etags are sha256 hex of
+  // the canonical policies array; these are stable stand-ins so the
+  // staging daemon can be shown one bundle behind.
+
   var MOCK_POLICIES = [
     {
       id: "pol_procurement_allowed_vendors",
       name: "procurement.allowed_vendors",
-      kind: "allowlist",
+      kind: "schema",
       scope: "tool.create_purchase_order",
       enabled: true,
       hits24h: 41,
@@ -322,14 +430,14 @@
       updatedAt: iso(5 * 24 * HOUR),
       updatedBy: "raj.patel@northwind.com",
       description: "Only pre-approved vendors may receive purchase orders.",
-      body: [
-        "policy \"procurement.allowed_vendors\" {",
-        "  applies_to = tool(\"create_purchase_order\")",
-        "  when { arg.vendor not in [\"Contoso\", \"AdventureWorks\", \"Fabrikam\"] }",
-        "  effect = block",
-        "  reason = \"Vendor {{arg.vendor}} not in procurement allowlist.\"",
-        "}",
-      ].join("\n"),
+      body: JSON.stringify({
+        tool: "create_purchase_order",
+        json_schema: {
+          type: "object",
+          required: ["vendor"],
+          properties: { vendor: { type: "string", enum: ["Contoso", "AdventureWorks", "Fabrikam"] } },
+        },
+      }, null, 2),
     },
     {
       id: "pol_runtime_write_scope",
@@ -362,14 +470,7 @@
       updatedAt: iso(3 * 24 * HOUR),
       updatedBy: "olivia.tan@northwind.com",
       description: "Cap total LLM + tool payout per session at $10 USD.",
-      body: [
-        "policy \"rate.per_session_usd:10\" {",
-        "  applies_to = session",
-        "  when { session.cost_usd > 10.00 }",
-        "  effect = seal",
-        "  reason = \"Session exceeded $10 budget.\"",
-        "}",
-      ].join("\n"),
+      body: JSON.stringify({ max_payout_usd_micros: 10000000 }, null, 2),
     },
     {
       id: "pol_pii_redaction",
@@ -391,24 +492,32 @@
       ].join("\n"),
     },
     {
-      id: "pol_egress_allowlist",
-      name: "network.egress_allowlist",
+      id: "pol_tool_allowlist",
+      name: "runtime.tool_allowlist",
       kind: "allowlist",
-      scope: "tool.http_request",
+      scope: "tool.*",
       enabled: true,
       hits24h: 62,
       blocks24h: 1,
       updatedAt: iso(9 * 24 * HOUR),
       updatedBy: "priya.iyer@northwind.com",
-      description: "Restrict outbound HTTP to approved hostnames.",
-      body: [
-        "policy \"network.egress_allowlist\" {",
-        "  applies_to = tool(\"http_request\")",
-        "  when { arg.url.host not in vault(\"approved_hosts\") }",
-        "  effect = block",
-        "  reason = \"Egress to {{arg.url.host}} not in allowlist.\"",
-        "}",
-      ].join("\n"),
+      description: "Agents may only call the tools on this list; anything else is blocked.",
+      body: JSON.stringify({
+        allow_only: ["search_inventory", "lookup_vendor", "create_purchase_order", "create_payment", "open_review_ticket", "http_request"],
+      }, null, 2),
+    },
+    {
+      id: "pol_token_velocity",
+      name: "llm.token_velocity",
+      kind: "rate",
+      scope: "llm.request",
+      enabled: true,
+      hits24h: 12,
+      blocks24h: 0,
+      updatedAt: iso(6 * 24 * HOUR),
+      updatedBy: "olivia.tan@northwind.com",
+      description: "No principal may push more than 200k tokens through the model per hour.",
+      body: JSON.stringify({ max_tokens_per_window: 200000, window_s: 3600 }, null, 2),
     },
     {
       id: "pol_prompt_injection",
@@ -430,6 +539,30 @@
       ].join("\n"),
     },
   ];
+
+  // Same read shape the API returns: `enforceable`, parsed `spec`, and
+  // `enforcement` counted against the fleet (northwind-staging runs
+  // one bundle behind; the fresh workspace's single daemon is current).
+  function decorateMockPolicy(p) {
+    var out = Object.assign({}, p);
+    var v = pvValidatePolicySpec(p.kind, p.scope, p.body);
+    out.enforceable = pvIsEnforceableKind(p.kind);
+    out.spec = v.ok ? v.spec : null;
+    var fresh = freshDeployments();
+    var deps = fresh !== null ? fresh : MOCK_DEPLOYMENTS;
+    var real = deps.filter(function (d) { return !d.isDemo; });
+    var applied = real.filter(function (d) { return d.policyBundle && !d.policyBundle.stale; }).length;
+    var stale = real.filter(function (d) { return d.policyBundle && d.policyBundle.stale; }).length;
+    out.enforcement = { deployments: real.length, applied: applied, current: applied, stale: stale, unsupported: 0 };
+    return out;
+  }
+  function mockSpecError(detail) {
+    var e = new Error(detail);
+    e.status = 400;
+    e.errorCode = "invalid_input";
+    e.data = { errorCode: "invalid_input", specError: detail, issues: [{ path: ["body"], message: detail }] };
+    return e;
+  }
 
   /* ============================================================
    * SESSIONS (denser corpus for filters)
@@ -518,13 +651,13 @@
   var MOCK_SESSIONS = generateMockSessions();
 
   // Big-data demo: 250 extra synthetic sessions spread across the
-  // last 30 days, toggled by av_mock_bigdata. Exists to exercise the
+  // last 30 days, toggled by pv_mock_bigdata. Exists to exercise the
   // code paths the 32-session fixture can never reach — Load more
   // pagination, sort across pages, the DOM cap — and to answer the
   // investor question "what does this look like at scale?".
   var BIGDATA_CACHE = null;
   function bigDataOn() {
-    try { return localStorage.getItem("av_mock_bigdata") === "1"; } catch (e) { return false; }
+    try { return localStorage.getItem("pv_mock_bigdata") === "1"; } catch (e) { return false; }
   }
   function bigDataSessions() {
     if (BIGDATA_CACHE) return BIGDATA_CACHE;
@@ -808,8 +941,8 @@
     {
       id: "saml_okta_prod",
       displayName: "Okta production",
-      ssoUrl: "https://northwind.okta.com/app/agentvisor_prod_1/sso/saml",
-      sloUrl: "https://northwind.okta.com/app/agentvisor_prod_1/slo/saml",
+      ssoUrl: "https://northwind.okta.com/app/proofvisor_prod_1/sso/saml",
+      sloUrl: "https://northwind.okta.com/app/proofvisor_prod_1/slo/saml",
       entityIdIdp: "http://www.okta.com/exkA1B2C3D4E5F6G7H8",
       x509Cert: "-----BEGIN CERTIFICATE-----\nMIIDpDCCAoygAwIBAgIGAX0EXAMPLE\n...(truncated)...\n-----END CERTIFICATE-----",
       wantAssertionsSigned: true,
@@ -824,11 +957,11 @@
       isActive: true,
       hasSpKeypair: true,
       spCertPem: "-----BEGIN CERTIFICATE-----\nMIIDazCCAlOgAwIBAgIUX9c5\n...(truncated)...\n-----END CERTIFICATE-----",
-      spEntityId: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod",
-      spAcsUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/acs",
-      spSloUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/slo",
-      spLoginUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/login",
-      spMetadataUrl: "https://agentvisorai.me/api/v1/auth/saml/saml_okta_prod/metadata.xml",
+      spEntityId: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod",
+      spAcsUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/acs",
+      spSloUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/slo",
+      spLoginUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/login",
+      spMetadataUrl: "https://proofvisor.com/api/v1/auth/saml/saml_okta_prod/metadata.xml",
       x509CertFingerprint: "d4:3f:6a:b2:81:29:57:83:19:04:af:c3:76:98:ea:d5:78:14:5c:7d",
       createdAt: iso(20 * 24 * HOUR),
       updatedAt: iso(3 * 24 * HOUR),
@@ -859,7 +992,7 @@
    * ============================================================ */
 
   /* ── FRESH-WORKSPACE SIMULATION (first-user story) ───────────
-   * When av_mock_fresh_t0 is set (by signup), the org starts empty:
+   * When pv_mock_fresh_t0 is set (by signup), the org starts empty:
    * no deployments until the daemon "connects" (FRESH_CONNECT_MS),
    * then the first sessions stream in one at a time. The featured
    * blocked session arrives second, bringing the first $8,400 save.
@@ -869,13 +1002,13 @@
   var FRESH_SESSION_AT = [16000, 21000, 26000];
   function freshElapsed() {
     try {
-      var v = localStorage.getItem("av_mock_fresh_t0");
+      var v = localStorage.getItem("pv_mock_fresh_t0");
       if (!v) return null;
       var el = Date.now() - +v;
       // Corrupt (NaN) or future t0 would freeze fresh mode in a
       // perpetual "connecting" state — self-heal instead.
       if (!isFinite(el) || el < 0) {
-        try { localStorage.removeItem("av_mock_fresh_t0"); } catch (e2) {}
+        try { localStorage.removeItem("pv_mock_fresh_t0"); } catch (e2) {}
         return null;
       }
       return el;
@@ -889,7 +1022,7 @@
   // straddling a millisecond).
   function freshT0Ms() {
     try {
-      var v = localStorage.getItem("av_mock_fresh_t0");
+      var v = localStorage.getItem("pv_mock_fresh_t0");
       if (!v) return null;
       var t0 = +v;
       if (!isFinite(t0) || t0 > Date.now()) return null;
@@ -902,7 +1035,7 @@
   function freshIdentity() {
     if (freshElapsed() == null) return null;
     try {
-      var raw = localStorage.getItem("av_mock_fresh_identity");
+      var raw = localStorage.getItem("pv_mock_fresh_identity");
       var v = raw ? JSON.parse(raw) : null;
       // Shape-check before trusting persisted state: a value that
       // parses but isn't a session (renderShell reads user.displayName
@@ -910,7 +1043,7 @@
       if (!v || typeof v !== "object" ||
           !v.user || typeof v.user.email !== "string" ||
           !v.org || typeof v.org.name !== "string") {
-        if (raw != null) try { localStorage.removeItem("av_mock_fresh_identity"); } catch (e2) {}
+        if (raw != null) try { localStorage.removeItem("pv_mock_fresh_identity"); } catch (e2) {}
         return null;
       }
       return v;
@@ -929,7 +1062,7 @@
   var freshRt = freshRtBlank(null);
   function freshRuntime() {
     var key = null;
-    try { key = localStorage.getItem("av_mock_fresh_t0"); } catch (e) {}
+    try { key = localStorage.getItem("pv_mock_fresh_t0"); } catch (e) {}
     if (freshRt.key !== key) freshRt = freshRtBlank(key);
     return freshRt;
   }
@@ -1096,10 +1229,10 @@
   }
 
   function delay(ms) {
-    // Video-recording aid: av_mock_fastload collapses the simulated
+    // Video-recording aid: pv_mock_fastload collapses the simulated
     // network latency so re-renders never flash skeletons on camera.
     // Never set in normal browsing.
-    try { if (localStorage.getItem("av_mock_fastload")) ms = Math.min(ms, 15); } catch (e) {}
+    try { if (localStorage.getItem("pv_mock_fastload")) ms = Math.min(ms, 15); } catch (e) {}
     return new Promise(function (r) { setTimeout(r, ms); });
   }
 
@@ -1143,7 +1276,7 @@
   var MockDataSource = {
     mode: "mock",
     async getSession() {
-      try { if (localStorage.getItem("av_mock_signed_out") === "1") return null; } catch (e) {}
+      try { if (localStorage.getItem("pv_mock_signed_out") === "1") return null; } catch (e) {}
       if (!mockState.session) {
         // A fresh-workspace signup persists its identity (audit D4:
         // the judge's own name must survive a reload — reverting to
@@ -1173,19 +1306,19 @@
         },
       };
       try {
-        localStorage.removeItem("av_mock_signed_out");
+        localStorage.removeItem("pv_mock_signed_out");
         // First-user story: a brand-new workspace starts EMPTY, the
         // first deployment connects after the install step, and the
         // first sessions stream in after that (see FRESH_* below).
-        localStorage.setItem("av_mock_fresh_t0", String(Date.now()));
-        localStorage.setItem("av_mock_fresh_identity", JSON.stringify(session));
+        localStorage.setItem("pv_mock_fresh_t0", String(Date.now()));
+        localStorage.setItem("pv_mock_fresh_identity", JSON.stringify(session));
       } catch (e) {}
       mockState.session = session;
       return mockState.session;
     },
     async login(input) {
       await delay(400);
-      try { localStorage.removeItem("av_mock_signed_out"); } catch (e) {}
+      try { localStorage.removeItem("pv_mock_signed_out"); } catch (e) {}
       // Signing back in with the SAME email that created the fresh
       // workspace resumes THAT workspace. login() used to wipe the
       // fresh keys unconditionally — an investor who signed up, signed
@@ -1200,8 +1333,8 @@
       // Any other email: the Northwind showcase (and the abandoned
       // fresh workspace is cleared so its onboarding sim stops).
       try {
-        localStorage.removeItem("av_mock_fresh_t0");
-        localStorage.removeItem("av_mock_fresh_identity");
+        localStorage.removeItem("pv_mock_fresh_t0");
+        localStorage.removeItem("pv_mock_fresh_identity");
       } catch (e) {}
       mockState.session = {
         user: { id: "usr_new", email: input.email, displayName: input.email.split("@")[0] },
@@ -1212,9 +1345,9 @@
     async loginWithProvider(provider) {
       await delay(500);
       try {
-        localStorage.removeItem("av_mock_signed_out");
-        localStorage.removeItem("av_mock_fresh_t0");
-        localStorage.removeItem("av_mock_fresh_identity");
+        localStorage.removeItem("pv_mock_signed_out");
+        localStorage.removeItem("pv_mock_fresh_t0");
+        localStorage.removeItem("pv_mock_fresh_identity");
       } catch (e) {}
       mockState.session = {
         user: { id: "usr_olivia", email: "olivia.tan@northwind.com", displayName: "Olivia Tan" },
@@ -1322,7 +1455,7 @@
     async webauthnAuthStart() { return { options: { challenge: "mock" } }; },
     async webauthnAuthFinish() { throw new Error("mock_no_real_authenticator"); },
     async logout() {
-      try { localStorage.setItem("av_mock_signed_out", "1"); } catch (e) {}
+      try { localStorage.setItem("pv_mock_signed_out", "1"); } catch (e) {}
       mockState.session = null;
     },
     async requestPasswordReset(input) {
@@ -1362,7 +1495,7 @@
     async createDeployment(input) {
       await delay(300);
       var id = "dep_" + Math.random().toString(36).slice(2, 8);
-      var token = "av_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+      var token = "pv_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
       var freshMode = freshElapsed() != null;
       var dep = {
         id: id,
@@ -1373,10 +1506,12 @@
         version: null,
         lastSeenAt: null,
         createdAt: new Date().toISOString(),
-        ingestTokenHint: "av_live_" + token.slice(8, 12) + "…",
+        ingestTokenHint: token.slice(0, 16) + "…",
         publicKeyHex: null,
         keyFingerprint: null,
         sessions24h: 0, spend24h: "$0.00",
+        isDemo: false,
+        policyBundle: null,
       };
       // A fresh workspace's deployments live in ITS runtime store —
       // pushing into MOCK_DEPLOYMENTS made them invisible (list reads
@@ -1388,10 +1523,10 @@
     },
     async rotateDeploymentToken(id) {
       await delay(200);
-      var token = "av_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+      var token = "pv_live_" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
       var pool = freshElapsed() != null ? (freshDeployments() || []) : MOCK_DEPLOYMENTS;
       var d = pool.find(function (x) { return x.id === id; });
-      if (d) d.ingestTokenHint = "av_live_" + token.slice(8, 12) + "…";
+      if (d) d.ingestTokenHint = token.slice(0, 16) + "…";
       recordAudit("deployment.token_rotated", d ? d.name : id);
       return { ingestToken: token };
     },
@@ -1415,6 +1550,64 @@
       recordAudit("deployment.delete", name);
     },
 
+    /* SCIM provisioning (same shapes as /api/v1/scim/*). */
+    async getScimSettings() {
+      await delay(60);
+      return Object.assign({ baseUrl: "https://api.proofvisor.com/scim/v2", planAllows: true,
+        groupMapping: { owner: "owner", admin: "admin", member: "member" } }, MOCK_SCIM.settings);
+    },
+    async updateScimSettings(fields) {
+      await delay(60);
+      Object.assign(MOCK_SCIM.settings, fields);
+      return this.getScimSettings();
+    },
+    async listScimTokens() {
+      await delay(60);
+      return MOCK_SCIM.tokens.slice();
+    },
+    async createScimToken(name) {
+      await delay(80);
+      var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      var raw = ""; for (var i = 0; i < 32; i++) raw += chars[Math.floor(Math.random() * chars.length)];
+      var token = { id: "scimtok_" + Date.now().toString(36), name: name, hint: "pv_scim_" + raw.slice(0, 6) + "…",
+        createdByEmail: "olivia.tan@northwind.com", lastUsedAt: null, createdAt: new Date().toISOString() };
+      MOCK_SCIM.tokens.unshift(token);
+      return { token: token, plaintextToken: "pv_scim_" + raw };
+    },
+    async revokeScimToken(id) {
+      await delay(60);
+      MOCK_SCIM.tokens = MOCK_SCIM.tokens.filter(function (t) { return t.id !== id; });
+      return { ok: true };
+    },
+    /* Billing (same shape as GET /api/v1/billing). The mock instance
+     * has no Stripe account: billing is not configured, nothing is
+     * gated, and the workspace is on the free plan. */
+    async getBilling() {
+      await delay(80);
+      var unlimited = { deployments: null, members: null, retentionDays: null, webhooks: null, scim: true, saml: true };
+      return {
+        configured: false, enforced: false, plan: "free", planStatus: "active", planRenewsAt: null,
+        hasStripeCustomer: false, hasSubscription: false,
+        limits: { deployments: 2, members: 3, retentionDays: 30, webhooks: 1, scim: false, saml: false },
+        usage: { deployments: MOCK_DEPLOYMENTS.length, members: 4, webhooks: 1, retentionDays: 90 },
+        plans: {
+          free: { deployments: 2, members: 3, retentionDays: 30, webhooks: 1, scim: false, saml: false },
+          team: { deployments: 10, members: 25, retentionDays: 365, webhooks: 10, scim: true, saml: true },
+          enterprise: unlimited,
+        },
+        purchasable: { team: false, enterprise: false },
+      };
+    },
+    async startCheckout() {
+      var e = new Error("billing_not_configured"); e.status = 503; e.errorCode = "billing_not_configured";
+      e.data = { detail: "Billing is not enabled on this demo workspace." };
+      throw e;
+    },
+    async openBillingPortal() {
+      var e = new Error("billing_not_configured"); e.status = 503; e.errorCode = "billing_not_configured";
+      e.data = { detail: "Billing is not enabled on this demo workspace." };
+      throw e;
+    },
     async getOverview(range) {
       await delay(140);
       if (freshElapsed() != null) return freshOverview(range || "24h");
@@ -1566,6 +1759,7 @@
         blockedPayoutUsdMicros: "0",
         receiptHash: "sha256:pending…",
         policiesFired: [],
+        isDemo: true,
         _live: true,
       };
       if (freshMode) freshRuntime().liveSessions.unshift(s);
@@ -1631,6 +1825,23 @@
       }, SEAL_AT);
 
       return { id: s.id, valueUsd: value, vendor: vendor, blockAtMs: BLOCK_AT, sealAtMs: SEAL_AT };
+    },
+    /* Demo footprint + removal — same contract as GET/DELETE /api/v1/demo
+     * in live mode. In the mock the demo rows are the staged attack
+     * sessions (isDemo); the Northwind fixtures themselves are the
+     * showcase, not "demo data" the user asked for. */
+    async getDemoStatus() {
+      var pool = freshElapsed() != null ? freshRuntime().liveSessions : MOCK_SESSIONS;
+      var n = pool.filter(function (x) { return x.isDemo; }).length;
+      return { present: n > 0, deployments: 0, sessions: n };
+    },
+    async removeDemoData() {
+      await delay(150);
+      var pool = freshElapsed() != null ? freshRuntime().liveSessions : MOCK_SESSIONS;
+      var removed = 0;
+      for (var i = pool.length - 1; i >= 0; i--) if (pool[i].isDemo) { pool.splice(i, 1); removed++; }
+      recordAudit("demo.removed", "demo-attack", removed + " staged session" + (removed === 1 ? "" : "s"));
+      return { ok: true, deploymentsRemoved: 0, sessionsRemoved: removed };
     },
     async getReceipt(sessionId) {
       await delay(120);
@@ -1702,20 +1913,20 @@
 
     async listPolicies() {
       await delay(100);
-      if (freshElapsed() != null) return MOCK_POLICIES.slice(0, 4).map(freshPolicy);
-      return MOCK_POLICIES.slice();
+      if (freshElapsed() != null) return MOCK_POLICIES.slice(0, 4).map(freshPolicy).map(decorateMockPolicy);
+      return MOCK_POLICIES.map(decorateMockPolicy);
     },
     async getPolicy(id) {
       await delay(100);
       var p = MOCK_POLICIES.find(function (x) { return x.id === id; });
       if (!p) throw new Error("not_found");
-      return freshPolicy(p);
+      return decorateMockPolicy(freshPolicy(p));
     },
     async togglePolicy(id) {
       await delay(120);
       var p = MOCK_POLICIES.find(function (x) { return x.id === id; });
       if (p) { p.enabled = !p.enabled; recordAudit(p.enabled ? "policy.enabled" : "policy.disabled", p.name); }
-      return p;
+      return p ? decorateMockPolicy(p) : p;
     },
     async updatePolicy(id, fields) {
       await delay(150);
@@ -1727,11 +1938,17 @@
         if (MOCK_POLICIES.some(function (x) { return x.id !== id && x.name === nm; })) { var epu3 = new Error("policy_name_in_use"); epu3.status = 409; epu3.errorCode = "policy_name_in_use"; throw epu3; }
         p.name = nm;
       }
+      if (fields && (fields.body !== undefined || fields.kind !== undefined || fields.scope !== undefined)) {
+        var vUp = pvValidatePolicySpec(fields.kind !== undefined ? fields.kind : p.kind, fields.scope !== undefined ? fields.scope : p.scope, fields.body !== undefined ? fields.body : p.body);
+        if (!vUp.ok) throw mockSpecError(vUp.detail);
+      }
       if (fields && fields.description !== undefined) p.description = String(fields.description).slice(0, 500);
+      if (fields && fields.kind !== undefined) p.kind = String(fields.kind);
+      if (fields && fields.scope !== undefined) p.scope = String(fields.scope).slice(0, 120);
       if (fields && fields.body !== undefined) p.body = String(fields.body).slice(0, 16384);
       p.updatedAt = new Date().toISOString();
       recordAudit("policy.update", p.name);
-      return p;
+      return decorateMockPolicy(p);
     },
     async deletePolicy(id) {
       await delay(150);
@@ -1747,12 +1964,14 @@
       var id = base;
       if (MOCK_POLICIES.some(function (x) { return x.id === id; })) id = base + "_" + Date.now().toString(36);
       var by = (mockState.session && mockState.session.user && mockState.session.user.email) || "olivia.tan@northwind.com";
+      var vNew = pvValidatePolicySpec(input.kind || "guardrail", input.scope || "tool.*", input.body || "");
+      if (!vNew.ok) throw mockSpecError(vNew.detail);
       var p = {
         id: id,
         name: input.name,
         kind: input.kind || "guardrail",
         scope: input.scope || "tool.*",
-        enabled: true,
+        enabled: input.enabled !== undefined ? !!input.enabled : true,
         hits24h: 0,
         blocks24h: 0,
         updatedAt: new Date().toISOString(),
@@ -1762,7 +1981,7 @@
       };
       MOCK_POLICIES.unshift(p);
       recordAudit("policy.created", p.name, p.kind + " · " + p.scope);
-      return p;
+      return decorateMockPolicy(p);
     },
 
     async listMembers() {
@@ -1776,7 +1995,7 @@
           email: (fid && fid.user.email) || "you@yourco.dev",
           displayName: (fid && (fid.user.displayName || fid.user.email)) || "You",
           role: (fid && fid.org && fid.org.role) || "owner",
-          lastActive: new Date().toISOString(),
+          joinedAt: new Date().toISOString(),
         }];
       }
       return MOCK_MEMBERS.slice();
@@ -1833,9 +2052,9 @@
         throw new Error("Password must be at least 12 characters.");
       }
       try {
-        localStorage.removeItem("av_mock_signed_out");
-        localStorage.removeItem("av_mock_fresh_t0");
-        localStorage.removeItem("av_mock_fresh_identity");
+        localStorage.removeItem("pv_mock_signed_out");
+        localStorage.removeItem("pv_mock_fresh_t0");
+        localStorage.removeItem("pv_mock_fresh_identity");
       } catch (e) {}
       var email = input.email || "you@northwind.com";
       var name = (input.displayName || "").trim() || email.split("@")[0];
@@ -1851,7 +2070,7 @@
       }
       var uid = "usr_" + email.split("@")[0].toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 20);
       if (!MOCK_MEMBERS.some(function (m) { return m.email === email; })) {
-        MOCK_MEMBERS.push({ id: uid, userId: uid, email: email, displayName: name, role: role, lastActive: new Date().toISOString() });
+        MOCK_MEMBERS.push({ id: uid, userId: uid, email: email, displayName: name, role: role, joinedAt: new Date().toISOString() });
       }
       mockState.session = {
         user: { id: uid, email: email, displayName: name },
@@ -1878,11 +2097,11 @@
       if (freshElapsed() != null) return freshRuntime().apiKeys.slice();
       return MOCK_API_KEYS.slice();
     },
-    async createApiKey(name) {
+    async createApiKey(name, role) {
       await delay(120);
-      var hint = "av_srv_" + Math.random().toString(36).slice(2, 10) + "…";
-      var plaintext = "av_srv_" + Math.random().toString(36).slice(2, 10).padEnd(28, "0");
-      var row = { id: "key_" + Math.random().toString(36).slice(2, 8), name: name, createdAt: new Date().toISOString(), lastUsedAt: null, hint: hint };
+      var hint = "pv_srv_" + Math.random().toString(36).slice(2, 10) + "…";
+      var plaintext = "pv_srv_" + Math.random().toString(36).slice(2, 10).padEnd(28, "0");
+      var row = { id: "key_" + Math.random().toString(36).slice(2, 8), name: name, role: role || "admin", createdAt: new Date().toISOString(), lastUsedAt: null, hint: hint };
       if (freshElapsed() != null) freshRuntime().apiKeys.unshift(row);
       else MOCK_API_KEYS.unshift(row);
       recordAudit("apikey.created", name);
@@ -2113,7 +2332,7 @@
       await delay(200);
       if (!password) { var e1 = new Error("password_required"); e1.status = 400; throw e1; }
       var lines = [
-        JSON.stringify({ type: "header", format: "agentvisor.export.v1", generatedAt: new Date().toISOString(), note: "demo fixture export" }),
+        JSON.stringify({ type: "header", format: "proofvisor.export.v1", generatedAt: new Date().toISOString(), note: "demo fixture export" }),
         JSON.stringify({ type: "user", email: (mockState.session && mockState.session.user.email) || "demo@northwind.com" }),
         JSON.stringify({ type: "org", name: (mockState.session && mockState.session.org.name) || "Northwind Traders" }),
       ];
@@ -2229,10 +2448,10 @@
     // browser-wide cookie; the server refuses mutations whose pin
     // disagrees with the cookie's org (409 org_context_changed) so a
     // stale tab's dialog can't retarget its side effects. app.js
-    // updates window.__avActiveOrgId on login/session-load/org-switch.
+    // updates window.__pvActiveOrgId on login/session-load/org-switch.
     try {
-      if (typeof window !== "undefined" && window.__avActiveOrgId) {
-        headers["X-AV-Org"] = window.__avActiveOrgId;
+      if (typeof window !== "undefined" && window.__pvActiveOrgId) {
+        headers["X-PV-Org"] = window.__pvActiveOrgId;
       }
     } catch (e) {}
     var res = await fetch(apiUrl(path), {
@@ -2308,7 +2527,7 @@
       if (res.status === 401 && !path.endsWith("/auth/me") && !bodyCredential401) {
         // Signal the app; app.js listens for this and navigates.
         try {
-          window.dispatchEvent(new CustomEvent("av-session-expired", { detail: { errorCode: err.errorCode } }));
+          window.dispatchEvent(new CustomEvent("pv-session-expired", { detail: { errorCode: err.errorCode } }));
         } catch (e) {}
       }
       throw err;
@@ -2479,10 +2698,24 @@
           version: d.daemonVersion || null,
           lastSeenAt: d.lastIngestAt || null,
           createdAt: d.createdAt,
-          ingestTokenHint: d.ingestTokenHint ? "av_live_" + d.ingestTokenHint.slice(0, 4) + "…" : "—",
+          // The server stores and returns the token's real leading
+          // characters ("pv_live_" + 8 chars for tokens minted with the
+          // prefix; 8 raw chars for older rows). Display it verbatim —
+          // never prepend a prefix the token may not have.
+          ingestTokenHint: d.ingestTokenHint ? d.ingestTokenHint + "…" : "—",
           publicKeyHex: d.publicKeyHex || null,
           keyFingerprint: d.publicKeyHex ? "kf_" + d.publicKeyHex.slice(0, 8) : null,
-          sessions24h: null, spend24h: null,
+          // Real 24h rollups from /api/v1/deployments (sessions opened
+          // in the last 24h and their LLM spend). Spend is null for the
+          // member role, which the server redacts.
+          sessions24h: typeof d.sessions24h === "number" ? d.sessions24h : null,
+          spend24h: d.spend24hUsdMicros != null ? "$" + (parseInt(d.spend24hUsdMicros, 10) / 1e6).toFixed(2) : null,
+          // Staged by "Simulate an attack" (POST /api/v1/demo/attack).
+          isDemo: !!d.isDemo,
+          // What this daemon last applied from GET /ingest/policies:
+          // { etag, appliedAt, daemonVersion, stale, applied, unsupported }
+          // or null when it has never pulled a bundle.
+          policyBundle: d.policyBundle || null,
         };
       });
     },
@@ -2500,8 +2733,9 @@
         environment: dep.environment || input.environment || "production",
         status: "pending", version: null,
         lastSeenAt: null, createdAt: dep.createdAt || new Date().toISOString(),
-        ingestTokenHint: "av_live_" + (r.ingestToken || "").slice(8, 12) + "…",
+        ingestTokenHint: dep.ingestTokenHint ? dep.ingestTokenHint + "…" : (r.ingestToken || "").slice(0, 16) + "…",
         publicKeyHex: null, keyFingerprint: null, sessions24h: 0, spend24h: "$0.00",
+        isDemo: false, policyBundle: null,
       }, ingestToken: r.ingestToken };
     },
     async rotateDeploymentToken(id) {
@@ -2514,6 +2748,32 @@
       await apiFetch("/api/v1/deployments/" + id + qs, { method: "DELETE" });
     },
 
+    async getScimSettings() {
+      return (await apiFetch("/api/v1/scim/settings")).settings;
+    },
+    async updateScimSettings(fields) {
+      return (await apiFetch("/api/v1/scim/settings", { method: "PATCH", body: fields })).settings;
+    },
+    async listScimTokens() {
+      return (await apiFetch("/api/v1/scim/tokens")).tokens;
+    },
+    async createScimToken(name) {
+      return apiFetch("/api/v1/scim/tokens", { method: "POST", body: { name: name } });
+    },
+    async revokeScimToken(id) {
+      return apiFetch("/api/v1/scim/tokens/" + encodeURIComponent(id), { method: "DELETE" });
+    },
+    async getBilling() {
+      return apiFetch("/api/v1/billing");
+    },
+    async startCheckout(plan) {
+      var r = await apiFetch("/api/v1/billing/checkout", { method: "POST", body: { plan: plan } });
+      return r.url;
+    },
+    async openBillingPortal() {
+      var r = await apiFetch("/api/v1/billing/portal", { method: "POST" });
+      return r.url;
+    },
     async getOverview(range) {
       var r = await apiFetch("/api/v1/overview?range=" + encodeURIComponent(range || "24h"));
       var stats = r.stats || {};
@@ -2538,15 +2798,39 @@
       return {
         period: "last_" + (r.range || "24h"),
         sessions: stats.sessions || sessions.length,
-        events: 0,
+        events: stats.events || 0,
         toolsAllowed: stats.toolsAllowed || 0,
         toolsBlocked: stats.toolsBlocked || 0,
         llmSpendUsd: llmCents.toFixed(2),
         blockedSpendUsd: blockedDollars.toFixed(0),
         deployments: stats.deployments || 0,
         deploymentsHealthy: stats.deploymentsHealthy || 0,
+        demoDeployments: stats.demoDeployments || 0,
+        demoSessions: stats.demoSessions || 0,
         series: series.length ? series : null,
       };
+    },
+    /* Live-mode "Simulate an attack": the server stages the same
+     * blocked-payment story the mock plays (deployment "demo-attack",
+     * one session, receipt signed with the public demo key) and paces
+     * the block at blockAtMs and the seal at sealAtMs. Owner/admin only
+     * (403 for members — the button is hidden for them). */
+    async simulateAttack() {
+      var r = await apiFetch("/api/v1/demo/attack", { method: "POST", body: { pace: "staged" } });
+      return {
+        id: r.session.id,
+        deploymentId: r.deployment.id,
+        valueUsd: r.valueUsd,
+        vendor: r.vendor,
+        blockAtMs: r.blockAtMs,
+        sealAtMs: r.sealAtMs,
+      };
+    },
+    async getDemoStatus() {
+      return apiFetch("/api/v1/demo");
+    },
+    async removeDemoData() {
+      return apiFetch("/api/v1/demo", { method: "DELETE" });
     },
     async listSessions(params) {
       // Uses the new cursor-paginated /sessions endpoint (see
@@ -2577,6 +2861,10 @@
       }
       var r = await apiFetch("/api/v1/sessions/" + id + qs);
       var s = normalizeSession(r.session);
+      if (!s.model) {
+        var models = modelsFromEvents(r.session.events);
+        s.model = models.length ? models.join(", ") : null;
+      }
       var events = (r.session.events || []).map(normalizeEvent);
       // R208 F1: `?? null` preserves a legitimate 0 cursor. Prior
       // `|| null` coerced any falsy value (including numeric 0)
@@ -2664,6 +2952,7 @@
           scope: input.scope || "tool.*",
           description: input.description || "",
           body: input.body || "",
+          enabled: input.enabled !== undefined ? !!input.enabled : true,
         },
       });
       return r.policy;
@@ -2672,7 +2961,10 @@
       try {
         var r = await apiFetch("/api/v1/members");
         return (r.members || []).map(function (m) {
-          return { userId: m.userId, email: m.email, displayName: m.displayName, role: m.role, lastActive: m.joinedAt, mfaEnrolled: !!m.mfaEnrolled };
+          // The server records when a membership was created; it has no
+          // last-activity timestamp, so the console shows "Joined" and
+          // never relabels one as the other.
+          return { userId: m.userId, email: m.email, displayName: m.displayName, role: m.role, joinedAt: m.joinedAt, mfaEnrolled: !!m.mfaEnrolled };
         });
       } catch (e) { return []; }
     },
@@ -2704,7 +2996,7 @@
     async listApiKeys() {
       // Real programmatic API keys. The console POSTs a name and gets
       // back a plaintext token exactly once; we surface a hint like
-      // "av_srv_a091…" the operator can use to identify the row later.
+      // "pv_srv_a091…" the operator can use to identify the row later.
       // Loading failure must reach the page's error state. Returning
       // an empty list would falsely claim that no active keys exist.
       var res = await apiFetch("/api/v1/keys");
@@ -2720,8 +3012,12 @@
           };
       });
     },
-    async createApiKey(name) {
-      var res = await apiFetch("/api/v1/keys", { method: "POST", body: { name: name } });
+    async createApiKey(name, role) {
+      // role is one of owner|admin|member (server default: admin). The
+      // server refuses a role above the caller's own.
+      var body = { name: name };
+      if (role) body.role = role;
+      var res = await apiFetch("/api/v1/keys", { method: "POST", body: body });
       return { key: res.key, plaintextToken: res.plaintextToken };
     },
     async revokeApiKey(id) {
@@ -2953,8 +3249,13 @@
       deploymentId: (s.deployment && s.deployment.id) || s.deploymentId,
       deploymentName: (s.deployment && s.deployment.name) || null,
       agent: s.agent,
-      user: s.user || "—",
-      model: s.model || "gpt-4o",
+      // The ingest payload carries no end-user identity and no
+      // session-level model name. Leave both empty rather than inventing
+      // a value; the renderer prints "—" for an empty actor and
+      // getSessionById fills `model` from the model names the daemon
+      // recorded on the session's LLM events.
+      user: s.user || null,
+      model: s.model || null,
       status: s.status === "sealed" ? "completed" : (s.status === "live" ? "in_progress" : s.status),
       startedAt: s.openedAt || s.startedAt,
       endedAt: s.closedAt || s.endedAt,
@@ -2967,8 +3268,28 @@
       payoutUsdMicros: (s.payoutUsdMicros != null) ? String(s.payoutUsdMicros) : "0",
       blockedPayoutUsdMicros: (s.blockedPayoutUsdMicros != null) ? String(s.blockedPayoutUsdMicros) : "0",
       receiptHash: s.receiptHash || null,
-      policiesFired: s.policiesFired || [],
+      // Policy names the daemon attributed to this session's events
+      // (server: Event.policyName grouped per session).
+      policiesFired: Array.isArray(s.policiesFired) ? s.policiesFired : [],
+      // Staged demo row (POST /api/v1/demo/attack) — labeled in every table.
+      isDemo: !!s.isDemo || !!(s.deployment && s.deployment.isDemo),
     };
+  }
+  // Distinct model names the daemon recorded on a session's LLM events.
+  // Event bodies are the JSON the uploader builds per ATIF step
+  // ({ modelName, message, toolCalls, … }); member-redacted bodies are a
+  // sentinel string and simply parse to nothing.
+  function modelsFromEvents(events) {
+    var seen = {};
+    var out = [];
+    (events || []).forEach(function (e) {
+      if (e.kind !== "llm" || typeof e.body !== "string") return;
+      var name = null;
+      try { var b = JSON.parse(e.body); name = b && typeof b.modelName === "string" ? b.modelName : null; } catch (err) { name = null; }
+      if (!name && typeof e.sub === "string" && e.sub && e.sub.indexOf("[") !== 0) name = e.sub;
+      if (name && !seen[name]) { seen[name] = true; out.push(name); }
+    });
+    return out;
   }
   function normalizeEvent(e) {
     var sev = "info";

@@ -12,7 +12,7 @@
  *
  * The cert has:
  *   • Issuer = Subject (self-signed).
- *   • Subject CN = "AgentVisor SP for <configId>".
+ *   • Subject CN = "ProofVisor SP for <configId>".
  *   • notBefore = now, notAfter = now + `days` (default 5 years).
  *   • Signature alg = sha256WithRSAEncryption.
  *   • Serial number = 128 random bits.

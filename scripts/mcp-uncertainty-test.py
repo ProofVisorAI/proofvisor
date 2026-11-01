@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise uncertain MCP effects through a real daemon and restart.
 
-Build separately, then set AGENTVISORD or pass --agentvisord. This standard-
+Build separately, then set PROOFVISORD or pass --proofvisord. This standard-
 library drill uses only owned processes, private files and loopback HTTP. It
 never invokes Cargo, Docker, an external provider, or a shared service.
 """
@@ -41,7 +41,7 @@ def request(base, path, token=None, data=None, session=None):
     if token:
         headers["Authorization"] = "Bearer " + token
     if session:
-        headers["X-AV-Session"] = session
+        headers["X-PV-Session"] = session
     body = json.dumps(data).encode() if data is not None else None
     req = Request(base + path, headers=headers, data=body)
     try:
@@ -104,9 +104,9 @@ def events(directory, topic):
 
 
 def run(args):
-    binary = Path(args.agentvisord).resolve()
+    binary = Path(args.proofvisord).resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
-        raise ValueError("Set AGENTVISORD to a previously built executable")
+        raise ValueError("Set PROOFVISORD to a previously built executable")
     output = Path(args.output_dir).absolute()
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     if (output.is_symlink() or output.stat().st_uid != os.getuid()
@@ -164,8 +164,8 @@ def run(args):
                     active -= 1
 
     def start(config, base, label, await_ready=True):
-        environment = {k: v for k, v in os.environ.items() if not k.startswith("AV_")}
-        environment.update(AV_SIGNING_SEED_FILE=str(work / "signing.seed"), RUST_LOG="info")
+        environment = {k: v for k, v in os.environ.items() if not k.startswith("PV_")}
+        environment.update(PV_SIGNING_SEED_FILE=str(work / "signing.seed"), RUST_LOG="info")
         with (output / f"{label}.log").open("ab") as log:
             process = subprocess.Popen([str(binary), "--config", str(config)], cwd=work,
                                        env=environment, stdout=log, stderr=subprocess.STDOUT,
@@ -340,7 +340,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agentvisord", default=os.environ.get("AGENTVISORD", str(ROOT / "target/release/agentvisord")))
+    parser.add_argument("--proofvisord", default=os.environ.get("PROOFVISORD", str(ROOT / "target/release/proofvisord")))
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
     os.umask(0o077)

@@ -14,7 +14,7 @@
 import { chromium } from "playwright";
 import { AxeBuilder } from "@axe-core/playwright";
 
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/app/";
 const IGNORE_RULES = [
   // Known intentional decisions:
   //   * Nothing right now — every rule fires or is documented.
@@ -39,7 +39,7 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 900 
 const page = await context.newPage();
 
 // Force signed-out first so login form renders too.
-await page.addInitScript(() => { try { localStorage.setItem("av_mock_signed_out", "1"); } catch {} });
+await page.addInitScript(() => { try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {} });
 await page.goto(SITE + "#/login", { waitUntil: "networkidle" });
 await page.waitForSelector("input#email", { timeout: 15000 });
 await page.locator("input#email").fill("olivia.tan@northwind.com");
@@ -55,7 +55,7 @@ let anyFail = false;
 // shipped invisibly while this audit only covered one theme.
 for (const theme of ["light", "dark"]) {
   await page.evaluate((t) => {
-    try { localStorage.setItem("av_theme", t); } catch {}
+    try { localStorage.setItem("pv_theme", t); } catch {}
     document.documentElement.setAttribute("data-theme", t);
   }, theme);
 
@@ -107,7 +107,7 @@ const MODALS = [
 ];
 for (const theme of ["light", "dark"]) {
   await page.evaluate((t) => {
-    try { localStorage.setItem("av_theme", t); } catch {}
+    try { localStorage.setItem("pv_theme", t); } catch {}
     document.documentElement.setAttribute("data-theme", t);
   }, theme);
   for (const m of MODALS) {

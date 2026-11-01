@@ -2,7 +2,7 @@ config_version = 1
 # Bind to loopback by default. Override to a routable interface only when
 # you also enable `require_identity = true` OR keep the whole harness
 # behind an authenticated ingress. Compose/K8s manifests can flip this via
-# `AV_LISTEN` or the config override chain.
+# `PV_LISTEN` or the config override chain.
 listen = "127.0.0.1:8484"
 upstream_url = "http://host.docker.internal:4000"
 upstream_http2_prior_knowledge = false
@@ -44,8 +44,8 @@ audience = "agentvisor-ai"
 # "signed" is the product's core promise (every session close mints an
 # Ed25519 receipt). The serde default is "unsigned" for zero-config
 # ergonomics, but every SHIPPED config opts into signed — matching
-# `avctl init` and the README's headline claim. Clients can still
-# override per request via X-AV-Workflow.
+# `pvctl init` and the README's headline claim. Clients can still
+# override per request via X-PV-Workflow.
 default_workflow = "signed"
 consequential_tools = ["db_write", "payout", "merge", "deploy"]
 session_idle_close_s = 900
@@ -61,6 +61,28 @@ reconcile_tick_s = 5
 # Off in the example so a fresh checkout does not expose it to anyone
 # reachable on the listen interface.
 dashboard_enabled = false
+
+# Sensitive-data redaction, applied to event payloads and ATIF step
+# fields before anything is written to the journal, the event bridge, or
+# the tenant OTEL exporter. Redaction runs only when this list (or
+# `redaction_paths`) is non-empty. Whenever it runs, the built-in
+# patterns are always included: Bearer tokens, sk-/key- API keys, email
+# addresses, Luhn-valid card numbers, US Social Security numbers, and
+# public IPv4 addresses. The entries below add well-known credential
+# formats the built-ins miss (AWS, GitHub, Google, Slack, bare JWTs);
+# they mirror `pv_harness::config::RECOMMENDED_REDACTION_PATTERNS`.
+# To turn redaction OFF, set `redaction_patterns = []` and leave
+# `redaction_paths` unset.
+redaction_patterns = [
+  '(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)',
+  '(?-u:\b)gh[opsur]_[A-Za-z0-9]{36,255}(?-u:\b)',
+  '(?-u:\b)AIza[0-9A-Za-z_-]{35}(?-u:\b)',
+  '(?-u:\b)xox[abeprs]-[A-Za-z0-9-]{10,255}',
+  '(?-u:\b)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}',
+]
+# JSON pointer paths whose values are always replaced, whatever they
+# contain, for example:
+# redaction_paths = ["/payload/password"]
 
 [breaker]
 delta_epsilon = 0.30

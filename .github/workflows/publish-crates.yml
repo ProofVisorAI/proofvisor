@@ -69,9 +69,9 @@ jobs:
       # needs. The previous hand-rolled per-crate loop used
       # `cargo package --no-verify`, but even --no-verify resolves
       # `{ path, version }` dependencies against the crates.io INDEX, so
-      # every crate except av-core failed the gate on precisely the
+      # every crate except pv-core failed the gate on precisely the
       # releases it existed to protect (reproduced locally: "no matching
-      # package named `av-core` found"). The gate could never pass
+      # package named `pv-core` found"). The gate could never pass
       # before the first real publish.
       - name: Dry-run publish (whole workspace)
         run: cargo publish --workspace --dry-run --allow-dirty

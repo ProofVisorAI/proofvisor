@@ -9,8 +9,8 @@ import { ipMatchesAny } from "./cidr.js";
  * throws — routes that require auth call `requireSession()` below.
  *
  * Two auth flavors:
- *   1. av_session cookie (JWT) — the console SPA / OAuth / SAML users.
- *   2. Authorization: Bearer av_srv_<plaintext> — programmatic API keys.
+ *   1. pv_session cookie (JWT) — the console SPA / OAuth / SAML users.
+ *   2. Authorization: Bearer pv_srv_<plaintext> — programmatic API keys.
  *
  * Cookie path also confirms that:
  *   1. the (userId, orgId) pair in the token is still an active membership
@@ -34,9 +34,12 @@ export async function authenticate(
 ): Promise<void> {
   // ---------- API key path ----------
   const auth = req.headers.authorization;
-  if (typeof auth === "string" && auth.startsWith("Bearer av_srv_")) {
+  // "av_srv_" is the prefix keys had before the ProofVisor rename; those
+  // keys are still in use and must keep working. Both prefixes are seven
+  // characters, and the stored hash covers the whole presented string.
+  if (typeof auth === "string" && (auth.startsWith("Bearer pv_srv_") || auth.startsWith("Bearer av_srv_"))) {
     const plaintext = auth.slice("Bearer ".length);
-    const hint = plaintext.slice("av_srv_".length, "av_srv_".length + 8);
+    const hint = plaintext.slice("pv_srv_".length, "pv_srv_".length + 8);
     const candidates = await db.apiKey.findMany({
       where: { tokenHint: hint, revokedAt: null },
       select: {
@@ -66,7 +69,7 @@ export async function authenticate(
     }
     // R100 F2: fall through to the cookie path when the API-key
     // lookup finds no match. Prior shape returned early here —
-    // any Authorization header carrying the av_srv_ prefix
+    // any Authorization header carrying the pv_srv_ prefix
     // (attacker-injected via a compromised browser extension,
     // a misconfigured API gateway that appends a stale bearer,
     // or an attacker-controlled fetch from same-site) suppressed
@@ -89,7 +92,10 @@ export async function authenticate(
     select: {
       sessionRevokedAt: true,
       memberships: {
-        where: { orgId: claims.orgId },
+        // `active: false` is what SCIM deprovisioning (deactivate) sets:
+        // the row stays for re-activation and history, but no cookie
+        // minted for this org may resolve to a session.
+        where: { orgId: claims.orgId, active: true },
         select: {
           id: true,
           role: true,
@@ -156,9 +162,9 @@ export async function assertOrgMembership(
 ): Promise<boolean> {
   const m = await db.membership.findUnique({
     where: { userId_orgId: { userId, orgId } },
-    select: { id: true },
+    select: { active: true },
   });
-  return !!m;
+  return !!m && m.active;
 }
 
 export function clearSessionCookie(reply: FastifyReply): void {

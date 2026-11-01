@@ -1,7 +1,7 @@
 # Investor mockup video pipeline
 
-Reproducible 43-second walkthrough of the AgentVisor console for the
-pitch. Renders against the live site at https://agentvisorai.me so it
+Reproducible 43-second walkthrough of the ProofVisor console for the
+pitch. Renders against the live site at https://proofvisor.com so it
 always reflects what an investor visiting the URL would see.
 
 ## Requirements
@@ -23,22 +23,22 @@ bash scripts/video/build-audio.sh       # ~5s,  writes /tmp/video-v4/audio/sound
 bash scripts/video/build-ambience.sh     # ~1s,  writes /tmp/video-v4/audio/ambience-46s.wav
 bash scripts/video/build-narration.sh    # ~15s, writes /tmp/video-v4/audio/narration-44s.aac (requires macOS `say`)
 bash scripts/video/compose.sh           # ~90s, writes 3 cuts (silent, whoosh, narrated)
-bash scripts/video/compose-teaser.sh    # ~30s, writes /tmp/video-v4/agentvisor-mockup-teaser.mp4
+bash scripts/video/compose-teaser.sh    # ~30s, writes /tmp/video-v4/proofvisor-mockup-teaser.mp4
 ```
 
 Result:
 
-* `agentvisor-mockup-v21-distilled.mp4` — 44.7s @ 1920×1080 H.264, narration + subtle whoosh. **Definitive pitch cut.**
-* `agentvisor-mockup-v9-audio.mp4` — same visuals, subtle whoosh only (social autoplay).
-* `agentvisor-mockup-v4.mp4` — same visuals, silent (safe fallback).
-* `agentvisor-mockup-teaser.mp4` — 12s social cut.
+* `proofvisor-mockup-v21-distilled.mp4` — 44.7s @ 1920×1080 H.264, narration + subtle whoosh. **Definitive pitch cut.**
+* `proofvisor-mockup-v9-audio.mp4` — same visuals, subtle whoosh only (social autoplay).
+* `proofvisor-mockup-v4.mp4` — same visuals, silent (safe fallback).
+* `proofvisor-mockup-teaser.mp4` — 12s social cut.
 
 ## Uploading to GitHub for a shareable URL
 
 ```sh
-FILE=/tmp/video-v4/agentvisor-mockup-v4.mp4
-NAME='agentvisor-mockup-final.mp4'
-REPO_ID="$(gh api repos/AgentVisorAI/agentvisor-ai --jq .id)"
+FILE=/tmp/video-v4/proofvisor-mockup-v4.mp4
+NAME='proofvisor-mockup-final.mp4'
+REPO_ID="$(gh api repos/ProofVisorAI/proofvisor --jq .id)"
 curl --fail-with-body -sS -X POST \
   "https://uploads.github.com/user-attachments/assets" \
   --url-query "name=$NAME" \

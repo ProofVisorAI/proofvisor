@@ -1,4 +1,4 @@
-# Cloud Foundry manifest for an MCP server that only AgentVisor may reach.
+# Cloud Foundry manifest for an MCP server that only ProofVisor may reach.
 #
 # The backend maps ONLY an internal route: it has no public route through
 # the Gorouter, so nothing outside the foundation can call it. (An app
@@ -9,7 +9,7 @@
 # only the gateway:
 #
 #   cf push -f deploy/cloudfoundry/mcp-backend.manifest.yml
-#   cf add-network-policy agentvisor-ai my-mcp-backend --port 8080 --protocol tcp
+#   cf add-network-policy proofvisor my-mcp-backend --port 8080 --protocol tcp
 #
 # Then add the backend to the gateway's harness.toml:
 #

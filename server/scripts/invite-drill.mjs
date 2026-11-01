@@ -20,7 +20,7 @@ async function signup(email, orgName) {
     body: JSON.stringify({ email, password: "correcthorse42x", orgName }),
   });
   if (res.status !== 201) throw new Error("signup " + res.status);
-  return /(av_session=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
+  return /(pv_session=[^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
 }
 
 async function main() {
@@ -97,7 +97,7 @@ async function main() {
   const acceptBody = await acceptRes.json();
   console.log("[5/6] accept:", acceptRes.status, acceptBody.user?.email);
   if (acceptRes.status !== 200) throw new Error("accept failed");
-  const bobCookie = /(av_session=[^;]+)/.exec(acceptRes.headers.get("set-cookie") ?? "")?.[1];
+  const bobCookie = /(pv_session=[^;]+)/.exec(acceptRes.headers.get("set-cookie") ?? "")?.[1];
 
   // 6. Bob is now in the org.
   const meRes = await fetch(`${API}/api/v1/auth/me`, {

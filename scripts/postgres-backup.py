@@ -161,7 +161,7 @@ def connection_service(database_url, path):
             raise BackupError('Connection URI contains an unsupported service-file option')
     if password is not None and '\0' in password:
         raise BackupError('Connection password must not contain NUL bytes')
-    path.write_text('[agentvisor_backup]\n' + ''.join(k+'='+v+'\n' for k, v in parameters.items()))
+    path.write_text('[proofvisor_backup]\n' + ''.join(k+'='+v+'\n' for k, v in parameters.items()))
     path.chmod(0o600)
     return password
 
@@ -186,7 +186,7 @@ def create_backup(args):
         if key in ('BACKUP_DATABASE_URL', 'BACKUP_PASSPHRASE') or key.startswith('PG'):
             environment.pop(key, None)
     started = datetime.datetime.now(datetime.timezone.utc)
-    filename = 'agentvisor-' + started.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:12] + '.dump.gpg'
+    filename = 'proofvisor-' + started.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:12] + '.dump.gpg'
     destination = output / filename
     with private_workdir(output) as work:
         plaintext = work / 'backup.dump'
@@ -199,7 +199,7 @@ def create_backup(args):
         dump_env = dict(environment, PGSERVICEFILE=str(service))
         if password is not None:
             dump_env['PGPASSWORD'] = password
-        run_phase('pg_dump', [args.pg_dump, '--dbname=service=agentvisor_backup', '--format=custom', '--compress=9',
+        run_phase('pg_dump', [args.pg_dump, '--dbname=service=proofvisor_backup', '--format=custom', '--compress=9',
                   '--no-owner', '--no-privileges', '--no-password',
                   '--lock-wait-timeout=60000', '--file', str(plaintext)], dump_env, deadline)
         if not plaintext.is_file() or plaintext.stat().st_size == 0:

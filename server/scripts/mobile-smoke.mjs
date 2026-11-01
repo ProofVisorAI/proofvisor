@@ -13,7 +13,7 @@
  */
 import { chromium, devices } from "playwright";
 
-const SITE = process.env.SITE ?? process.argv[2] ?? "https://agentvisorai.me/app/";
+const SITE = process.env.SITE ?? process.argv[2] ?? "https://proofvisor.com/app/";
 const LANDING = new URL(SITE).origin + "/";
 
 const profiles = [
@@ -40,7 +40,7 @@ for (const { name, device } of profiles) {
   console.log("✅ landing: no horizontal scroll");
 
   // 2. Console login
-  await page.addInitScript(() => { try { localStorage.setItem("av_mock_signed_out", "1"); } catch {} });
+  await page.addInitScript(() => { try { localStorage.setItem("pv_mock_signed_out", "1"); } catch {} });
   await page.goto(SITE + "#/login", { waitUntil: "networkidle" });
   await page.waitForSelector("input#email", { timeout: 15000 });
   const loginScrollX = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -334,16 +334,16 @@ await browser.close();
   // fold; the real-height re-clamp must keep every step's card inside.
   const tourPage = await (await b3.newContext({ viewport: { width: 280, height: 653 }, isMobile: true, hasTouch: true })).newPage();
   await tourPage.goto(SITE + "?tour=1#/overview", { waitUntil: "domcontentloaded" });
-  await tourPage.waitForSelector(".av-tour-card", { timeout: 15000 });
+  await tourPage.waitForSelector(".pv-tour-card", { timeout: 15000 });
   for (let i = 0; i < 6; i++) {
     const st = await tourPage.evaluate(() => {
-      const c = document.querySelector(".av-tour-card")?.getBoundingClientRect();
-      const next = [...document.querySelectorAll(".av-tour-card button")].find((x) => /next|verifier|finish/i.test(x.textContent));
+      const c = document.querySelector(".pv-tour-card")?.getBoundingClientRect();
+      const next = [...document.querySelectorAll(".pv-tour-card button")].find((x) => /next|verifier|finish/i.test(x.textContent));
       return { fits: c && c.right <= innerWidth + 1 && c.left >= -1 && c.bottom <= innerHeight + 1 && c.top >= -1, label: next?.textContent.trim() || "" };
     });
     if (!st.fits) fail("tour card overflows the 280px viewport at step " + (i + 1) + ": " + JSON.stringify(st));
     if (/verifier/i.test(st.label)) break;
-    await tourPage.evaluate(() => [...document.querySelectorAll(".av-tour-card button")].find((x) => /next/i.test(x.textContent))?.click());
+    await tourPage.evaluate(() => [...document.querySelectorAll(".pv-tour-card button")].find((x) => /next/i.test(x.textContent))?.click());
     await tourPage.waitForTimeout(1200);
   }
   await tourPage.close();

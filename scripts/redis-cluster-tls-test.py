@@ -42,8 +42,8 @@ SPEC = importlib.util.spec_from_file_location(
 fixtures = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fixtures)
 ROOT = Path(__file__).resolve().parents[1]
-PREFIX = "av-redis-cluster-tls-"
-LABEL = "org.agentvisor.redis-cluster-tls"
+PREFIX = "pv-redis-cluster-tls-"
+LABEL = "org.proofvisor.redis-cluster-tls"
 IMAGE = fixtures.REDIS_IMAGE
 
 
@@ -254,17 +254,17 @@ class Cluster:
 
     def contracts(self, binaries):
         endpoint = ",".join(f"rediss://:{self.password}@localhost:{port}" for port in self.state["ports"])
-        environment = dict(self.environment, AV_REDIS_URL=endpoint, AV_REDIS_TLS_URL=endpoint,
-                           AV_REDIS_TLS_WRONG_NAME_URL=endpoint.replace("localhost", "127.0.0.1"),
-                           AV_REDIS_TLS_WRONG_PASSWORD_URL=endpoint.replace(self.password, "wrong-password"),
+        environment = dict(self.environment, PV_REDIS_URL=endpoint, PV_REDIS_TLS_URL=endpoint,
+                           PV_REDIS_TLS_WRONG_NAME_URL=endpoint.replace("localhost", "127.0.0.1"),
+                           PV_REDIS_TLS_WRONG_PASSWORD_URL=endpoint.replace(self.password, "wrong-password"),
                            SSL_CERT_FILE=str(self.directory / "ca.crt"),
                            SSL_CERT_DIR=str(self.directory / "empty-trust"))
-        environment.pop("AV_REDIS_TLS_UNTRUSTED_TEST", None)
+        environment.pop("PV_REDIS_TLS_UNTRUSTED_TEST", None)
         self.state["contract_results"] = []
         runs = [("state-contract", binaries["state"], None, 8, {}),
                 ("tls-validation", binaries["tls"], "redis_tls_checks_certificate_name_credentials_and_insecure_flag", 1, {}),
                 ("tls-untrusted", binaries["tls"], "redis_tls_rejects_untrusted_ca", 1,
-                 {"SSL_CERT_FILE": str(self.directory / "untrusted.crt"), "AV_REDIS_TLS_UNTRUSTED_TEST": "1"}),
+                 {"SSL_CERT_FILE": str(self.directory / "untrusted.crt"), "PV_REDIS_TLS_UNTRUSTED_TEST": "1"}),
                 ("revocation-contract", binaries["revocation"], None, 7, {})]
         for name, binary, test, expected, overrides in runs:
             binary = binary.resolve(strict=True)
@@ -338,7 +338,7 @@ def start(endpoint, failure_output_dir=None, state_file=None):
     try:
         for authority in ["ca", "untrusted"]:
             cluster.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2",
-                         "-subj", f"/CN=AgentVisor cluster test {authority}", "-addext", "basicConstraints=critical,CA:TRUE",
+                         "-subj", f"/CN=ProofVisor cluster test {authority}", "-addext", "basicConstraints=critical,CA:TRUE",
                          "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", str(directory / f"{authority}.key"),
                          "-out", str(directory / f"{authority}.crt")])
         fixtures.private_write(directory / "extensions.cnf", "subjectAltName=DNS:localhost\n"
@@ -402,11 +402,11 @@ def start(endpoint, failure_output_dir=None, state_file=None):
                      "TLS replicas did not synchronize")
         (directory / "empty-trust").mkdir()
         url = ",".join(f"rediss://:{cluster.password}@localhost:{port}" for port in state["ports"])
-        env = {"AV_REDIS_URL": url, "AV_REDIS_TLS_URL": url,
-               "AV_REDIS_TLS_WRONG_NAME_URL": url.replace("localhost", "127.0.0.1"),
-               "AV_REDIS_TLS_WRONG_PASSWORD_URL": url.replace(cluster.password, "wrong-password"),
+        env = {"PV_REDIS_URL": url, "PV_REDIS_TLS_URL": url,
+               "PV_REDIS_TLS_WRONG_NAME_URL": url.replace("localhost", "127.0.0.1"),
+               "PV_REDIS_TLS_WRONG_PASSWORD_URL": url.replace(cluster.password, "wrong-password"),
                "SSL_CERT_FILE": str(directory / "ca.crt"), "SSL_CERT_DIR": str(directory / "empty-trust")}
-        fixtures.private_write(directory / "env.sh", "# Private generated credentials; do not print or commit.\nunset AV_REDIS_TLS_UNTRUSTED_TEST\n"
+        fixtures.private_write(directory / "env.sh", "# Private generated credentials; do not print or commit.\nunset PV_REDIS_TLS_UNTRUSTED_TEST\n"
                                + "\n".join(f"export {name}={shlex.quote(value)}" for name, value in env.items()) + "\n")
         cluster.check()
         print("Private fixture directory: " + str(directory), flush=True)

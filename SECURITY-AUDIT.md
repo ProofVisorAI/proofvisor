@@ -1,6 +1,6 @@
 # Security Audit — 2026-08-11
 
-Recent-CVE reachability triage and remediations for the AgentVisor AI workspace.
+Recent-CVE reachability triage and remediations for the ProofVisor workspace.
 Ran `cargo audit` against the current `Cargo.lock`; reviewed each advisory
 against the actual code paths and features enabled in production.
 
@@ -21,7 +21,7 @@ and 20 are unreachable given our compiled feature set.**
 
 | Advisory / class | Where | Fix |
 |---|---|---|
-| CWE-208 timing side-channel on MAC comparison (not in RustSec, discovered by manual audit) | `crates/av-bridge/src/cold_store.rs::read_pending` used `String != String` on a hex MAC | Rewritten as `verify_pending_mac` using `hmac::Mac::verify_slice` (constant-time). Regressions: `corrupt_hex_mac_field_fails_authentication`, `wrong_control_key_fails_authentication`. |
+| CWE-208 timing side-channel on MAC comparison (not in RustSec, discovered by manual audit) | `crates/pv-bridge/src/cold_store.rs::read_pending` used `String != String` on a hex MAC | Rewritten as `verify_pending_mac` using `hmac::Mac::verify_slice` (constant-time). Regressions: `corrupt_hex_mac_field_fails_authentication`, `wrong_control_key_fails_authentication`. |
 
 ### Not reachable in our configuration (do not require action)
 
@@ -38,20 +38,22 @@ in the root `Cargo.toml`. Advisories filtered out on this basis:
 
 **wasmtime 27 RUSTSEC-2026-0096 (critical, aarch64 Cranelift heap escape) is
 NOT reachable.** Guest bytecode is loaded only from operator-signed policy
-paths (`config.wasm_policy_paths`, loaded in `crates/av-harness/src/main.rs`).
+paths (`config.wasm_policy_paths`, loaded in `crates/pv-harness/src/main.rs`).
 Attackers cannot deliver Wasm bytes to `Module::new`. Regressions locking
 this containment invariant:
 
-- `crates/av-sandbox/src/wasm_policy.rs::tests::invalid_wasm_rejected_at_load`
-- `crates/av-sandbox/src/wasm_policy.rs::tests::missing_exports_fail_closed`
-- `crates/av-sandbox/src/wasm_policy.rs::tests::hostile_infinite_loop_fails_closed_via_fuel_and_epoch`
-- `crates/av-sandbox/src/wasm_policy.rs::tests::memory_bomb_policy_fails_closed_via_store_limits` (new)
-- `crates/av-sandbox/src/wasm_policy.rs::tests::hostile_return_codes_all_deny` (new)
+- `crates/pv-sandbox/src/wasm_policy.rs::tests::invalid_wasm_rejected_at_load`
+- `crates/pv-sandbox/src/wasm_policy.rs::tests::missing_exports_fail_closed`
+- `crates/pv-sandbox/src/wasm_policy.rs::tests::hostile_infinite_loop_fails_closed_via_fuel_and_epoch`
+- `crates/pv-sandbox/src/wasm_policy.rs::tests::memory_bomb_policy_fails_closed_via_store_limits` (new)
+- `crates/pv-sandbox/src/wasm_policy.rs::tests::hostile_return_codes_all_deny` (new)
 
-*Resolved after this audit:* the workspace now pins wasmtime 47.x
-(`Cargo.lock`), which post-dates every wasmtime 27 advisory analyzed
-above; the containment invariants and their pinned regression tests
-are unchanged.
+*Resolved after this audit:* the workspace now pins wasmtime 48.x
+(`Cargo.lock`; 48.0.8 since 2026-10-31, which also closes
+RUSTSEC-2026 "panic lowering a host-created component model stream"
+for the 46.0–48.0.6 range), which post-dates every wasmtime 27 advisory
+analyzed above; the containment invariants and their pinned regression
+tests are unchanged.
 
 **wasmtime 2026-0222 (stores mix type indices between engines) NOT reachable.**
 Each `WasmPolicy` owns exactly one `Engine`; stores are never shared across
@@ -59,7 +61,7 @@ engines.
 
 **tract-nnef 2026-0217 (OOB read on model load) NOT reachable.** We call
 `tract_onnx::onnx().model_for_path(path)` in
-`crates/av-loopdetect/src/onnx_embed.rs` (`OnnxEmbedder::load`), which invokes the
+`crates/pv-loopdetect/src/onnx_embed.rs` (`OnnxEmbedder::load`), which invokes the
 ONNX parser
 only. No NNEF code path is reachable. In addition, the production model is
 byte-pinned in the Docker image via `ADD --checksum=sha256:...`, so an
@@ -69,7 +71,7 @@ attacker cannot substitute a hostile model.
 
 - **rustls-webpki 0.102.8 CVEs (2026-0049, 0098, 0099, 0104)** — reach only via
   the `async-nats 0.38` TLS chain. Exploitation requires an attacker to
-  control the NATS server the operator configures. The AgentVisor AI threat
+  control the NATS server the operator configures. The ProofVisor threat
   model treats operator-configured broker endpoints as trusted (`nats://`
   URI is an operator secret). Upgrade path (`async-nats 0.42+`) is straightforward
   once the workspace's `nats`/`kafka` feature declarations are corrected
@@ -77,11 +79,11 @@ attacker cannot substitute a hostile model.
   *Resolved after this audit:* the workspace now pins `async-nats 0.50`
   with `rustls-webpki 0.103.13` in `Cargo.lock`.
 
-- ~~**Compression-marker spoofing (design limitation, av-compress)**~~ —
+- ~~**Compression-marker spoofing (design limitation, pv-compress)**~~ —
   the idempotence marker was an unauthenticated literal substring.
   *Resolved:* every stub is now tagged with a 128-bit HMAC under a key
   derived from the journal key (`derive_marker_key` in
-  `crates/av-compress/src/marker.rs`). The middle-history idempotence guard
+  `crates/pv-compress/src/marker.rs`). The middle-history idempotence guard
   verifies the tag before treating a stub as machine-emitted, so a hostile
   middle-range message that merely quotes the stub shape cannot disable the
   pass. Regression test:
@@ -106,7 +108,7 @@ attacker cannot substitute a hostile model.
 Beyond the CVE-class coverage above, this session added 9 adversarial tests
 locking in resilience against the exploit classes the reported CVEs represent:
 
-Embedded broker (crates/av-bridge/tests/embedded_contract.rs):
+Embedded broker (crates/pv-bridge/tests/embedded_contract.rs):
 - concurrent publish/fetch/retention never returns torn records
 - manifest schema/loader alignment on `replication_factor` (present/absent/out-of-range)
 - 32-way concurrent same-UID dedup collapses to one offset
@@ -116,12 +118,12 @@ Embedded broker (crates/av-bridge/tests/embedded_contract.rs):
 - fetch on out-of-range partition/topic is a controlled error
 - offsets remain monotone across retention boundaries
 
-Cold-store MAC (crates/av-bridge/src/cold_store.rs, `cold-store` feature):
+Cold-store MAC (crates/pv-bridge/src/cold_store.rs, `cold-store` feature):
 - tampered_cold_intent_fails_authentication (existing)
 - corrupt_hex_mac_field_fails_authentication (new)
 - wrong_control_key_fails_authentication (new)
 
-Wasm sandbox (crates/av-sandbox/src/wasm_policy.rs):
+Wasm sandbox (crates/pv-sandbox/src/wasm_policy.rs):
 - memory_bomb_policy_fails_closed_via_store_limits (new)
 - hostile_return_codes_all_deny (new)
 
@@ -129,20 +131,43 @@ Wasm sandbox (crates/av-sandbox/src/wasm_policy.rs):
 
 *Resolved after this audit; kept for the record.*
 
-At audit time, `crates/av-bridge/Cargo.toml` declared only `nats` and `kafka`
-features while `crates/av-bridge/src/embedded.rs` and neighbors referenced
+At audit time, `crates/pv-bridge/Cargo.toml` declared only `nats` and `kafka`
+features while `crates/pv-bridge/src/embedded.rs` and neighbors referenced
 `feature = "cold-store"`, crate `rdkafka`, and module `cold_store`, so
 `cargo clippy --all-features` failed. Default builds succeeded because the
 missing features weren't activated. This drift also blocked upgrading the
 vulnerable transitive `rustls-webpki` chain (the `async-nats` upgrade path).
-The recommended follow-up has since been completed: `av-bridge/Cargo.toml`
+The recommended follow-up has since been completed: `pv-bridge/Cargo.toml`
 now declares `cold-store` (with `object_store`, `url`, `hmac`, `sha2`, `hex`,
-`av-receipts`) plus `rdkafka` under `kafka`, `async-nats` is at 0.50, and the
+`pv-receipts`) plus `rdkafka` under `kafka`, `async-nats` is at 0.50, and the
 all-feature clippy/test gates pass.
 
 ## Verification
 
 - Default gate: `cargo fmt --all`, `cargo test --workspace` — all pass
   (including the 84 s 64-agent contention run).
-- Sandbox tests: `cargo test -p av-sandbox` — 29 pass (2 new adversarial).
+- Sandbox tests: `cargo test -p pv-sandbox` — 29 pass (2 new adversarial).
 - Embedded contract: 18 pass (7 added prior session, unchanged this session).
+
+## Update — 2026-10-31
+
+`cargo deny check advisories` reported ten new advisories after the
+rename work. All but one were resolved by taking the patched releases in
+`Cargo.lock` and `fuzz/Cargo.lock`; the daemon and CLI test suites,
+clippy and the loopback provider contracts pass on the new versions.
+
+| Advisory | Crate | Resolution |
+|---|---|---|
+| RUSTSEC-2026-0346, 0347, 0348, 0349 | `rustls` 0.23.45 | upgraded to 0.23.46 |
+| RUSTSEC-2026-0382 | `rustls-webpki` 0.103.15 | upgraded to 0.103.16 |
+| RUSTSEC-2026-0381, 0383 | `webpki-roots` / `webpki-root-certs` 1.0.9 | upgraded to 1.0.11 |
+| RUSTSEC-2026-0386 (unsound `AsyncFd::new`) | `tokio` 1.53.1 | upgraded to 1.54.1 |
+| RUSTSEC-2026-0385 | `ctutils` 0.4.2 (via `curve25519-dalek` 5) | upgraded to 0.4.7 |
+| GitHub advisory for wasmtime 46.0–48.0.6 | `wasmtime` 47.0.4 | upgraded to 48.0.8 (root manifest now `version = "48"`) |
+| RUSTSEC-2026-0387 (timing variability in `crypto-bigint` 0.5) | `crypto-bigint` 0.5.5 via `jsonwebtoken` → `p256`/`p384` | **Not reachable**, ignored in `deny.toml`: the ECDSA code path is rejected by the identity validator's EdDSA/HS256 whitelist before decoding (same argument as RUSTSEC-2023-0071). The patched 0.7 line needs `elliptic-curve` 0.14, which `jsonwebtoken` 11.1 does not use yet. |
+
+The Node API (`server/`) was updated the same day for its own advisories:
+`fastify` 5.12.7, `undici` 8.12.3, `nodemailer` 10.3.1 and `fast-uri`
+4.2.3 / 3.1.9. The remaining `npm audit` finding (`zod` < 4.6.6, memory
+exhaustion on oversized constrained strings) is being addressed by the
+zod 4 upgrade recorded in the changelog.

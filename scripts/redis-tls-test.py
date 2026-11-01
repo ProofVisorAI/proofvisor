@@ -62,7 +62,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, interrupt)
     directory = Path(tempfile.mkdtemp(prefix=fixtures.PREFIX)).resolve()
     fixture_id = secrets.token_hex(12)
-    container = f"av-redis-tls-{fixture_id}"
+    container = f"pv-redis-tls-{fixture_id}"
     state = {"directory": str(directory), "fixture_id": fixture_id,
              "containers": [container]}
     fixtures.save(directory, state)
@@ -73,7 +73,7 @@ def main() -> int:
         password = secrets.token_hex(32)
         for authority in ["ca", "untrusted"]:
             run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                 "-sha256", "-days", "2", "-subj", f"/CN=AgentVisor test {authority}",
+                 "-sha256", "-days", "2", "-subj", f"/CN=ProofVisor test {authority}",
                  "-addext", "basicConstraints=critical,CA:TRUE",
                  "-addext", "keyUsage=critical,keyCertSign,cRLSign",
                  "-keyout", str(directory / f"{authority}.key"),
@@ -147,18 +147,18 @@ appendonly no
         environment = dict(os.environ, CARGO_BUILD_JOBS="2", CARGO_INCREMENTAL="0",
                            SSL_CERT_FILE=str(directory / "ca.crt"),
                            SSL_CERT_DIR=str(directory / "empty-trust"),
-                           AV_REDIS_URL=endpoint, AV_REDIS_TLS_URL=endpoint,
-                           AV_REDIS_TLS_WRONG_NAME_URL=endpoint.replace("localhost", "127.0.0.1"),
-                           AV_REDIS_TLS_WRONG_PASSWORD_URL=f"rediss://:invalid@localhost:{port}")
+                           PV_REDIS_URL=endpoint, PV_REDIS_TLS_URL=endpoint,
+                           PV_REDIS_TLS_WRONG_NAME_URL=endpoint.replace("localhost", "127.0.0.1"),
+                           PV_REDIS_TLS_WRONG_PASSWORD_URL=f"rediss://:invalid@localhost:{port}")
         (directory / "empty-trust").mkdir()
         for name, command, overrides in [
-            ("state-contract", ["-p", "av-state", "--features", "redis", "--test", "redis_contract"], {}),
-            ("tls-validation", ["-p", "av-state", "--features", "redis", "--test", "redis_tls",
+            ("state-contract", ["-p", "pv-state", "--features", "redis", "--test", "redis_contract"], {}),
+            ("tls-validation", ["-p", "pv-state", "--features", "redis", "--test", "redis_tls",
                                 "redis_tls_checks_certificate_name_credentials_and_insecure_flag"], {}),
-            ("tls-untrusted", ["-p", "av-state", "--features", "redis", "--test", "redis_tls",
+            ("tls-untrusted", ["-p", "pv-state", "--features", "redis", "--test", "redis_tls",
                                "redis_tls_rejects_untrusted_ca"],
-             {"SSL_CERT_FILE": str(directory / "untrusted.crt"), "AV_REDIS_TLS_UNTRUSTED_TEST": "1"}),
-            ("revocation-contract", ["-p", "av-harness", "--features", "full", "--test", "revocation_redis"], {}),
+             {"SSL_CERT_FILE": str(directory / "untrusted.crt"), "PV_REDIS_TLS_UNTRUSTED_TEST": "1"}),
+            ("revocation-contract", ["-p", "pv-harness", "--features", "full", "--test", "revocation_redis"], {}),
         ]:
             started = time.monotonic()
             with (directory / f"{name}.log").open("wb") as log:

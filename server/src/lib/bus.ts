@@ -9,7 +9,7 @@
  *
  *   2. Postgres LISTEN/NOTIFY bridge — enabled automatically whenever a
  *      DATABASE_URL is present. Every instance opens ONE persistent
- *      `LISTEN av_bus` connection; publishers `NOTIFY av_bus, '<json>'`.
+ *      `LISTEN pv_bus` connection; publishers `NOTIFY pv_bus, '<json>'`.
  *      This is exactly what horizontal scaling needs on Fly.io, Cloud
  *      Run, Kubernetes, Render, etc. No new managed service (Redis,
  *      RabbitMQ) — we reuse the Postgres we already pay for.
@@ -51,7 +51,7 @@ export type EventPayload =
 // Symmetric in both directions across the rolling window.
 type WirePayload = (EventPayload | { type: "bridge.reset" }) & { originId?: string };
 
-const NOTIFY_CHANNEL = "av_bus";
+const NOTIFY_CHANNEL = "pv_bus";
 // Postgres NOTIFY payload cap is 8000 bytes. Our payloads are small
 // (~200-400 bytes) but we guard against a runaway anyway.
 const MAX_PAYLOAD_BYTES = 7500;
@@ -121,7 +121,7 @@ export class Bus extends EventEmitter {
     const timer = setTimeout(() => {
       if (this.listenerHeartbeatTimer === timer) this.listenerHeartbeatTimer = undefined;
       if (!current()) return;
-      bridgeQuery(listener, "SELECT 1 /* av_bus listener heartbeat */").then(() => {
+      bridgeQuery(listener, "SELECT 1 /* pv_bus listener heartbeat */").then(() => {
         if (current()) this.scheduleListenerHeartbeat(listener, generation);
       }, () => {
         if (current()) this.scheduleReconnect();
@@ -364,7 +364,7 @@ export class Bus extends EventEmitter {
     // "useful signal that Neon or whichever managed PG we're on
     // is bouncing our LISTEN socket" — but nothing ever wired
     // it up, so every Grafana panel / alert built on
-    // `agentvisor_api_pg_bus_reconnects_total` renders as a
+    // `proofvisor_api_pg_bus_reconnects_total` renders as a
     // flat zero forever. Counting after the re-entrancy guard
     // (not before) so this reports SCHEDULED reconnects, one
     // per socket flap, matching the metric name's intent.

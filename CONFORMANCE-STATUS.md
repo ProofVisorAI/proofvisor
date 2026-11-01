@@ -1,10 +1,10 @@
-# AgentVisor AI Conformance Status
+# ProofVisor Conformance Status
 
 How to verify a receipt yourself lives in
 [`docs/reference/VERIFYING-A-RECEIPT.md`](docs/reference/VERIFYING-A-RECEIPT.md);
 this document is the compliance / MVP **verdict record** against the brief.
 
-Verified against `AgentBridge.docx` v2.0 on 2026-08-11 with Rust 1.97.1 on Apple Silicon macOS.
+Verified on 2026-08-11 against the original product brief (`AgentBridge.docx` v2.0, written under the project's former name; the brief is not part of this repository) with Rust 1.97.1 on Apple Silicon macOS.
 
 For the subsequent daemon, console, identity, and packaging changes, see the
 [2026-09-24 validation record](docs/PRODUCTION-VALIDATION.md). Historical figures
@@ -28,13 +28,14 @@ The functional MVP is implemented and the executable local correctness gates pas
 | OCSF event profile | Pass | Every class validates; identity and normalized stop state are present |
 | Inventory fingerprint | Roadmap | Model/schema shape exists; DOCX labels per-forward inventory as roadmap, not MVP |
 | Portable Bridge | Pass locally | Embedded ordering/recovery plus live Kafka/NATS provisioning and replay contracts, including TLS+SASL Kafka and TLS+auth NATS endpoints |
-| Retention and cold tier | Pass locally | Manifest retention/replication, authenticated pre-ack cold intents, conditional objects; live S3-compatible export verified against MinIO (`AV_COLD_S3_URL` contract) |
+| Retention and cold tier | Pass locally | Manifest retention/replication, authenticated pre-ack cold intents, conditional objects; live S3-compatible export verified against MinIO (`PV_COLD_S3_URL` contract) |
 | Receipts | Pass | RFC 8785 vectors, trusted-key CLI verification, signer-pinned recovery, authenticated journals/outboxes |
 | ATIF v1.7 | Pass | Strict/golden tests, retry-safe parent-fsynced writer, recovered accounting/TTL, real HTTP trajectory accepted by Harbor |
 | Required runtime stack | Pass locally | Pinned MiniLM runs in tract, passes loop SLA, and feeds live Qdrant; live Redis/Kafka/NATS contracts pass, including a 3-master Redis Cluster (multi-key atomic budget spend on a real slot map) |
-| MCP Streamable HTTP (server and backend client) | Pass locally | `initialize`/`ping`/`tools/list`/notifications, signed sessions, Origin and version checks, per-backend routes; backend handshake, SSE decoding, server-request answers, resumption, and 404 renewal against scripted backends (`e2e_mcp_gateway`). Not yet run against third-party MCP servers or clients. |
-| Delegation, missions, external PDP | Pass locally | RFC 8693 actor tokens, human-subject rule, per-agent missions, AuthZEN 1.0 single and batch evaluation against a scripted PDP (`e2e_identity_and_policy`). Not yet run against a production AuthZEN service. |
-| Workload identity and sidecar | Pass locally | RFC 7523 assertions over a generated Cloud Foundry-shaped certificate chain (`av-identity` `workload`, `e2e_workload_identity`), sidecar proxying against the real verifier, buildpack contract tests. Not yet staged on a Cloud Foundry foundation. |
+| MCP Streamable HTTP (server and backend client) | Pass, including third-party interop | `initialize`/`ping`/`tools/list`/notifications, signed sessions, Origin and version checks, per-backend routes; backend handshake, SSE decoding, server-request answers, resumption, and 404 renewal against scripted backends (`e2e_mcp_gateway`). Verified against real third parties on 2026-10-31 (see "Third-party interoperability" below): the MCP reference server `@modelcontextprotocol/server-everything` 2.1.0 as a `[[backends]]` entry over its own Streamable HTTP transport (`scripts/mcp-interop-test.py`), and the official `@modelcontextprotocol/sdk` 1.32.2 `StreamableHTTPClientTransport` as a client of `/mcp` (`server/ci/mcp-client-interop.mjs`). Both run in the `interop` CI job. |
+| Delegation, missions, external PDP | Pass, including public PDP interop | RFC 8693 actor tokens, human-subject rule, per-agent missions, AuthZEN 1.0 single and batch evaluation against a scripted PDP (`e2e_identity_and_policy`). The daemon's Access Evaluation request shape was accepted by two live public AuthZEN 1.0 interop PDPs on 2026-10-31, with the expected allow and deny decisions (`scripts/authzen-interop-test.py`, see below). Batch evaluation (`/access/v1/evaluations`) has only been exercised against the scripted PDP. |
+| Console identity providers (OIDC, SAML) | Pass, including a real IdP | The console's generic OIDC login and SAML SP were exercised end to end against Keycloak 26.8.1 in a real browser on 2026-10-31 (`server/scripts/keycloak-drill.mjs`, `keycloak-interop` job in `console-api.yml`): discovery, login page, PKCE code exchange, `email_verified` claim, JIT user and org, session cookie, audit rows; then a SAML config built from Keycloak's IdP descriptor, SP-initiated login, signed Response and Assertion, JIT membership, and audit rows. Google and Microsoft logins share the OIDC code path but were not run against those providers. |
+| Workload identity and sidecar | Pass locally | RFC 7523 assertions over a generated Cloud Foundry-shaped certificate chain (`pv-identity` `workload`, `e2e_workload_identity`), sidecar proxying against the real verifier, buildpack contract tests. Not yet staged on a Cloud Foundry foundation. |
 | Tenant content telemetry | Pass locally | GenAI spans with redaction verified with the SDK in-memory exporter; worker hand-off verified end to end. |
 | OTLP/Vector | Pass locally | Real server emitted a nonempty 1,244-byte OTLP trace batch and flushed on SIGTERM |
 | 10,000 connections | Final local run passed | Every exact response completed, admission p95/p99 were 0.727/1.286 ms, and audit work drained with zero pending jobs and zero worker errors. Backing service records were healthy and unchanged before and after. See [benchmarks](BENCHMARKS.md) for timing, preserved failures, and scope. |
@@ -50,10 +51,26 @@ The functional MVP is implemented and the executable local correctness gates pas
 - JSON schemas, example TOML, and Bridge manifest: pass.
 - Compose rendering: pass.
 - Harbor pinned reference validator over a real HTTP harness trajectory: pass.
-- Live crash-recovery (2026-08-16): release daemon on live Kafka + Redis SIGKILLed mid-load (300 sessions in flight); restart quarantined all 300 incomplete sessions, served fresh traffic with zero failures, and a second SIGKILL + restart re-quarantined the same set idempotently (no duplication, no re-execution, zero ERROR lines). Reproducible artifact (round-51 §11 — attestations need pointers): the same SIGKILL→restart→SIGKILL→restart idempotence property is now pinned in CI by `crates/av-harness/tests/e2e_process_restart.rs` (`sigkill_restart_recovers_and_is_idempotent`, plus the spool-outage and two-daemon-lock siblings), which spawns the real `agentvisord` binary; the live-brokers variant remains an operator attestation.
-- Offline receipt verification (2026-08-16): a receipt produced by the crash-recovered daemon, consumed from the live Kafka `agent.receipt` topic, verified offline via `avctl receipt-verify` with the independently extracted public key; a single-byte tamper was rejected. Reproducible artifact (round-51 §11): `scripts/live-verify.sh` runs the same chain — hero snippet → close → promote → `avctl pubkey` extraction → offline verify → tamper refusal — plus the §3.1 forgery PoC (identity-point public key + small-order signature refused at `add_key_bytes`), against release binaries with a scripted mock upstream. Six live checks; no live broker required.
+- Live crash-recovery (2026-08-16): release daemon on live Kafka + Redis SIGKILLed mid-load (300 sessions in flight); restart quarantined all 300 incomplete sessions, served fresh traffic with zero failures, and a second SIGKILL + restart re-quarantined the same set idempotently (no duplication, no re-execution, zero ERROR lines). Reproducible artifact (round-51 §11 — attestations need pointers): the same SIGKILL→restart→SIGKILL→restart idempotence property is now pinned in CI by `crates/pv-harness/tests/e2e_process_restart.rs` (`sigkill_restart_recovers_and_is_idempotent`, plus the spool-outage and two-daemon-lock siblings), which spawns the real `proofvisord` binary; the live-brokers variant remains an operator attestation.
+- Offline receipt verification (2026-08-16): a receipt produced by the crash-recovered daemon, consumed from the live Kafka `agent.receipt` topic, verified offline via `pvctl receipt-verify` with the independently extracted public key; a single-byte tamper was rejected. Reproducible artifact (round-51 §11): `scripts/live-verify.sh` runs the same chain — hero snippet → close → promote → `pvctl pubkey` extraction → offline verify → tamper refusal — plus the §3.1 forgery PoC (identity-point public key + small-order signature refused at `add_key_bytes`), against release binaries with a scripted mock upstream. Six live checks; no live broker required.
 - Release core SLA: pass using direct admission-wrapper and HTTP MCP-denial timing; explicit durable admission is reported separately.
 - Release 10,000-request gate with live Kafka/Redis: the final source passed on 2026-09-24, including every complete response and zero-error audit drain. Earlier watchdog-interrupted failures remain recorded separately.
+
+## Third-party interoperability (2026-10-31)
+
+Until this date the MCP, AuthZEN and identity-provider rows rested on
+scripted stand-ins inside the test suite. The following were run against
+real third-party software, each as a repeatable script that also runs in
+CI:
+
+| Counterpart | Exact version | Script | Result |
+| --- | --- | --- | --- |
+| MCP reference server (as a tool backend of the gateway) | `@modelcontextprotocol/server-everything` 2.1.0, started with `npx … streamableHttp` (native Streamable HTTP, no stdio bridge); Node.js 26.8.1 locally | `scripts/mcp-interop-test.py` | 14/14: `initialize` (2025-11-25), `tools/list` relays the third-party `echo` schema and withholds the unlisted `get-sum`, `tools/call echo` answered by the third-party server, `tools/call get-sum` refused with `UNMAPPED_TOOL`, `DELETE /mcp` returns a signed receipt with `tool_calls = {total 2, allowed 1, blocked 1}`, receipt verified offline by `pvctl receipt-verify`. |
+| Official MCP TypeScript SDK (as a client of the gateway) | `@modelcontextprotocol/sdk` 1.32.2, `StreamableHTTPClientTransport` | `server/ci/mcp-client-interop.mjs` | 12/12: connect, ping, `listTools`, `callTool` allowed and refused, `terminateSession` (DELETE), one receipt recording both calls. |
+| AuthZEN 1.0 public interop PDPs (Todo scenario) | Aserto Topaz at `https://topaz-todo-proxy.authzen-interop.net` and Cerbos at `https://authzen-proxy-demo.cerbos.dev`, endpoint `/access/v1/evaluation` | `scripts/authzen-interop-test.py` | 4/4: the daemon's request shape (subject/action/resource `properties`, `context` with `session_id`, `missions`, `time`) is accepted; `can_create_todo` is permitted for `rick@the-citadel.com` and denied for `beth@the-smiths.com` by both PDPs. The interop site's OPA proxy denied every request and is not asserted. Needs outbound network; skips with a message when offline (CI forbids the skip). |
+| Identity provider for the console | Keycloak 26.8.1 (`quay.io/keycloak/keycloak:26.8.1 start-dev`), realm configured through the admin REST API | `server/scripts/keycloak-drill.mjs` | 22/22: real-browser OIDC login (Chromium via Playwright 1.62.1) and SP-initiated SAML login, JIT provisioning, session validity, tampered-cookie refusal, audit rows; the drill deletes its users, orgs and the realm. |
+
+The Windows port is recorded in [`docs/PLATFORMS.md`](docs/PLATFORMS.md#windows).
 
 ## Environment Limits
 
@@ -73,18 +90,21 @@ independent-host failover. The broker TLS/SASL results below remain dated local
 attestations; their gated `live_contract.rs` suites and secure fixture helper
 are in the repository and can be rerun.
 
-- **Redis Cluster topology** — a live 3-master cluster (redis 8, ports 7000-7002) passed the `AV_REDIS_URL` contract suite, including a new multi-key `try_spend_many` test using the production `budget:{hash-tag}:` key shape (proves CROSSSLOT safety on a real slot map, plus cross-key atomicity of a refused spend).
-- **S3-compatible cold tier** — the two-phase cold export (staged intent → conditional `PutMode::Create` put → idempotent re-put) passed live against MinIO via the new `AV_COLD_S3_URL`-gated contract; the object landed with the deterministic `topic/pN/offset.json` key. Standard `AWS_*` env credentials are now honored (keys are lowercased before `object_store::parse_url_opts`, which only parses lowercase config names).
-- **Broker TLS/SASL** — the Kafka connector now reads `AV_KAFKA_CA_FILE` + `AV_KAFKA_SASL_USERNAME`/`AV_KAFKA_SASL_PASSWORD` (mechanism via `AV_KAFKA_SASL_MECHANISM`: `SCRAM-SHA-256` default, `SCRAM-SHA-512`, or `PLAIN` — upgraded from PLAIN-only on 2026-08-16 with rskafka 0.6/rustls 0.23; credentials refused without TLS) on both the rskafka event path and the librdkafka admin path; the live contract passed against Redpanda with a `sasl`-authenticated TLS listener (private CA) for SCRAM-SHA-256 and PLAIN, an unauthenticated client was rejected by the broker, credentials-without-CA was refused client-side, and the plaintext path is regression-tested unchanged. The NATS connector reads `AV_NATS_CA_FILE` + `AV_NATS_USER`/`AV_NATS_PASSWORD`; the live contract passed over `tls://` against nats-server with TLS + user/password required.
+- **Redis Cluster topology** — a live 3-master cluster (redis 8, ports 7000-7002) passed the `PV_REDIS_URL` contract suite, including a new multi-key `try_spend_many` test using the production `budget:{hash-tag}:` key shape (proves CROSSSLOT safety on a real slot map, plus cross-key atomicity of a refused spend).
+- **S3-compatible cold tier** — the two-phase cold export (staged intent → conditional `PutMode::Create` put → idempotent re-put) passed live against MinIO via the new `PV_COLD_S3_URL`-gated contract; the object landed with the deterministic `topic/pN/offset.json` key. Standard `AWS_*` env credentials are now honored (keys are lowercased before `object_store::parse_url_opts`, which only parses lowercase config names).
+- **Broker TLS/SASL** — the Kafka connector now reads `PV_KAFKA_CA_FILE` + `PV_KAFKA_SASL_USERNAME`/`PV_KAFKA_SASL_PASSWORD` (mechanism via `PV_KAFKA_SASL_MECHANISM`: `SCRAM-SHA-256` default, `SCRAM-SHA-512`, or `PLAIN` — upgraded from PLAIN-only on 2026-08-16 with rskafka 0.6/rustls 0.23; credentials refused without TLS) on both the rskafka event path and the librdkafka admin path; the live contract passed against Redpanda with a `sasl`-authenticated TLS listener (private CA) for SCRAM-SHA-256 and PLAIN, an unauthenticated client was rejected by the broker, credentials-without-CA was refused client-side, and the plaintext path is regression-tested unchanged. The NATS connector reads `PV_NATS_CA_FILE` + `PV_NATS_USER`/`PV_NATS_PASSWORD`; the live contract passed over `tls://` against nats-server with TLS + user/password required.
 
 ## Receipt Verification Protocol (independent implementation)
 
-README and the project site link here for "verifying a receipt from
-scratch". The following is the complete, normative recipe an
-independent verifier must implement — no AgentVisor code required. A
+The README and the project site link to
+[`docs/reference/VERIFYING-A-RECEIPT.md`](docs/reference/VERIFYING-A-RECEIPT.md)
+for "verifying a receipt from scratch"; this section is the same
+protocol stated as a verdict-record recipe, and the two must agree. The
+following is the complete, normative recipe an
+independent verifier must implement — no ProofVisor code required. A
 receipt is a single JSON object; the reference implementation is
-`crates/av-receipts/src/receipt.rs` (`Receipt::verify`) and the CLI
-wrapper is `avctl receipt-verify <file> --public-key-hex <64-hex>`.
+`crates/pv-receipts/src/receipt.rs` (`Receipt::verify`) and the CLI
+wrapper is `pvctl receipt-verify <file> --public-key-hex <64-hex>`.
 
 ### Inputs
 
@@ -140,11 +160,15 @@ wrapper is `avctl receipt-verify <file> --public-key-hex <64-hex>`.
    signed *message* is version-dispatched:
    * **v1** (legacy): the raw JCS canonical bytes from step 4.
    * **v2** (current, what daemons emit): the concatenation
-     `"AV-RECEIPT-v2\n"` (14-byte ASCII domain tag) ‖
+     `b"agentvisor-receipt-v2\0"` (22-byte domain tag: the ASCII bytes
+     of `agentvisor-receipt-v2` followed by one NUL byte; hex
+     `6167656e747669736f722d726563656970742d763200`) ‖
      `u64_be(len(canonical_bytes))` (8-byte big-endian length prefix) ‖
-     `canonical_bytes`. Rejecting the framing is what stops a v1
-     signature over `body` from being replayed as a v2 signature over
-     `AV-RECEIPT-v2\n || len || body` and vice versa.
+     `canonical_bytes`. The reference constant is
+     `RECEIPT_DOMAIN_TAG_V2` in `crates/pv-receipts/src/receipt.rs`.
+     Rejecting the framing is what stops a v1 signature over `body`
+     from being replayed as a v2 signature over
+     `agentvisor-receipt-v2\0 || len || body` and vice versa.
 
 Any step failing means the receipt does not attest anything. For
 `subject.kind == "atif_trajectory"`, additionally compare

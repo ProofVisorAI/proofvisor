@@ -2,16 +2,20 @@
 
 One page. Grep for the failure, do the fix, move on. Kept short on purpose.
 
-> **Scope note:** sections referencing `api.agentvisorai.me` / Fly.io
-> apply to the hosted API, which launches with the beta (no public
-> instance or DNS today — `docs/STATUS.md` tracks that). The live
-> surfaces before then are the static site + mock-mode console on
-> GitHub Pages; their failure modes are the Pages/CDN sections below.
+> **Scope note:** the hosted API is live on Render as the web service
+> `agentvisor-api` (`https://agentvisor-api.onrender.com`); the custom
+> domain `api.proofvisor.com` is pending DNS, so use the Render hostname
+> until it resolves (`docs/STATUS.md` tracks that). Nothing runs on
+> Fly.io. The `fly …` commands below were written for a Fly deployment
+> and are kept as a template: on Render, do the equivalent step from the
+> service dashboard (logs, environment variables, redeploy of a previous
+> commit) or with the Render CLI. The static site and mock-mode console
+> are GitHub Pages; their failure modes are the Pages/CDN sections below.
 
 ## Contact + escalation
 
 - Ops on-call: whoever pushed last (`git log -1 --format='%an %ae' main`)
-- Security disclosures: security@agentvisorai.me
+- Security disclosures: security@proofvisor.com
 - Status page: `docs/STATUS.md` in this repo (edit + push to update)
 - Investor comms: read-only status page + one-line email
 
@@ -19,14 +23,14 @@ One page. Grep for the failure, do the fix, move on. Kept short on purpose.
 
 ### 1. Database is down (`/readyz` returning 503, all writes 500)
 
-**Signal:** `curl -f https://api.agentvisorai.me/readyz` fails with 503;
+**Signal:** `curl -f https://api.proofvisor.com/readyz` fails with 503;
 Fly logs show `PrismaClientKnownRequestError` on every write.
 
 **First actions:**
 
 ```bash
 # Confirm the incident scope
-fly status --app agentvisor-api
+fly status --app proofvisor-api
 # Check the managed PG dashboard (Neon / Supabase / Fly PG)
 open https://console.neon.tech    # or supabase.com, or fly pg status
 
@@ -34,7 +38,7 @@ open https://console.neon.tech    # or supabase.com, or fly pg status
 # Just wait 30-60s. /readyz will flip green.
 
 # If it's a stuck connection pool: rolling restart clears it.
-fly deploy --image "$(fly image show --app agentvisor-api | awk 'NR==2 {print $NF}')" --strategy rolling
+fly deploy --image "$(fly image show --app proofvisor-api | awk 'NR==2 {print $NF}')" --strategy rolling
 
 # If restoration is required, use the isolated restore procedure below.
 # Nightly artifacts are encrypted .dump.gpg files, not directly restorable dumps.
@@ -52,7 +56,7 @@ events; same-instance tabs still work.
 recycled the connection). Force a redeploy to reset both sockets:
 
 ```bash
-fly deploy --strategy rolling --app agentvisor-api
+fly deploy --strategy rolling --app proofvisor-api
 ```
 
 ### 3. Rolling deploy stuck
@@ -60,14 +64,14 @@ fly deploy --strategy rolling --app agentvisor-api
 **Signal:** `fly deploy` hangs at "waiting for machine <id>".
 
 ```bash
-fly logs --app agentvisor-api -i <machine-id>
+fly logs --app proofvisor-api -i <machine-id>
 # Common causes:
 #   - Bad migration → prisma migrate deploy printed an error
 #   - Wrong image ref → docker inspect the digest
 #   - Health check flaking → check /readyz on the machine
 
 # Rollback to previous digest — same command, older SHA.
-fly deploy --image "ghcr.io/agentvisorai/agentvisor-api:sha-<older>" --strategy rolling
+fly deploy --image "ghcr.io/proofvisorai/proofvisor-api:sha-<older>" --strategy rolling
 ```
 
 ### 4. Trivy CI job fails on a fixable HIGH/CRITICAL
@@ -81,18 +85,18 @@ image has no vulnerabilities. The workflow separately saves the unfiltered
 Reproduce both views for the exact image under review:
 
 ```bash
-docker build -t agentvisor-console-scan server/
+docker build -t proofvisor-console-scan server/
 mkdir -p "$HOME/.cache/trivy"
 # Retain all severities and unfixed findings, without an ignore file.
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOME/.cache/trivy:/root/.cache/trivy" -v "$PWD:/reports" \
   aquasec/trivy:0.74.0 image --scanners vuln --ignorefile /dev/null \
-  --format json --output /reports/trivy-full.json agentvisor-console-scan
+  --format json --output /reports/trivy-full.json proofvisor-console-scan
 # Apply the CI severity/fixability gate using the same cached database.
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOME/.cache/trivy:/root/.cache/trivy" \
   aquasec/trivy:0.74.0 image --skip-db-update --scanners vuln \
-  --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 agentvisor-console-scan
+  --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 proofvisor-console-scan
 ```
 
 Upgrade affected dependencies or the maintained runtime base when a fix is
@@ -163,12 +167,12 @@ limit, and authenticated ingestion after the global bucket was exhausted.
 ```bash
 # JWT_SECRET rotation — invalidates ALL outstanding sessions on next boot.
 # Schedule for low-traffic window, warn users first.
-fly secrets set JWT_SECRET="$(openssl rand -hex 48)" --app agentvisor-api
+fly secrets set JWT_SECRET="$(openssl rand -hex 48)" --app proofvisor-api
 
 # DATABASE_URL rotation — mostly for provider switches.
 # Do a dump first to ensure the new target is caught up:
 pg_dump "$OLD_URL" | psql "$NEW_URL"
-fly secrets set DATABASE_URL="$NEW_URL" --app agentvisor-api
+fly secrets set DATABASE_URL="$NEW_URL" --app proofvisor-api
 ```
 
 ### 8. Ingest spike or unexpected 429
@@ -194,10 +198,10 @@ Fly does this automatically via Let's Encrypt. If the cert is about to
 expire:
 
 ```bash
-fly certs check api.agentvisorai.me --app agentvisor-api
+fly certs check api.proofvisor.com --app proofvisor-api
 # Renew manually
-fly certs remove api.agentvisorai.me --app agentvisor-api
-fly certs add api.agentvisorai.me --app agentvisor-api
+fly certs remove api.proofvisor.com --app proofvisor-api
+fly certs add api.proofvisor.com --app proofvisor-api
 ```
 
 ### 10. Log correlation — how do I find one customer's request?
@@ -207,10 +211,10 @@ one from their browser dev tools (`Network > Headers > x-request-id`).
 
 ```bash
 # Then grep Fly logs
-fly logs --app agentvisor-api | grep "req-<id>"
+fly logs --app proofvisor-api | grep "req-<id>"
 
 # Or a specific machine
-fly logs --app agentvisor-api -i <machine-id> | grep "req-<id>"
+fly logs --app proofvisor-api -i <machine-id> | grep "req-<id>"
 ```
 
 The problem+json error body also contains `requestId`, so a 4xx / 5xx
@@ -219,7 +223,7 @@ response the customer pastes into a ticket is directly greppable.
 ### 11. Customer daemon's clock is hours off (TZ set as local-time-UTC)
 
 **Signal:** customer reports sessions stuck `live` with no timeline, and
-`avctl console-sync` printing
+`pvctl console-sync` printing
 `warning: console dropped timestamp-skewed events … leaving that batch retryable`
 plus `receiptsSkipped` > 0 in the summary line. With
 `require_identity = true` the same skew locks out every honest client
@@ -230,7 +234,7 @@ clock is likely ahead (check NTP)` (host ahead).
 
 **What's happening (verified end-to-end, round 106, +6h faketime):** the
 console clamps session `openedAt`/`closedAt` to `now+5min`, refuses
-events dated >5 min in the future, and avctl then **defers the receipt**
+events dated >5 min in the future, and pvctl then **defers the receipt**
 so a sealed session never appears with an empty timeline. Nothing is
 lost — the daemon's spool keeps everything and every batch stays
 retryable. A daemon *behind* real time syncs fully (past-dated events
@@ -241,8 +245,8 @@ or fix the container host), which stops new sessions from skewing.
 Evidence already stamped in the future is immutable (MAC'd spool /
 signed receipts) and lands automatically once the wall clock passes
 the stamps — for a +6h skew that means up to 6 hours later; re-run
-`avctl console-sync` (or let the timer tick) after the catch-up.
-avctl defers the session's receipt until every frozen record has
+`pvctl console-sync` (or let the timer tick) after the catch-up.
+pvctl defers the session's receipt until every frozen record has
 landed, so the console never shows a sealed-but-incomplete session.
 The signed receipt's `issued_at` keeps the daemon's original attested
 clock claim by design.
@@ -303,7 +307,7 @@ older major version is not established by these checks.
 
 Retrieve the passphrase into an owner-readable file from the vault. Also
 prepare a private libpq service file (`PGSERVICEFILE`) with a section named
-`agentvisor_restore` that identifies only the empty test database. Specify
+`proofvisor_restore` that identifies only the empty test database. Specify
 its `host`, `port`, `dbname`, and `user`; for a remote database, configure
 `sslmode=verify-full` and the appropriate `sslrootcert`. Keep the password
 out of that service file and provide it through a separate `PGPASSFILE`.
@@ -335,7 +339,7 @@ or a local editor, without putting passwords in shell history.
     --decrypt "$ENCRYPTED_DUMP" > "$restore_workdir/backup.dump"
   "$PG_RESTORE_18" \
     --no-owner --no-privileges --single-transaction --exit-on-error \
-    --no-password --dbname=service=agentvisor_restore "$restore_workdir/backup.dump"
+    --no-password --dbname=service=proofvisor_restore "$restore_workdir/backup.dump"
 )
 # Complete the data/API checks above before considering a production cutover.
 ```
@@ -356,7 +360,7 @@ writes, timeouts, repeated termination signals, and private-file cleanup.
 python3 scripts/test-postgres-backup.py
 python3 scripts/test-postgres-backup-drill.py
 # Set DOCKER_HOST if the local Docker engine needs an explicit endpoint.
-python3 scripts/postgres-backup-test.py --output-dir /tmp/agentvisor-backup-results
+python3 scripts/postgres-backup-test.py --output-dir /tmp/proofvisor-backup-results
 ```
 
 The local drills did not validate retrieval or decryption of a
@@ -420,7 +424,7 @@ Verified `Set-Cookie` header on `POST /auth/signup` with
 `NODE_ENV=production` + `SESSION_COOKIE_SECURE=true`:
 
 ```
-set-cookie: av_session=…; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax
+set-cookie: pv_session=…; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax
 ```
 
 Every required security flag present. No `Domain` attribute → the
@@ -475,9 +479,9 @@ environment. Run this from the repository root with an explicit model that the
 account can access. The output directory must be new or empty and owner-only.
 
 ```sh
-cargo build --locked --release -p av-harness --bin agentvisord -p av-cli --bin avctl
+cargo build --locked --release -p pv-harness --bin proofvisord -p pv-cli --bin pvctl
 python3 scripts/provider-smoke.py --allow-live-request \
-  --model YOUR_MODEL --output-dir /tmp/agentvisor-provider-result
+  --model YOUR_MODEL --output-dir /tmp/proofvisor-provider-result
 ```
 
 The explicit flag authorizes one potentially billable greeting request capped
@@ -500,7 +504,7 @@ failed validation, not evidence of successful inference.
 
 The offline regression suite uses real daemon and CLI binaries with a loopback
 provider. It does not require a provider account and never contacts an external
-API. Run it with `AGENTVISORD` and `AVCTL` set to the desired binaries, or build
+API. Run it with `PROOFVISORD` and `PVCTL` set to the desired binaries, or build
 the default debug binaries first, then execute
 `python3 scripts/test-provider-smoke.py`. CI runs this suite after building both
 binaries.

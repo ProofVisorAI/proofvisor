@@ -4,11 +4,11 @@
 # api-drills CI workflow.
 #
 # Requirements:
-#   - Postgres reachable at $DATABASE_URL (default av/av@localhost:5433/avdb,
+#   - Postgres reachable at $DATABASE_URL (default pv/pv@localhost:5433/pvdb,
 #     already migrated: npx prisma migrate deploy)
 #   - $PG_CONTAINER: a docker container name whose psql can reach that DB
 #     (drills seed/inspect rows via docker exec)
-#   - PG_USER/PG_DB matching the DATABASE_URL role/db (default av/avdb)
+#   - PG_USER/PG_DB matching the DATABASE_URL role/db (default pv/pvdb)
 #
 # Usage: server/scripts/run-drill-battery.sh [drill-name ...]
 set -u
@@ -17,9 +17,9 @@ cd "$(dirname "$0")/.." || exit 1
 export APP_BASE_URL=${APP_BASE_URL:-http://127.0.0.1:8988}
 export ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://127.0.0.1:8988}
 export PG_CONTAINER=${PG_CONTAINER:-server-db-1}
-export PG_USER=${PG_USER:-av}
-export PG_DB=${PG_DB:-avdb}
-AVURL=${DATABASE_URL:-postgresql://av:av@localhost:5433/avdb}
+export PG_USER=${PG_USER:-pv}
+export PG_DB=${PG_DB:-pvdb}
+PVURL=${DATABASE_URL:-postgresql://pv:pv@localhost:5433/pvdb}
 
 PASS=0
 FAIL=0
@@ -29,7 +29,7 @@ run_drill() {
   local name=$1 port=$2; shift 2
   local pidfile
   pidfile=$(mktemp) || return 1
-  ( env PORT="$port" API_PUBLIC_URL="http://127.0.0.1:$port" DATABASE_URL="$AVURL" "$@" \
+  ( env PORT="$port" API_PUBLIC_URL="http://127.0.0.1:$port" DATABASE_URL="$PVURL" "$@" \
     node node_modules/.bin/tsx src/index.ts > "/tmp/drill-$name.log" 2>&1 & echo $! > "$pidfile" )
   local up=0
   for _ in $(seq 1 60); do curl -sf -o /dev/null "http://127.0.0.1:$port/healthz" && { up=1; break; }; sleep 1; done
@@ -57,6 +57,8 @@ run_drill() {
 # name|port[|extra-env...] — | because env values carry URLs with colons
 ALL_DRILLS=(
   "quarantine-drill|20753"
+  "policy-push-drill|20754"
+  "demo-and-keys-drill|20755"
   "apikey-drill|20745"
   "apikey-hardening|20745"
   "invite-drill|20445"
@@ -70,7 +72,7 @@ ALL_DRILLS=(
   "webhook-drill|20747|ALLOW_INTERNAL_WEBHOOK_TARGETS=true|WEBHOOK_SWEEPER_INTERVAL_MS=1000"
   "webhook-hardening|20748|ALLOW_INTERNAL_WEBHOOK_TARGETS=true|WEBHOOK_SWEEPER_INTERVAL_MS=1000"
   "webhook-adapter-drill|20752|ALLOW_INTERNAL_WEBHOOK_TARGETS=true|WEBHOOK_SWEEPER_INTERVAL_MS=1000"
-  "oidc-drill|20499|OIDC_ISSUER_URL=http://127.0.0.1:20498|OIDC_CLIENT_ID=av-console|OIDC_CLIENT_SECRET=drill-secret-123|OIDC_DISPLAY_NAME=Keycloak"
+  "oidc-drill|20499|OIDC_ISSUER_URL=http://127.0.0.1:20498|OIDC_CLIENT_ID=pv-console|OIDC_CLIENT_SECRET=drill-secret-123|OIDC_DISPLAY_NAME=Keycloak"
 )
 
 selected=("$@")

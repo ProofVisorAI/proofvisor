@@ -1,5 +1,5 @@
 #![no_main]
-//! `av_core::url_redact::redact_userinfo` runs on every log line that
+//! `pv_core::url_redact::redact_userinfo` runs on every log line that
 //! renders an operator URL. Two properties:
 //!
 //! 1. Never panics and is a no-op on inputs without `://` (checked on
@@ -19,7 +19,7 @@ const CANARY: &str = "S3CR3TZQCANARY";
 fuzz_target!(|data: &[u8]| {
     // Property 1: total function on arbitrary UTF-8.
     if let Ok(raw) = std::str::from_utf8(data) {
-        let out = av_core::url_redact::redact_userinfo(raw);
+        let out = pv_core::url_redact::redact_userinfo(raw);
         if !raw.contains("://") {
             assert_eq!(out, raw, "non-URL input must round-trip verbatim");
         }
@@ -45,7 +45,7 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     let url = format!("https://user:{password}@example.com/{tail}");
-    let redacted = av_core::url_redact::redact_userinfo(&url);
+    let redacted = pv_core::url_redact::redact_userinfo(&url);
     assert!(
         !redacted.contains(CANARY),
         "password canary survived redaction: {redacted:?}"

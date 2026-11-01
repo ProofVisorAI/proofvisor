@@ -25,7 +25,7 @@
     // Rust-parity strictness (round-12 differential): atob() is
     // WHATWG-forgiving (strips ASCII whitespace), and JSON.parse keeps
     // the LAST duplicate key — both places where this page could show
-    // a green tick on a file `avctl receipt-verify` / the daemon
+    // a green tick on a file `pvctl receipt-verify` / the daemon
     // refuse. One file must never verify differently across the
     // toolchain (equivocation vector), so mirror Rust's refusals.
     // NB: b64ToBytes above deliberately maps URL-safe input for the
@@ -41,11 +41,11 @@
       try { return btoa(atob(s)) === s; } catch { return false; }
     }
     // Rust-parity precision gate: receipt integers are u64s capped at
-    // JCS_SAFE_MAX = 2^53 (av-core error.rs; jcs.rs refuses anything
+    // JCS_SAFE_MAX = 2^53 (pv-core error.rs; jcs.rs refuses anything
     // above). JSON.parse rounds bigger integer tokens to the nearest
     // double BEFORE the raw-receipt path re-canonicalizes the body, so
     // a tampered `…992` → `…993` silently rounds BACK to the signed
-    // value and verified green here while `avctl receipt-verify`
+    // value and verified green here while `pvctl receipt-verify`
     // refuses the file. Scan the raw text: any integer token above
     // 2^53 in magnitude is a refusal. Keep in sync with
     // server/scripts/verify-receipt.mjs.
@@ -137,7 +137,7 @@
     // `key_id` field (a 32-hex-char prefix of SHA-256(pubkey))
     // must derive from the pubkey we're verifying against.
     // Rust `Receipt::verify_embedded()` at
-    // crates/av-receipts/src/receipt.rs:371-374 refuses
+    // crates/pv-receipts/src/receipt.rs:371-374 refuses
     // `KeyMismatch` when derived_id != body.key_id. Prior JS
     // verifier accepted a receipt whose body claimed a
     // different `key_id` than the pubkey in the bundle
@@ -161,9 +161,9 @@
       return full.slice(0, 32);
     }
 
-    // R190 F1: build the exact byte message the Rust `av-receipts`
+    // R190 F1: build the exact byte message the Rust `pv-receipts`
     // crate signs. Rust `signing_message(receipt_version, canonical)`
-    // (crates/av-receipts/src/receipt.rs:50-64) dispatches on
+    // (crates/pv-receipts/src/receipt.rs:50-64) dispatches on
     // `receipt_version`:
     //   * v1 → bare canonical bytes (legacy wire format)
     //   * v2 → RECEIPT_DOMAIN_TAG_V2 (b"agentvisor-receipt-v2\0",
@@ -175,6 +175,8 @@
     // "Signature does not verify" on this page. Now: parse
     // receipt.body to find `receipt_version`, dispatch to the
     // correct framing.
+    // Wire format: every v2 receipt is signed over these bytes; they predate
+    // the ProofVisor name and must never be renamed.
     const RECEIPT_DOMAIN_TAG_V2 = new TextEncoder().encode("agentvisor-receipt-v2\0");
     function receiptSigningMessage(rawBody) {
       const canonical = new TextEncoder().encode(rawBody);
@@ -214,7 +216,7 @@
     // anchor pinning. Without this, an attacker who generates their
     // own Ed25519 keypair, signs an arbitrary `rawBody`, and embeds
     // their pubkey in a fresh bundle gets the same "✅ authentic"
-    // verdict as a real AgentVisor-signed receipt. The verifier
+    // verdict as a real ProofVisor-signed receipt. The verifier
     // only ever proved self-consistency of (body, sig, pubkey),
     // not authorship. The trusted-anchors list below is the set of
     // Ed25519 pubkey hex strings the daemon publicly commits to.
@@ -223,7 +225,7 @@
     // consistent. Trust anchor NOT verified", NOT the word
     // "authentic". Empty by default (no canonical anchor published
     // yet); populate via a release-hardening round or fetch from
-    // `https://agentvisorai.me/.well-known/receipt-keys.json`
+    // `https://proofvisor.com/.well-known/receipt-keys.json`
     // over TLS.
     const TRUSTED_RECEIPT_KEYS = new Set([
       // Lowercased 64-hex Ed25519 pubkeys.
@@ -255,15 +257,111 @@
       "573c8f249012fbb08b3d79973411bb93141f32719c86ada25306fde5e59e8d57",
     ]);
 
-    // Raw daemon receipts: the file agentvisord writes under
+    // The published trust-anchor list: /.well-known/receipt-keys.json
+    //   {"version":1,"updated":"<date>","keys":[{"key_id","public_key_hex",
+    //    "public_key_b64","label","trust":"sample"|"demo"}]}
+    // Same origin as this page (allowed by connect-src 'self'), so a
+    // key rotation is one JSON edit instead of a script release. The
+    // two values above stay as the fallback when the fetch fails
+    // (offline use, a stale CDN, a self-hosted copy without the file).
+    // The Set objects are kept — the CI drill mutates the exposed one.
+    const keysReady = (async () => {
+      try {
+        const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+        const timer = ctrl ? setTimeout(() => ctrl.abort(), 4000) : null;
+        const res = await fetch("../.well-known/receipt-keys.json", { cache: "no-cache", signal: ctrl ? ctrl.signal : undefined });
+        if (timer) clearTimeout(timer);
+        if (!res.ok) return "fallback";
+        const doc = await res.json();
+        if (!doc || doc.version !== 1 || !Array.isArray(doc.keys)) return "fallback";
+        const valid = doc.keys.filter((k) => k && typeof k.public_key_hex === "string" && /^[0-9a-fA-F]{64}$/.test(k.public_key_hex) && (k.trust === "sample" || k.trust === "demo"));
+        if (!valid.length) return "fallback";
+        TRUSTED_RECEIPT_KEYS.clear();
+        DEMO_RECEIPT_KEYS.clear();
+        for (const k of valid) {
+          const hex = k.public_key_hex.toLowerCase();
+          TRUSTED_RECEIPT_KEYS.add(hex);
+          if (k.trust === "demo") DEMO_RECEIPT_KEYS.add(hex);
+        }
+        return "published";
+      } catch (e) {
+        return "fallback";
+      }
+    })();
+
+    // ── Deployment key pinning ─────────────────────────────────────
+    // A verify link the console shares carries `&deployment=<id>` and,
+    // in live mode, `&api=<origin>`. The console pins each deployment's
+    // signing key the first time its daemon checks in and publishes it
+    // at GET /api/v1/public/receipt-keys/:deploymentId. Comparing the
+    // receipt's embedded key with that pinned key turns "internally
+    // consistent" into "signed by the key the console pinned for
+    // deployment X". Only API origins this page trusts are consulted:
+    // the hosted API, the origin named by <meta name="pv-api-origin">,
+    // and this page's own origin (the self-hosted docs+API layout).
+    const HOSTED_API_ORIGIN = "https://api.proofvisor.com";
+    function allowedApiOrigins() {
+      const out = new Set([HOSTED_API_ORIGIN, location.origin]);
+      const meta = document.querySelector('meta[name="pv-api-origin"]');
+      if (meta && meta.content) {
+        try { out.add(new URL(meta.content).origin); } catch (e) { /* ignore a bad meta */ }
+      }
+      return out;
+    }
+    const pinnedCache = new Map();
+    async function lookupPinnedKey(api, deployment) {
+      if (!api || !deployment || !/^[A-Za-z0-9_-]{1,64}$/.test(deployment)) return null;
+      let origin;
+      try { origin = new URL(api).origin; } catch (e) { return null; }
+      if (!allowedApiOrigins().has(origin)) return null;
+      const cacheKey = origin + "|" + deployment;
+      if (pinnedCache.has(cacheKey)) return pinnedCache.get(cacheKey);
+      const promise = (async () => {
+        try {
+          const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+          const timer = ctrl ? setTimeout(() => ctrl.abort(), 5000) : null;
+          const res = await fetch(origin + "/api/v1/public/receipt-keys/" + encodeURIComponent(deployment), {
+            mode: "cors", credentials: "omit", signal: ctrl ? ctrl.signal : undefined,
+          });
+          if (timer) clearTimeout(timer);
+          if (!res.ok) return null;
+          const k = await res.json();
+          if (!k || typeof k.publicKeyHex !== "string" || !/^[0-9a-fA-F]{64}$/.test(k.publicKeyHex)) return null;
+          return {
+            publicKeyHex: k.publicKeyHex.toLowerCase(),
+            deploymentId: String(k.deploymentId || deployment),
+            deploymentName: typeof k.deploymentName === "string" ? k.deploymentName : deployment,
+            orgName: typeof k.orgName === "string" ? k.orgName : "",
+            pinnedAt: typeof k.pinnedAt === "string" ? k.pinnedAt : null,
+          };
+        } catch (e) {
+          return null;
+        }
+      })();
+      pinnedCache.set(cacheKey, promise);
+      return promise;
+    }
+    function fragmentParams() {
+      const raw = location.hash.slice(1);
+      if (!raw) return null;
+      try { return new URLSearchParams(raw); } catch (e) { return null; }
+    }
+    function fmtPinnedDate(iso) {
+      if (!iso) return "an unknown date";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return "an unknown date";
+      try { return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }); } catch (e) { return d.toISOString().slice(0, 10); }
+    }
+
+    // Raw daemon receipts: the file proofvisord writes under
     // spool/atif/receipts/ is {receipt fields…, public_key_b64,
     // signature_b64} — NOT the console-export bundle envelope. The page
-    // copy ("drop an AgentVisor receipt JSON") and `avctl
+    // copy ("drop an ProofVisor receipt JSON") and `pvctl
     // receipt-verify` both promise raw files work, so adapt them to
     // the bundle shape verifyBundle expects. The signed message is the
     // RFC 8785 (JCS) canonicalization of the receipt WITHOUT
     // signature_b64 — same construction console-sync uses when
-    // uploading (av_receipts::canonicalize over Receipt.body).
+    // uploading (pv_receipts::canonicalize over Receipt.body).
     function jcsCanonicalize(value) {
       // Minimal JCS for the receipt value domain: JSON.stringify
       // already emits shortest-form numbers for the integers/floats a
@@ -303,7 +401,7 @@
       }
       const pubHex = bytesToHex(b64ToBytes(parsed.public_key_b64));
       return {
-        format: "agentvisor.receipt.v1",
+        format: "proofvisor.receipt.v1",
         receipt: { rawBody: jcsCanonicalize(body), rawSignatureB64: parsed.signature_b64 },
         publicKey: { hex: pubHex },
       };
@@ -311,7 +409,10 @@
 
     async function verifyBundle(bundle) {
       if (looksLikeRawReceipt(bundle)) bundle = rawReceiptToBundle(bundle);
-      if (bundle.format !== "agentvisor.receipt.v1") {
+      // Bundles exported before the ProofVisor rename say
+      // "agentvisor.receipt.v1"; the field is not signed and the
+      // contents are identical, so both names verify.
+      if (bundle.format !== "proofvisor.receipt.v1" && bundle.format !== "agentvisor.receipt.v1") {
         throw new Error("Unrecognized bundle format: " + bundle.format);
       }
       const r = bundle.receipt || {};
@@ -319,7 +420,7 @@
       if (!r.rawBody || !r.rawSignatureB64) throw new Error("Receipt is missing rawBody or rawSignatureB64.");
       // Rust-parity: a signature that only decodes under forgiving
       // WHATWG base64 (whitespace / URL-safe chars / bad padding) is a
-      // verification FAILURE, exactly as avctl/daemon report it.
+      // verification FAILURE, exactly as pvctl/daemon report it.
       if (!isStrictStandardB64(r.rawSignatureB64)) {
         return { ok: false, trustedKey: false, demoKey: false, bundle };
       }
@@ -352,7 +453,7 @@
           }
           // R199 F1: enforce body.public_key_b64 ↔ bundle.publicKey.hex
           // binding. Rust `verify_embedded()` at
-          // crates/av-receipts/src/receipt.rs:365-368 uses
+          // crates/pv-receipts/src/receipt.rs:365-368 uses
           // body.public_key_b64 AS the verifying pubkey (self-
           // contained offline verification). Our JS verifier uses
           // bundle.publicKey.hex (envelope). If those refer to
@@ -407,6 +508,7 @@
       /(?:\?|&)ci-drill=1(?:&|$)/.test(window.location.search || "")
     ) {
       window.TRUSTED_RECEIPT_KEYS = TRUSTED_RECEIPT_KEYS;
+      window.PV_RECEIPT_KEYS_READY = keysReady;
     }
 
     function render(state) {
@@ -464,29 +566,48 @@
       // consistent. An attacker can trivially achieve this by
       // generating their own keypair) from "signature verifies AND
       // pubkey is in the trust anchor list" (actually attesting
-      // AgentVisor authorship).
+      // ProofVisor authorship).
       const demo = state.ok && state.trustedKey && state.demoKey;
-      const trusted = state.ok && state.trustedKey && !state.demoKey;
-      const internallyConsistent = state.ok && !state.trustedKey;
-      const cls = trusted ? "ok" : (demo || internallyConsistent ? "pending" : "bad");
-      const titleText = trusted
+      // Deployment pin (shared verify link + published key): a match
+      // is the strongest verdict this page can give for a production
+      // receipt; a mismatch is a hard red, even though the signature
+      // verifies, because the key is not the one the console pinned.
+      const pinned = state.ok ? state.pinned : null;
+      const pinMatch = !!(pinned && pinned.match);
+      const pinMismatch = !!(pinned && !pinned.match);
+      const trusted = state.ok && !pinMismatch && ((state.trustedKey && !state.demoKey) || (pinMatch && !demo));
+      const internallyConsistent = state.ok && !state.trustedKey && !pinMatch && !pinMismatch;
+      const cls = trusted ? "ok" : (demo && !pinMismatch) || internallyConsistent ? "pending" : "bad";
+      const pinnedLine = pinned && pinned.match
+        ? "Trusted: key pinned by the ProofVisor console for deployment " + pinned.deploymentName + " on " + fmtPinnedDate(pinned.pinnedAt) + (pinned.orgName ? " (" + pinned.orgName + ")" : "") + "."
+        : "";
+      const titleText = pinMismatch
+        ? "❌  Key does NOT match the pinned deployment key"
+        : trusted && pinMatch && !state.trustedKey
+        ? "✅  Trusted: key pinned by the ProofVisor console for deployment " + esc(pinned.deploymentName) + " on " + esc(fmtPinnedDate(pinned.pinnedAt))
+        : trusted
         ? "✅  Signature verifies against a trusted key"
         : demo
         ? "🧪  Demo receipt — signed by the public demo key"
         : internallyConsistent
         ? "⚠️  Signature is internally consistent. Trust anchor NOT verified"
         : "❌  Signature does not verify";
-      const subText = trusted
-        ? "This receipt is authentic. It was signed by a key on the AgentVisor trust anchor list, and every byte of the payload matches the signature."
+      const subText = pinMismatch
+        ? "The signature verifies against the key embedded in the receipt, but that key is NOT the one the ProofVisor console pinned for deployment " + esc(pinned.deploymentName) + ". Someone signed this receipt with a different key than the deployment's daemon uses. Do not trust it."
+        : trusted && pinMatch
+        ? "This receipt was signed by the exact Ed25519 key the ProofVisor console pinned for this deployment the first time its daemon checked in, and every byte of the payload matches the signature." + (state.trustedKey ? " The key is also on this page's published trust-anchor list." : "")
+        : trusted
+        ? "This receipt is authentic. It was signed by a key on the ProofVisor trust anchor list, and every byte of the payload matches the signature."
         : demo
-        ? "The signature verifies against the demo console's signing key. That key's PRIVATE half ships publicly with the demo, so anyone can sign anything with it — this proves the demo flow end-to-end, but it is NOT a production attestation."
+        ? "The signature verifies against the demo console's signing key. That key's PRIVATE half ships publicly with the demo, so anyone can sign anything with it — this proves the demo flow end-to-end, but it is NOT a production attestation." + (pinMatch ? " " + esc(pinnedLine) : "")
         : internallyConsistent
-        ? "The bundle's signature matches its embedded public key, but that public key is NOT in the trust anchor list this verifier ships with. An attacker can generate a keypair, sign anything, and embed the pubkey, so this alone does NOT attest AgentVisor authorship. Compare the public key against a canonical AgentVisor deployment record before trusting the payload."
+        ? "The bundle's signature matches its embedded public key, but that public key is NOT in the trust anchor list this verifier ships with. An attacker can generate a keypair, sign anything, and embed the pubkey, so this alone does NOT attest ProofVisor authorship. Compare the public key against a canonical ProofVisor deployment record before trusting the payload."
         : "The signature does not match the payload. Either the receipt was modified after signing, or the public key doesn't correspond to the signing key.";
       result.innerHTML = `
         <div class="result-card ${cls}">
           <p class="result-title">${titleText}</p>
           <p class="result-sub">${subText}</p>
+          ${state.pinLookupFailed ? `<p class="result-sub pin-note">The shared link names deployment <code>${esc(state.pinLookupFailed)}</code>, but its pinned key could not be fetched from the console, so the verdict above rests on the receipt's embedded key alone.</p>` : ""}
           ${state.tamper ? `<p class="result-sub tamper-note"><strong>What just happened:</strong> one byte of the signed body changed (${esc(state.tamper.what)}: <code>${esc(state.tamper.before)}</code> → <code>${esc(state.tamper.after)}</code>) and the signature broke. That is the guarantee — nothing in a receipt can be edited after the fact without detection.</p>` : ""}
           ${drift.length ? `<p class="result-sub"><strong>Note:</strong> the bundle's unsigned metadata (${esc(drift.join(", "))}) does not match the signed body. The values below come from the signed body, which is what the signature attests. The unsigned copies were edited after signing.</p>` : ""}
           <dl class="kv">
@@ -570,7 +691,7 @@
       catch (e) { render({ kind: "err", message: "Not valid JSON: " + e.message }); return; }
       // Rust-parity on the raw-receipt path (both toolchains read the
       // SAME file): duplicate JSON keys and non-strict base64 pubkeys
-      // are refusals in avctl/daemon — never a green tick here.
+      // are refusals in pvctl/daemon — never a green tick here.
       if (looksLikeRawReceipt(bundle)) {
         const dup = firstDuplicateKey(text);
         if (dup !== null) {
@@ -587,7 +708,7 @@
           return;
         }
         // Rust-parity subset of `verify_semantic_invariants`
-        // (crates/av-receipts/src/receipt.rs): the unambiguous shape
+        // (crates/pv-receipts/src/receipt.rs): the unambiguous shape
         // pins that previously split verdicts — Rust flatly refuses
         // these while this page showed a positive-leaning card. The
         // derivational checks (issued_at_iso recomputation, stop-reason
@@ -612,9 +733,31 @@
         }
       }
       try {
+        // The published key list decides trusted vs. demo; wait for it
+        // (bounded — the fetch aborts itself after 4 s and falls back).
+        await keysReady;
         const { ok, trustedKey, demoKey, bundle: b } = await verifyBundle(bundle);
         if (ok && !tamper) lastGood = text;
-        render({ kind: "result", ok, trustedKey, demoKey, bundle: b, tamper: tamper || null });
+        // Deployment pin from the share link (#data=…&deployment=…&api=…).
+        let pinned = null;
+        let pinLookupFailed = null;
+        const params = fragmentParams();
+        const deployment = params ? params.get("deployment") : null;
+        const api = params ? params.get("api") : null;
+        if (ok && deployment && api) {
+          const key = await lookupPinnedKey(api, deployment);
+          if (key) {
+            pinned = {
+              match: key.publicKeyHex === String((b.publicKey || {}).hex || "").toLowerCase(),
+              deploymentName: key.deploymentName,
+              orgName: key.orgName,
+              pinnedAt: key.pinnedAt,
+            };
+          } else {
+            pinLookupFailed = deployment;
+          }
+        }
+        render({ kind: "result", ok, trustedKey, demoKey, bundle: b, tamper: tamper || null, pinned, pinLookupFailed });
       } catch (e) {
         render({ kind: "err", message: e.message });
       }
@@ -686,7 +829,7 @@
     loadExample.disabled = false;
 
     // Shareable receipt URL:
-    //     agentvisorai.me/verify/#data=<base64url-encoded-JSON>
+    //     proofvisor.com/verify/#data=<base64url-encoded-JSON>
     // The console's "Share this receipt" button generates this URL. When
     // the recipient opens the link, we base64url-decode the fragment and
     // auto-verify. Fragment (not query) so the payload never touches
@@ -702,7 +845,7 @@
       // R115 F2's comment claimed the fragment path was already
       // capped, but grep showed only file-drop (line 253) and
       // paste (line 284) enforced 5_000_000. A hostile shared
-      // link (agentvisorai.me/verify/#data=<multi-MB base64>)
+      // link (proofvisor.com/verify/#data=<multi-MB base64>)
       // synchronously blocked the main thread on atob + JSON.parse
       // — same self-inflicted-tab-freeze class R115 F2 closed on
       // paste. The base64 encoding is ~4/3 the raw byte length,

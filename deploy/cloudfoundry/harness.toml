@@ -15,7 +15,20 @@ bridge_data_dir = "/app/data/bridge"
 bridge_backend = "embedded"
 tool_schema_dir = "/app/config/tool-schemas"
 wasm_policy_paths = ["/app/config/policies/payload_limit.wat"]
-# The required manifest variable supplies AV_STATE_ENDPOINT at runtime.
+# Redact persisted audit copies (events, ATIF steps, receipts). Any
+# non-empty list turns redaction on and always includes the built-in
+# patterns (Bearer tokens, sk-/key- API keys, emails, card numbers, US
+# SSNs, public IPv4). These entries add AWS, GitHub, Google, Slack and
+# bare-JWT credentials; they mirror the shipped configs under config/.
+# To turn redaction OFF, set `redaction_patterns = []`.
+redaction_patterns = [
+  '(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)',
+  '(?-u:\b)gh[opsur]_[A-Za-z0-9]{36,255}(?-u:\b)',
+  '(?-u:\b)AIza[0-9A-Za-z_-]{35}(?-u:\b)',
+  '(?-u:\b)xox[abeprs]-[A-Za-z0-9-]{10,255}',
+  '(?-u:\b)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}',
+]
+# The required manifest variable supplies PV_STATE_ENDPOINT at runtime.
 state_backend = "redis"
 state_endpoint = "rediss://redis.example.invalid:6379"
 embedder_backend = "hash"

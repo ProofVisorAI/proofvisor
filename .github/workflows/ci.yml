@@ -5,7 +5,7 @@ on:
     branches: [main]
     # No paths-ignore: prose and deploy manifests ARE CI-executed
     # inputs. The workspace `include_str!`s (and asserts against)
-    # deploy/kubernetes/agentvisor-ai.yaml, docs/reference/*.md,
+    # deploy/kubernetes/proofvisor.yaml, docs/reference/*.md,
     # docs/app/pitch/console.js + pitch/index.html (the linear pitch
     # walkthrough), README.md and the shipped
     # configs/schemas/manifests — a docs-only or deploy-only commit
@@ -61,11 +61,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends redis-server
       - name: Build daemon with shared revocation support
-        run: cargo build --locked -p av-harness --bin agentvisord --features redis
+        run: cargo build --locked -p pv-harness --bin proofvisord --features redis
       - name: Reject tokens that expire during a Redis revocation read
         timeout-minutes: 3
         env:
-          AGENTVISORD: ${{ github.workspace }}/target/debug/agentvisord
+          PROOFVISORD: ${{ github.workspace }}/target/debug/proofvisord
         run: python3 scripts/introspection-expiry-test.py --output-dir "${{ runner.temp }}/introspection-expiry"
       - name: Retain expiry regression evidence
         if: always()
@@ -94,9 +94,50 @@ jobs:
       - name: Kubernetes init delivers private non-root secrets
         run: python3 scripts/kubernetes-secrets-test.py
 
+  windows:
+    # Native Windows: the daemon and the CLI compile with MSVC and the
+    # workspace unit tests pass. Integration tests that spawn the daemon,
+    # send POSIX signals or assert POSIX mode bits are `#[cfg(unix)]`
+    # and are not part of `--lib`. See docs/PLATFORMS.md for what the
+    # Windows build does differently (ACLs instead of 0600 checks,
+    # Ctrl-C instead of SIGTERM, no systemd unit).
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      # rustls' aws-lc-sys assembles with NASM on x86_64 MSVC; the crate
+      # ships prebuilt NASM objects for exactly this target, so the build
+      # does not depend on the NASM install below succeeding.
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install NASM
+        run: |
+          choco install nasm -y --no-progress
+          echo "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build daemon and CLI
+        run: cargo build --locked -p pv-harness -p pv-cli --bins
+      - name: Unit tests
+        run: cargo test --locked --workspace --lib
+
   check:
     runs-on: ubuntu-latest
     steps:
+      # Clippy plus two full debug test builds (default and
+      # --all-features) outgrew the runner's free disk ("No space left
+      # on device" while linking proofvisord). Drop preinstalled
+      # toolchains this job never uses; this frees roughly 25-30 GB.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       # Round-29 F2: pin every third-party action by commit SHA (with
       # the moving pointer in a trailing comment for Renovate/
       # Dependabot updates). A moving tag like `@v4` or `@stable` can
@@ -141,52 +182,52 @@ jobs:
         run: docker compose -f docker/docker-compose.yml up -d --wait redpanda redis qdrant nats minio
       - name: Fetch pinned MiniLM artifacts
         run: |
-          mkdir -p /tmp/agentvisor-minilm
-          curl -fL --retry 3 -o /tmp/agentvisor-minilm/model.onnx https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model.onnx
-          curl -fL --retry 3 -o /tmp/agentvisor-minilm/tokenizer.json https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json
-          echo "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452  /tmp/agentvisor-minilm/model.onnx" | sha256sum -c -
-          echo "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037  /tmp/agentvisor-minilm/tokenizer.json" | sha256sum -c -
+          mkdir -p /tmp/proofvisor-minilm
+          curl -fL --retry 3 -o /tmp/proofvisor-minilm/model.onnx https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model.onnx
+          curl -fL --retry 3 -o /tmp/proofvisor-minilm/tokenizer.json https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json
+          echo "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452  /tmp/proofvisor-minilm/model.onnx" | sha256sum -c -
+          echo "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037  /tmp/proofvisor-minilm/tokenizer.json" | sha256sum -c -
       - name: Test
         env:
-          AV_REDIS_URL: redis://127.0.0.1:6379
-          AV_KAFKA_BROKER: 127.0.0.1:19092
-          AV_NATS_URL: nats://127.0.0.1:4222
-          AV_QDRANT_URL: http://127.0.0.1:6333
+          PV_REDIS_URL: redis://127.0.0.1:6379
+          PV_KAFKA_BROKER: 127.0.0.1:19092
+          PV_NATS_URL: nats://127.0.0.1:4222
+          PV_QDRANT_URL: http://127.0.0.1:6333
           # Live S3 cold-tier contract (cold_store_live.rs) — the one
           # env-gated live test that previously never ran in CI.
-          AV_COLD_S3_URL: s3://agentvisor-cold/ci
-          AWS_ACCESS_KEY_ID: agentvisor
-          AWS_SECRET_ACCESS_KEY: agentvisor-ci-secret
+          PV_COLD_S3_URL: s3://proofvisor-cold/ci
+          AWS_ACCESS_KEY_ID: proofvisor
+          AWS_SECRET_ACCESS_KEY: proofvisor-ci-secret
           AWS_ENDPOINT: http://127.0.0.1:9100
           AWS_ALLOW_HTTP: "true"
-          AV_ONNX_MODEL_PATH: /tmp/agentvisor-minilm/model.onnx
-          AV_ONNX_TOKENIZER_PATH: /tmp/agentvisor-minilm/tokenizer.json
+          PV_ONNX_MODEL_PATH: /tmp/proofvisor-minilm/model.onnx
+          PV_ONNX_TOKENIZER_PATH: /tmp/proofvisor-minilm/tokenizer.json
         run: |
           cargo test --workspace
           cargo test --workspace --all-features
       - name: Security and deployment live checks
         timeout-minutes: 20
         env:
-          AV_REDIS_URL: redis://127.0.0.1:6379
-          AGENTVISORD: ${{ github.workspace }}/target/debug/agentvisord
-          AVCTL: ${{ github.workspace }}/target/debug/avctl
+          PV_REDIS_URL: redis://127.0.0.1:6379
+          PROOFVISORD: ${{ github.workspace }}/target/debug/proofvisord
+          PVCTL: ${{ github.workspace }}/target/debug/pvctl
         run: |
           python3 buildpack/tests/test_buildpack.py
           python3 scripts/test-package-buildpack.py
           python3 scripts/live-pillars-helper.py self-test
-          cargo build -p av-harness --features redis -p av-cli --bins
+          cargo build -p pv-harness --features redis -p pv-cli --bins
           python3 scripts/test-provider-smoke.py
           ./scripts/live-pillars.sh
-          ./scripts/live-pillars.sh --redis "$AV_REDIS_URL"
+          ./scripts/live-pillars.sh --redis "$PV_REDIS_URL"
       - name: Redis TLS authentication and trust contracts
         timeout-minutes: 20
-        run: python3 scripts/redis-tls-test.py --output-dir /tmp/agentvisor-redis-tls-results
+        run: python3 scripts/redis-tls-test.py --output-dir /tmp/proofvisor-redis-tls-results
       - name: Retain Redis TLS contract diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: redis-tls-contracts
-          path: /tmp/agentvisor-redis-tls-results
+          path: /tmp/proofvisor-redis-tls-results
           if-no-files-found: ignore
           retention-days: 14
       - name: Redis Cluster with TLS and shared revocation contracts
@@ -198,11 +239,11 @@ jobs:
         run: |
           python3 scripts/redis-cluster-tls-test.py self-test
           python3 scripts/redis-cluster-tls-ci.py --self-test
-          python3 scripts/redis-cluster-tls-ci.py --output-dir /tmp/agentvisor-redis-cluster-tls-results
+          python3 scripts/redis-cluster-tls-ci.py --output-dir /tmp/proofvisor-redis-cluster-tls-results
       - name: Clean up owned Redis Cluster TLS fixture
         if: always()
         timeout-minutes: 3
-        run: python3 scripts/redis-cluster-tls-ci.py --cleanup --output-dir /tmp/agentvisor-redis-cluster-tls-results
+        run: python3 scripts/redis-cluster-tls-ci.py --cleanup --output-dir /tmp/proofvisor-redis-cluster-tls-results
       - name: Retain Redis Cluster TLS contract diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -210,7 +251,7 @@ jobs:
           name: redis-cluster-tls-contracts
           # Only redacted logs/provenance; the private fixture directory and
           # its CA keys, node keys, credentials and environment are excluded.
-          path: /tmp/agentvisor-redis-cluster-tls-results
+          path: /tmp/proofvisor-redis-cluster-tls-results
           if-no-files-found: ignore
           retention-days: 14
       - name: Release SLA
@@ -220,21 +261,21 @@ jobs:
         # docs/schemas/Harbor, and main re-validates the SLA on merge.
         if: github.event_name == 'push'
         env:
-          AV_REDIS_URL: redis://127.0.0.1:6379
-          AV_KAFKA_BROKER: 127.0.0.1:19092
+          PV_REDIS_URL: redis://127.0.0.1:6379
+          PV_KAFKA_BROKER: 127.0.0.1:19092
           # Round-45: shared GitHub Actions runners have noisy
           # neighbours and observed 10k-streaming p95/p99 sits near
           # 4.5-5.1 ms / 7-9 ms, which trips the tight 5 ms / 8 ms
           # defaults roughly half the time. Loosen the CI gates by
           # ~50 % to account for runner variance; local dev keeps the
           # historic defaults unless the operator overrides.
-          AV_SLA_STREAMING_P95_US: "7500"
-          AV_SLA_STREAMING_P99_US: "12000"
+          PV_SLA_STREAMING_P95_US: "7500"
+          PV_SLA_STREAMING_P99_US: "12000"
         run: |
-          cargo test -p av-harness --release --features full --test sla sla_core_metrics -- --ignored --nocapture
-          cargo test -p av-harness --release --features full --test sla_security -- --ignored --nocapture
+          cargo test -p pv-harness --release --features full --test sla sla_core_metrics -- --ignored --nocapture
+          cargo test -p pv-harness --release --features full --test sla_security -- --ignored --nocapture
           ulimit -n 65536
-          RUN_HEAVY_PERF=1 AV_SLA_CONNECTIONS=10000 cargo test -p av-harness --release --features full --test sla sla_10k_streaming_connections -- --ignored --nocapture
+          RUN_HEAVY_PERF=1 PV_SLA_CONNECTIONS=10000 cargo test -p pv-harness --release --features full --test sla sla_10k_streaming_connections -- --ignored --nocapture
       - name: Live-verify (round-51 §11 headline claims end-to-end)
         # Reproduces the review's two headline claims - hero snippet
         # succeeds, offline receipt verification refuses tampers and
@@ -244,7 +285,7 @@ jobs:
         # logger so a red run is triageable from the CI log alone.
         if: github.event_name == 'push'
         run: |
-          cargo build --release -p av-harness --bin agentvisord -p av-cli --bin avctl
+          cargo build --release -p pv-harness --bin proofvisord -p pv-cli --bin pvctl
           ./scripts/live-verify.sh
       - name: MCP uncertain effects survive close and restart
         id: mcp-uncertainty
@@ -253,8 +294,8 @@ jobs:
         if: github.event_name == 'push'
         timeout-minutes: 5
         env:
-          AGENTVISORD: target/release/agentvisord
-        run: python3 scripts/mcp-uncertainty-test.py --output-dir /tmp/agentvisor-mcp-uncertainty-results
+          PROOFVISORD: target/release/proofvisord
+        run: python3 scripts/mcp-uncertainty-test.py --output-dir /tmp/proofvisor-mcp-uncertainty-results
       - name: Retain MCP uncertainty failure diagnostics
         if: failure() && steps.mcp-uncertainty.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -263,8 +304,8 @@ jobs:
           # Explicit files only: never upload the hidden private work directory,
           # signing seed, HMAC credential, or request token, even after interruption.
           path: |
-            /tmp/agentvisor-mcp-uncertainty-results/*.log
-            /tmp/agentvisor-mcp-uncertainty-results/result.json
+            /tmp/proofvisor-mcp-uncertainty-results/*.log
+            /tmp/proofvisor-mcp-uncertainty-results/result.json
           if-no-files-found: ignore
           retention-days: 14
       - name: Feature matrix
@@ -273,23 +314,25 @@ jobs:
           cargo check --workspace --all-features
           # Round-6 (hunt5 portability F2): feature unification defeats
           # the workspace-level --no-default-features check for
-          # av-sandbox — av-harness depends on it WITH default features
+          # pv-sandbox — pv-harness depends on it WITH default features
           # (wasm), so the wasm-off arm was never compiled anywhere.
           # Check the crate in isolation so a non-gated wasmtime
           # reference cannot ship broken.
-          cargo check -p av-sandbox --no-default-features
+          cargo check -p pv-sandbox --no-default-features
           # Single-feature arms that no other combination exercises.
-          cargo check -p av-bridge --no-default-features --features cold-store
-      - name: MSRV floor (rust-version 1.94)
-        # Round-51 §10.5/§12: `rust-version = "1.94"` was an unverified
+          cargo check -p pv-bridge --no-default-features --features cold-store
+      - name: MSRV floor (rust-version 1.95)
+        # Round-51 §10.5/§12: `rust-version` was an unverified
         # claim — nothing built on that toolchain, so a newer-rustc
         # feature could silently raise the true floor while the
-        # manifest kept advertising 1.94 to downstream `cargo add`
+        # manifest kept advertising the old floor to downstream `cargo add`
         # users. Default features only: the floor is a source-language
-        # claim, not a native-deps matrix.
+        # claim, not a native-deps matrix. 1.95 is wasmtime 48's floor
+        # (cranelift 0.135); wasmtime 48.0.8 carries the RUSTSEC-2026-0420
+        # and -0324 fixes, which no 47.x release has.
         run: |
-          rustup toolchain install 1.94 --profile minimal --no-self-update
-          cargo +1.94 check --workspace
+          rustup toolchain install 1.95 --profile minimal --no-self-update
+          cargo +1.95 check --workspace
       - name: Docs
         run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D warnings" cargo doc --workspace --all-features --no-deps
       - name: Schemas and examples
@@ -312,8 +355,8 @@ jobs:
             "annotated-types==0.7.0" "typing-extensions==4.12.2" \
             "typing-inspection==0.4.1"
           python -m pip install --disable-pip-version-check --no-deps "git+https://github.com/harbor-framework/harbor.git@e5e46809a973c91d90a207fcaa232ab8ff89acaf"
-          AV_HARBOR_INTEROP_OUT=/tmp/agentvisor-atif.json cargo test -p av-harness full_chat_close_and_promotion_flow
-          python -m harbor.utils.trajectory_validator /tmp/agentvisor-atif.json --no-validate-images
+          PV_HARBOR_INTEROP_OUT=/tmp/proofvisor-atif.json cargo test -p pv-harness full_chat_close_and_promotion_flow
+          python -m harbor.utils.trajectory_validator /tmp/proofvisor-atif.json --no-validate-images
       - name: Compose
         run: |
           docker compose -f docker/docker-compose.yml config >/dev/null
@@ -323,23 +366,88 @@ jobs:
         # rationale as the SLA gate. `Compose` above still validates the
         # compose file itself on every run.
         if: github.event_name == 'push'
-        run: docker compose -f docker/docker-compose.yml build agentvisor-ai
+        run: docker compose -f docker/docker-compose.yml build proofvisor
       - name: Container requests, receipts, and persistent restart
         if: github.event_name == 'push'
         timeout-minutes: 10
         env:
           TMPDIR: ${{ runner.temp }}
-        run: python3 scripts/container-smoke.py --image agentvisor-ai:local
+        run: python3 scripts/container-smoke.py --image proofvisor:local
       - name: Preserve container verification logs
         if: always() && github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gateway-container-logs
-          path: ${{ runner.temp }}/av-container-smoke-*/*.log
+          path: ${{ runner.temp }}/pv-container-smoke-*/*.log
           if-no-files-found: ignore
       - name: Stop live contract services
         if: always()
         run: docker compose -f docker/docker-compose.yml down -v
+
+  # Real third parties, not stand-ins: the MCP reference server behind the
+  # gateway, the official MCP TypeScript SDK as a client of the gateway,
+  # and the OpenID AuthZEN working group's public interop PDPs. Runs after
+  # the Rust build job so a red `check` is triaged first.
+  interop:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          # @modelcontextprotocol/server-everything 2.x needs Node 24+.
+          node-version: "24"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build daemon and CLI
+        run: cargo build --locked -p pv-harness --bin proofvisord -p pv-cli --bin pvctl
+      - name: Third-party MCP server behind the gateway (stdlib Python client)
+        timeout-minutes: 10
+        env:
+          PROOFVISORD: ${{ github.workspace }}/target/debug/proofvisord
+          PVCTL: ${{ github.workspace }}/target/debug/pvctl
+        run: python3 scripts/mcp-interop-test.py --output-dir "${{ runner.temp }}/interop/mcp-server"
+      - name: Official MCP SDK client against the gateway
+        timeout-minutes: 10
+        env:
+          PROOFVISORD: ${{ github.workspace }}/target/debug/proofvisord
+          TMPDIR: ${{ runner.temp }}
+        run: node server/ci/mcp-client-interop.mjs
+      - name: AuthZEN evaluation against the public interop PDPs
+        timeout-minutes: 5
+        env:
+          # Offline runners may skip locally; CI must reach the PDPs.
+          AUTHZEN_INTEROP_REQUIRE_NETWORK: "1"
+        run: python3 scripts/authzen-interop-test.py --output "${{ runner.temp }}/interop/authzen.json"
+      - name: The daemon's own AuthZEN client against the public Topaz PDP
+        timeout-minutes: 15
+        run: cargo test -p pv-harness --test e2e_identity_and_policy authzen_against_the_public_topaz_interop_pdp -- --ignored --exact
+      - name: Retain interop evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: interop-evidence
+          # Logs, result files and the sealed receipt only; the private
+          # work directory (seeds, HMAC secret) is deleted by the scripts.
+          path: |
+            ${{ runner.temp }}/interop/mcp-server/*.log
+            ${{ runner.temp }}/interop/mcp-server/result.json
+            ${{ runner.temp }}/interop/mcp-server/receipt.json
+            ${{ runner.temp }}/interop/authzen.json
+            ${{ runner.temp }}/pv-mcp-client-interop-*/*.log
+            ${{ runner.temp }}/pv-mcp-client-interop-*/result.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   # R280: markdown cross-reference truth. SPOOL-AND-RECOVERY.md shipped a
   # [link](../EVOLUTION.md) that resolved one directory short for months —

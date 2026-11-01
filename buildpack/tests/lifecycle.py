@@ -60,7 +60,7 @@ def download_pack(work):
 class Lifecycle:
     def __init__(self, work, pack):
         self.work, self.pack = work, pack
-        self.prefix = "av-buildpack-test-" + uuid.uuid4().hex[:12]
+        self.prefix = "pv-buildpack-test-" + uuid.uuid4().hex[:12]
         self.env = dict(os.environ)
         self.images, self.volumes, self.containers = [], [], []
         self.step = 0
@@ -119,14 +119,14 @@ class Lifecycle:
         self.volumes.extend([self.prefix + "-build", self.prefix + "-launch"])
         write(self.work / "base/Dockerfile", """FROM %s
 RUN apk add --no-cache jq bash && addgroup -g 1000 cnb && adduser -D -u 1000 -G cnb cnb
-ENV CNB_USER_ID=1000 CNB_GROUP_ID=1000 CNB_STACK_ID=io.agentvisor.test
-LABEL io.buildpacks.stack.id=io.agentvisor.test
+ENV CNB_USER_ID=1000 CNB_GROUP_ID=1000 CNB_STACK_ID=io.proofvisor.test
+LABEL io.buildpacks.stack.id=io.proofvisor.test
 USER 1000:1000
 """ % ALPINE)
         self.run(["docker", "build", "-t", self.base, str(self.work / "base")], timeout=300)
         write(self.work / "fixture/buildpack.toml", """api = "0.9"
 [buildpack]
-id = "io.agentvisor.fixture"
+id = "io.proofvisor.fixture"
 version = "0.0.1"
 [[stacks]]
 id = "*"
@@ -144,37 +144,37 @@ TOML
         write(self.work / "app/verify.sh", """#!/bin/sh
 set -eu
 [ "$(id -u)" = 1000 ]
-jq -e 'env.AV_GATEWAY_URL == .gateway_url and env.AV_AUDIENCE == .audience and env.AV_IDENTITY_JWKS_URL == .identity_jwks_url' /workspace/expected.json >/dev/null
+jq -e 'env.PV_GATEWAY_URL == .gateway_url and env.PV_AUDIENCE == .audience and env.PV_IDENTITY_JWKS_URL == .identity_jwks_url' /workspace/expected.json >/dev/null
 [ ! -e /tmp/unsafe ]
 printf 'verified launch environment\\n'
 """, True)
-        write(self.work / "builder.toml", """description = "Isolated AgentVisor lifecycle verification"
+        write(self.work / "builder.toml", """description = "Isolated ProofVisor lifecycle verification"
 [stack]
-id = "io.agentvisor.test"
+id = "io.proofvisor.test"
 build-image = %s
 run-image = %s
 [lifecycle]
 version = "0.21.20"
 [[buildpacks]]
-id = "io.agentvisor.buildpack"
+id = "io.proofvisor.buildpack"
 version = "0.1.0"
 uri = %s
 [[buildpacks]]
-id = "io.agentvisor.fixture"
+id = "io.proofvisor.fixture"
 version = "0.0.1"
 uri = %s
 [[order]]
 [[order.group]]
-id = "io.agentvisor.buildpack"
+id = "io.proofvisor.buildpack"
 version = "0.1.0"
 [[order.group]]
-id = "io.agentvisor.fixture"
+id = "io.proofvisor.fixture"
 version = "0.0.1"
 """ % tuple(json.dumps(value) for value in (self.base, self.base, str(BUILDPACK), str(self.work / "fixture"))))
         self.run([self.pack, "builder", "create", self.builder, "--config", str(self.work / "builder.toml"), "--pull-policy", "never"], timeout=300)
         values = dict(gateway_url="https://gateway.example", audience="client's $(touch /tmp/unsafe)", identity_jwks_url="https://identity.example/jwks")
-        directory = self.work / "bindings/agentvisor"
-        for key, value in dict(values, type="agentvisor").items():
+        directory = self.work / "bindings/proofvisor"
+        for key, value in dict(values, type="proofvisor").items():
             write(directory / key, " " + value + " \n")
         write(self.work / "app/expected.json", json.dumps(values))
         volume = self.volume_with_files(directory.parent)
@@ -197,13 +197,13 @@ version = "0.0.1"
     def classic(self, values):
         container = self.prefix + "-classic"
         self.containers.append(container)
-        vcap = json.dumps({"agentvisor": [{"credentials": values}]})
+        vcap = json.dumps({"proofvisor": [{"credentials": values}]})
         command = """set -eu
 mkdir -p /tmp/app /tmp/cache /tmp/deps
 if /buildpack/bin/detect /tmp/app; then exit 1; fi
 /buildpack/bin/supply /tmp/app /tmp/cache /tmp/deps 0
-. /tmp/deps/0/profile.d/agentvisor.sh
-jq -e 'env.VCAP_SERVICES | fromjson | .agentvisor[0].credentials | env.AV_GATEWAY_URL == .gateway_url and env.AV_AUDIENCE == .audience and env.AV_IDENTITY_JWKS_URL == .identity_jwks_url' /dev/null
+. /tmp/deps/0/profile.d/proofvisor.sh
+jq -e 'env.VCAP_SERVICES | fromjson | .proofvisor[0].credentials | env.PV_GATEWAY_URL == .gateway_url and env.PV_AUDIENCE == .audience and env.PV_IDENTITY_JWKS_URL == .identity_jwks_url' /dev/null
 [ ! -e /tmp/unsafe ]
 [ -z "$(ls -A /tmp/app)" ]
 printf 'verified classic supply environment\\n'
@@ -232,7 +232,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--download-pack", action="store_true")
     args = parser.parse_args()
-    work = Path(tempfile.mkdtemp(prefix="av-buildpack-lifecycle-"))
+    work = Path(tempfile.mkdtemp(prefix="pv-buildpack-lifecycle-"))
     runner = None
     try:
         pack = download_pack(work) if args.download_pack else os.environ.get("PACK", shutil.which("pack"))

@@ -57,6 +57,8 @@ API_BASE=http://127.0.0.1:8985 SPA_ORIGIN=http://127.0.0.1:44126/app \
 API_BASE=http://127.0.0.1:8985 SPA_ORIGIN=http://127.0.0.1:44126/app \
   node scripts/quarantine-drill.mjs
 API_BASE=http://127.0.0.1:8985 node scripts/spa-smoke.mjs
+# spa-smoke serves the SPA itself on http://127.0.0.1:44119; the API's
+# ALLOWED_ORIGINS must include that origin or every fetch is refused.
 SITE=http://127.0.0.1:44125/app/ node scripts/interactive-drill.mjs
 SITE=http://127.0.0.1:44125/app/ node scripts/engine-matrix.mjs
 ```
@@ -89,8 +91,8 @@ This run used current debug daemon and CLI executables, not an HTTP simulation:
 
 ```sh
 API_BASE=http://127.0.0.1:8985 \
-  AGENTVISORD=/absolute/path/target/debug/agentvisord \
-  AVCTL=/absolute/path/target/debug/avctl \
+  PROOFVISORD=/absolute/path/target/debug/proofvisord \
+  PVCTL=/absolute/path/target/debug/pvctl \
   PORT_BASE=60980 node scripts/daemon-console-drill.mjs
 ```
 
@@ -210,10 +212,10 @@ receipt bodies with valid Ed25519 signatures. Reusing the fixture JWT secret
 was intentional; the database backup does not replace external secret backup.
 
 The full result is in
-`/tmp/av-console-ops-af7351db662a-Wuur55/report.json`, with exact query plans in
+`/tmp/pv-console-ops-af7351db662a-Wuur55/report.json`, with exact query plans in
 the sibling `query-plans.json` and API logs in that directory. The run log is
-`/tmp/agentvisor-console-ops-full.log`. The final small fixture report is
-`/tmp/av-console-ops-9fa48e76add9-p6ILSi/report.json`.
+`/tmp/proofvisor-console-ops-full.log`. The final small fixture report is
+`/tmp/pv-console-ops-9fa48e76add9-p6ILSi/report.json`.
 
 ## Targeted multi-instance recovery follow-up — 2026-09-24
 
@@ -277,16 +279,16 @@ the workflow runs these and the real database recovery drill as required
 steps. This follow-up did not repeat the entire earlier browser battery.
 
 Logs for the nine tests, their reproduced failures, and the targeted browser
-check are under `/tmp/agentvisor-production-validation/console-recovery/`.
+check are under `/tmp/proofvisor-production-validation/console-recovery/`.
 The complete database report and API logs are under
-`/tmp/av-console-recovery-ff3abd1e8df3-sGsU1Q/`. After the pending-handshake
+`/tmp/pv-console-recovery-ff3abd1e8df3-sGsU1Q/`. After the pending-handshake
 fix, the same 13 checks passed again against the rebuilt API, with both pools
 and bridges ready after approximately 0.53 seconds of sampled recovery. That
-final report is `/tmp/av-console-recovery-4792f507c7db-rYX5Rm/report.json`;
+final report is `/tmp/pv-console-recovery-4792f507c7db-rYX5Rm/report.json`;
 cleanup again completed without errors. The different observed recovery
 times reinforce that this drill does not establish a recovery-time guarantee.
 The failed 10-second attempt
-remains under `/tmp/av-console-recovery-e7d94e8c0284-8lMw5T/`.
+remains under `/tmp/pv-console-recovery-e7d94e8c0284-8lMw5T/`.
 
 A final fixture review found that an accepted Docker creation could be left
 running when the CLI failed before acknowledging it. The drill now checks
@@ -305,7 +307,7 @@ node --import tsx --test ci/multi-instance.test.mjs ci/recovery-drill.test.mjs
 ```
 
 This command is required in console CI. Its local log is
-`/tmp/agentvisor-production-validation/console-recovery/closure-tests.log`.
+`/tmp/proofvisor-production-validation/console-recovery/closure-tests.log`.
 These checks used no real Docker service or database and did not repeat the
 earlier real recovery workload. No application code changed in this cleanup fix.
 
@@ -347,7 +349,7 @@ TypeScript checking and compilation passed. The combined command passed
 **23 tests with no failures or skips**. Console CI requires the new contract
 suite separately, preserving the existing application and fixture tests.
 Before-fix failures, final results, and compiler logs are retained under
-`/tmp/agentvisor-production-validation/auth-followup/`. All local sockets
+`/tmp/proofvisor-production-validation/auth-followup/`. All local sockets
 closed when the suites completed; no Docker service or real recipient was
 used. These checks do not verify production delivery, DNS/mail reputation,
 or a real enterprise identity provider. The new OIDC cases cover discovery;
@@ -391,7 +393,7 @@ The database tests verified these additional boundaries:
 ```sh
 # Use an already-built production image. The pinned PostgreSQL image used
 # by scripts/container-smoke.py must also be present; the drill never pulls.
-CONSOLE_AUTH_IMAGE=agentvisor-api:ci node scripts/external-auth-drill.mjs
+CONSOLE_AUTH_IMAGE=proofvisor-api:ci node scripts/external-auth-drill.mjs
 node --test ci/external-auth-drill.test.mjs
 ```
 
@@ -403,12 +405,12 @@ final combined run of `multi-instance.test.mjs`, `recovery-drill.test.mjs`,
 with no failures or skips**. The
 live drill removed its four containers, database volume, network, and private
 credential/certificate files with no cleanup errors. Console CI now requires
-this drill against the existing `agentvisor-api:ci` build and retains only its
+this drill against the existing `proofvisor-api:ci` build and retains only its
 logs and report. The workflow is reusable with read-only permissions so the
 release workflow can require these same checks.
 
 The successful report is
-`/tmp/agentvisor-production-validation/auth-followup/av-auth-feb8cff83a06-rzqMWB/report.json`;
+`/tmp/proofvisor-production-validation/auth-followup/pv-auth-feb8cff83a06-rzqMWB/report.json`;
 the run log is `auth-followup/postgres-auth-drill-verified.log` under the same
 validation root. The report records the Docker image ID separately from the
 three fixture source hashes, since the helper scripts were copied into the
@@ -454,7 +456,7 @@ also preserves the existing accepted form whose SubjectConfirmation omits
 its own InResponseTo while the response supplies the validated request ID.
 
 The successful native report is
-`/tmp/agentvisor-production-validation/saml-shared/av-saml-shared-fd077138d51b-PCm7oh/report.json`;
+`/tmp/proofvisor-production-validation/saml-shared/pv-saml-shared-fd077138d51b-PCm7oh/report.json`;
 its log is `saml-shared/shared-native-final.log`. A prior run passed 25 checks
 before a fixture port changed during PostgreSQL restart. That evidence is
 retained; choosing a fixed owned database port corrected the fixture without
@@ -470,18 +472,18 @@ execution and authentication contracts, not native amd64 capacity.
 
 | Architecture | Docker image ID | Shared SAML report directory | External-auth report directory |
 | --- | --- | --- | --- |
-| arm64 | `sha256:23b91fb0bee2ecadf7f72418ec6cb097e36d038877e74cab3a085550d5e35cc2` | `av-saml-shared-0b7dac85c910-AkGEbe` | `av-auth-59cab9f0e327-ldG0Dw` |
-| amd64 | `sha256:62fc24101525f2c7048af157b11a2056f68ecfc8ea70efac51773845aa177584` | `av-saml-shared-7f2fe7aa5311-4evamf` | `av-auth-1cb1c8226b47-bhS7Lc` |
+| arm64 | `sha256:23b91fb0bee2ecadf7f72418ec6cb097e36d038877e74cab3a085550d5e35cc2` | `pv-saml-shared-0b7dac85c910-AkGEbe` | `pv-auth-59cab9f0e327-ldG0Dw` |
+| amd64 | `sha256:62fc24101525f2c7048af157b11a2056f68ecfc8ea70efac51773845aa177584` | `pv-saml-shared-7f2fe7aa5311-4evamf` | `pv-auth-1cb1c8226b47-bhS7Lc` |
 
 Each directory contains `report.json` beneath
-`/tmp/agentvisor-production-validation/saml-shared/`. The matching run logs
+`/tmp/proofvisor-production-validation/saml-shared/`. The matching run logs
 are `arm64-saml.log`, `arm64-auth.log`, `amd64-saml.log`, and `amd64-auth.log`.
 All four reports record the expected image ID and zero cleanup errors. Each
 drill removed its owned containers, database volume, network, and private
 fixture files. The shared SAML fixture hash was identical across both image
 runs; each external-auth report separately records its three fixture hashes.
 The frozen build inputs are recorded in
-`/tmp/agentvisor-production-validation/amd64-console/build-inputs.json`.
+`/tmp/proofvisor-production-validation/amd64-console/build-inputs.json`.
 
 That arm64 console also passed all **14 daemon crash/recovery assertions**
 with the release daemon and CLI from that stage. The drill verified explicit quarantine
@@ -492,21 +494,21 @@ and CLI SHA256 `0678189b9089cacc1a0c37fad9e86ce2a215bf73484482c8be8f6c12d4f2677e
 The original assertions and deadlines were unchanged. The wrapper confirmed
 that its exact containers, network, anonymous database volume, signing seed,
 and environment files were removed. The result, helper hashes, and logs are
-under `/tmp/agentvisor-production-validation/durable-tool-images/console-crash/`.
+under `/tmp/proofvisor-production-validation/durable-tool-images/console-crash/`.
 Both binary hashes matched before and after that run. The earlier
 pairing remains recorded under `saml-tool-images/console-crash/`; the shared
 SAML evidence index identifies the pairing from that stage and preserves that
 earlier report as history. These 63-input images and daemon pairing are historical;
 the follow-up below records the current 65-input console images and updated daemon.
 Their current image evidence is indexed in
-`/tmp/agentvisor-production-validation/startup-console-images/final-image-provenance.json`.
+`/tmp/proofvisor-production-validation/startup-console-images/final-image-provenance.json`.
 
 ```sh
 # Run from server/ with the pinned PostgreSQL fixture image already present.
 npm run build
 node scripts/saml-shared-drill.mjs
 # Alternatively, test an already-built production image without rebuilding it.
-CONSOLE_SAML_IMAGE=agentvisor-api:ci node scripts/saml-shared-drill.mjs
+CONSOLE_SAML_IMAGE=proofvisor-api:ci node scripts/saml-shared-drill.mjs
 ```
 
 Console CI requires the production-image form after the existing external
@@ -519,7 +521,7 @@ The SAML browser regression passed **seven checks in each of Chromium,
 Firefox, and WebKit**, for 21 checks. It verifies the usable SAML login button,
 discovery failure reporting, and actionable messages for unavailable request
 state. The test first reproduced four failures before the UI corrections.
-The logs are under `/tmp/agentvisor-production-validation/saml-browser/`.
+The logs are under `/tmp/proofvisor-production-validation/saml-browser/`.
 CI requires the Chromium version. These controlled browser responses test
 the UI; the separate 29-check drill performs actual signature verification.
 
@@ -538,7 +540,7 @@ delivery, or IdP-initiated SAML logout.
 ## Packaged console follow-up — 2026-09-24
 
 At this earlier stage, the console source including the pending-handshake fix was built
-as `av-deployment-console:20260924-recovery`. Its local image identifier is
+as `pv-deployment-console:20260924-recovery`. Its local image identifier is
 `sha256:2e5f68cc8d873f3525ddf5e5b1cd08fcd7bd6601b8b74468f0c4fef25f3cae9a`.
 The image runs Node 22.23.3 and Prisma 6.12.0 on the pinned Debian 13 Distroless
 base. Its 62 build inputs still matched the repository after validation.
@@ -575,8 +577,8 @@ origin. All original assertions then passed against the unchanged image;
 production origin checks were not relaxed.
 
 The complete logs, unfiltered scan, source hashes, and cleanup record are in
-`/tmp/agentvisor-recovery/deployment/console-recovery-runtime/configured-origin/`.
-`/tmp/agentvisor-recovery/deployment/final-image-provenance.json` indexes this
+`/tmp/proofvisor-recovery/deployment/console-recovery-runtime/configured-origin/`.
+`/tmp/proofvisor-recovery/deployment/final-image-provenance.json` indexes this
 image and the separately validated gateway and Cloud Foundry images. Cleanup
 verified that this run's containers and network were removed, its private SSH forward stopped, and its
 temporary environment files and signing seed were deleted. Existing user
@@ -607,7 +609,7 @@ are recorded in `startup-console-images/actual-{arm64,amd64}/result.json` under
 the validation evidence directory. The final ARM64 daemon-console pairing
 also passed all **14 unchanged crash/recovery assertions**, as detailed below.
 
-Source review found no new incompatibility in the current `avctl console-sync`
+Source review found no new incompatibility in the current `pvctl console-sync`
 event producer: message bodies are serialized JSON, ATIF display and tool
 names are validated before mapping, and bridge tool names have controls
 removed. This establishes the producer's code path, not a separate live test
@@ -639,7 +641,7 @@ BROWSER=firefox CONSOLE_DOCS_ROOT=/path/to/frozen/docs \
 ```
 
 TypeScript, JavaScript syntax, and whitespace checks passed. Evidence is under
-`/tmp/agentvisor-production-validation/console-trust-followup/`, including
+`/tmp/proofvisor-production-validation/console-trust-followup/`, including
 `datasource-before.log`, `datasource-after.log`, `ingest-before.json`,
 `ingest-after.json`, the three minified browser logs, and the unchanged
 Firefox retry log. `minified-final/result.json` records source and minified
@@ -662,7 +664,7 @@ but the daemon missed the unchanged 15-second startup deadline with an empty
 boot log. No crash/recovery assertion passed in that attempt. Binary and
 script hashes remained unchanged, and all owned processes, containers,
 volumes, networks, and secrets were removed. The failure is retained under
-`/tmp/agentvisor-production-validation/expiry-images/console-crash/`.
+`/tmp/proofvisor-production-validation/expiry-images/console-crash/`.
 `expiry-images/console-crash-index.json` records that failure and the unchanged
 repeat. Once the host was idle, the repeat
 passed all 14 assertions in 23.1241 seconds with the original startup deadline
@@ -677,8 +679,8 @@ needed.
 
 The final pairing used these immutable native executables:
 
-- `agentvisord`: `c7219f43746a8ccb23ac1810cfdea76e2c910b265e87b5c9c1038748d2f280ef`.
-- `avctl`: `0678189b9089cacc1a0c37fad9e86ce2a215bf73484482c8be8f6c12d4f2677e`.
+- `proofvisord`: `c7219f43746a8ccb23ac1810cfdea76e2c910b265e87b5c9c1038748d2f280ef`.
+- `pvctl`: `0678189b9089cacc1a0c37fad9e86ce2a215bf73484482c8be8f6c12d4f2677e`.
 
 The earlier failed attempt remains in the index; the successful repeat does
 not establish a cause for the initial startup delay or certify production
@@ -701,7 +703,7 @@ and 13 fixture cleanup cases. TypeScript checking passed. An intermediate
 fixture cleanup assertion ran before queued socket-close events; waiting for
 all those events corrected the fixture without relaxing its zero-socket check.
 The failed and successful logs remain under
-`/tmp/agentvisor-production-validation/console-stream-followup`.
+`/tmp/proofvisor-production-validation/console-stream-followup`.
 
 The same protocol test can target the compiled production module with
 `BUS_TEST_DIST=1` and the fixture at `/app/ci/bus-query-recovery.test.mjs`.
@@ -715,7 +717,7 @@ removes private environment files. CI requires both packaged checks.
 
 ## Local evidence files
 
-Logs were retained under `/tmp/agentvisor-console-` on the validation host.
+Logs were retained under `/tmp/proofvisor-console-` on the validation host.
 They are not repository artifacts and may disappear when that host cleans
 temporary files. Useful suffixes are:
 

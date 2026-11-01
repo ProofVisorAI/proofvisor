@@ -1,6 +1,6 @@
 # Deploying on Cloud Foundry
 
-The manifest maps only `agentvisor-ai.apps.internal`. The gateway requires a
+The manifest maps only `proofvisor.apps.internal`. The gateway requires a
 valid identity token with the required operation scopes and disables its unauthenticated dashboard. Update the
 internal domain if your foundation uses another one. Container networking must
 be enabled on the foundation.
@@ -53,15 +53,15 @@ Validate the manifest against your selected foundation; local configuration test
 do not prove that its deployed releases support these fields.
 
 1. Edit `harness.toml` in this directory with your identity provider's JWKS URL,
-   allowed issuer, and the audience assigned to AgentVisor. The supplied
+   allowed issuer, and the audience assigned to ProofVisor. The supplied
    `example.invalid` values intentionally cannot authenticate real clients.
 2. Provision a protected Redis service with authentication, TLS, persistence,
    backups, and a tested recovery procedure. Redis is required even for one
    instance so revocations and instance cutoffs survive restarts. Put its
    connection URI in a private YAML variables file (mode `0600`), under the
-   key `redis_url`. The manifest supplies that value as `AV_STATE_ENDPOINT`.
+   key `redis_url`. The manifest supplies that value as `PV_STATE_ENDPOINT`.
    The reserved `.invalid` configuration endpoint cannot silently select an
-   unrelated live Redis service. Existing AgentVisor client service bindings
+   unrelated live Redis service. Existing ProofVisor client service bindings
    describe gateway discovery; they do not discover Redis credentials for the
    gateway. If your CF service broker supplies Redis credentials in a binding,
    transfer its connection URI into this explicit deployment setting using
@@ -78,25 +78,25 @@ do not prove that its deployed releases support these fields.
    root. Replace the registry and image tags in these commands and the manifest.
 
    ```sh
-   docker build -f docker/Dockerfile -t agentvisor-base:local .
+   docker build -f docker/Dockerfile -t proofvisor-base:local .
    docker build -f deploy/cloudfoundry/Dockerfile \
-     --build-arg AGENTVISOR_IMAGE=agentvisor-base:local \
-     -t registry.example.com/agentvisor-ai:cf .
-   docker push registry.example.com/agentvisor-ai:cf
+     --build-arg PROOFVISOR_IMAGE=proofvisor-base:local \
+     -t registry.example.com/proofvisor:cf .
+   docker push registry.example.com/proofvisor:cf
    cf push -f deploy/cloudfoundry/manifest.yml \
-     --vars-file /secure/path/agentvisor-vars.yml --no-start
-   cf set-env agentvisor-ai AV_UPSTREAM_URL https://api.openai.com
-   cf set-env agentvisor-ai AV_UPSTREAM_API_KEY YOUR_PROVIDER_KEY
-   cf start agentvisor-ai
+     --vars-file /secure/path/proofvisor-vars.yml --no-start
+   cf set-env proofvisor PV_UPSTREAM_URL https://api.openai.com
+   cf set-env proofvisor PV_UPSTREAM_API_KEY YOUR_PROVIDER_KEY
+   cf start proofvisor
    ```
 
 4. Permit only the intended client applications to reach the gateway:
 
    ```sh
-   cf add-network-policy my-ai-app agentvisor-ai --port 8484 --protocol tcp
+   cf add-network-policy my-ai-app proofvisor --port 8484 --protocol tcp
    ```
 
-The internal gateway URL is `http://agentvisor-ai.apps.internal:8484`. Internal
+The internal gateway URL is `http://proofvisor.apps.internal:8484`. Internal
 DNS does not provide TLS termination; use the foundation's protected container
 network, or configure an internal TLS endpoint when required. Inspect `cf routes`
 when updating an existing installation. A new manifest does not necessarily
@@ -111,7 +111,7 @@ foundation before relying on rolling-deployment behavior. Cloud Foundry also
 documents this [internal-route limitation](https://docs.cloudfoundry.org/buildpacks/nginx/index.html#name-resolution).
 
 The sample uses one instance and ephemeral local spool storage. Before production use,
-provide persistent spool storage and signing material (`AV_SIGNING_SEED_FILE`),
+provide persistent spool storage and signing material (`PV_SIGNING_SEED_FILE`),
 and configure a durable event bridge. The required Redis service must retain
 revocations across restarts and use appropriate backups. Shared state and
 revocation storage are also required before increasing the instance count. Cloud Foundry does not preserve
@@ -120,21 +120,21 @@ configured workload; the manifest's values are starting points.
 
 ## Client discovery and identity (no code change)
 
-An `agentvisor` service binding describes how a **client** reaches the
+An `proofvisor` service binding describes how a **client** reaches the
 gateway. Create a user-provided service and bind it to the client, not to
-`agentvisor-ai`:
+`proofvisor`:
 
 ```sh
-cf cups agentvisor -t agentvisor \
-  -p '{"gateway_url":"http://agentvisor-ai.apps.internal:8484","audience":"agentvisor-ai","backends":["my-mcp-backend"]}'
-cf bind-service my-ai-app agentvisor
+cf cups proofvisor -t proofvisor \
+  -p '{"gateway_url":"http://proofvisor.apps.internal:8484","audience":"proofvisor","backends":["my-mcp-backend"]}'
+cf bind-service my-ai-app proofvisor
 ```
 
 Push the application with the packaged buildpack
-(`agentvisor-buildpack-<version>.zip` from a release, or built with
+(`proofvisor-buildpack-<version>.zip` from a release, or built with
 `scripts/package-buildpack.py`) listed before the language buildpack. At
 staging it points `OPENAI_BASE_URL` and the MCP configuration
-(`$AGENTVISOR_MCP_CONFIG`) at a loopback sidecar, and declares that sidecar
+(`$PROOFVISOR_MCP_CONFIG`) at a loopback sidecar, and declares that sidecar
 in `launch.yml`. At run time the sidecar proves the instance identity
 certificate Cloud Foundry gives the container and attaches the resulting
 agent token to every request. See [the buildpack
@@ -160,7 +160,7 @@ scopes = ["chat", "tool:*"]
 
 Ask the platform operator for the Diego instance identity CA certificate.
 Allow the client to reach the gateway with
-`cf add-network-policy my-ai-app agentvisor-ai --port 8484 --protocol tcp`
+`cf add-network-policy my-ai-app proofvisor --port 8484 --protocol tcp`
 (step 4 above). The sidecar needs no route and no network policy of its own.
 
 ## MCP backend networking
@@ -176,16 +176,16 @@ outside the foundation. Allow the gateway, and only the gateway, to reach
 the backend:
 
 ```sh
-cf add-network-policy agentvisor-ai my-mcp-backend --port 8080 --protocol tcp
+cf add-network-policy proofvisor my-mcp-backend --port 8080 --protocol tcp
 ```
 
 Do not grant client applications direct access to a backend: its calls must
-pass through AgentVisor's authorization and audit controls. Set
+pass through ProofVisor's authorization and audit controls. Set
 `require_private_backends = true` in `harness.toml` so the gateway refuses
 to connect to a backend address that is not private.
 
 All backends sit behind the one gateway host. Clients use
-`http://agentvisor-ai.apps.internal:8484/mcp` for every backend's tools, or
+`http://proofvisor.apps.internal:8484/mcp` for every backend's tools, or
 `/mcp/<backend-name>` for one backend's tools only; each backend keeps its
 own authentication policy (`auth` in its `[[backends]]` entry).
 
