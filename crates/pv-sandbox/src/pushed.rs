@@ -144,7 +144,7 @@ impl jsonschema::Retrieve for NoExternalRefs {
 impl PushedSchema {
     /// Compile a schema the same way local tool schemas are compiled
     /// (draft 2020-12 with `format` enforced), except that external
-    /// references are refused (see [`NoExternalRefs`]).
+    /// references are refused (see `NoExternalRefs`).
     pub fn compile(policy: &str, tool: &str, schema: &Value) -> Result<Self, String> {
         let validator = jsonschema::options()
             .should_validate_formats(true)
