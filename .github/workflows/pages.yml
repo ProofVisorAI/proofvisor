@@ -186,6 +186,10 @@ jobs:
           # root so security scanners can find it.
           mkdir -p "$site/.well-known"
           cp docs/.well-known/security.txt "$site/.well-known/"
+          # Receipt trust-anchor list — /verify fetches it (same origin) so
+          # a key rotation is a JSON edit; without it the page silently
+          # falls back to its built-in keys.
+          cp docs/.well-known/receipt-keys.json "$site/.well-known/"
           # Legal pages — Terms + Privacy stubs so footer links resolve.
           mkdir -p "$site/legal"
           cp docs/legal/terms.html "$site/legal/"
