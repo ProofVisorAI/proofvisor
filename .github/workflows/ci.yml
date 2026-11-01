@@ -129,6 +129,15 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # Clippy plus two full debug test builds (default and
+      # --all-features) outgrew the runner's free disk ("No space left
+      # on device" while linking proofvisord). Drop preinstalled
+      # toolchains this job never uses; this frees roughly 25-30 GB.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       # Round-29 F2: pin every third-party action by commit SHA (with
       # the moving pointer in a trailing comment for Renovate/
       # Dependabot updates). A moving tag like `@v4` or `@stable` can

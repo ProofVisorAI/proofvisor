@@ -1064,6 +1064,11 @@ async fn sync_session_journal(directory: &std::path::Path, session: &Session) ->
             use std::os::unix::fs::OpenOptionsExt as _;
             options.custom_flags(pv_core::fsutil::unix_o_nofollow());
         }
+        // Windows' FlushFileBuffers needs write access ("Access is
+        // denied" on a read-only handle). Opening for write neither
+        // creates nor truncates, so the journal is untouched.
+        #[cfg(not(unix))]
+        options.write(true);
         match options.open(&path) {
             Ok(journal) => journal.sync_data().map_err(|error| error.to_string()),
             // No journal file: every job in the batch was skipped by
