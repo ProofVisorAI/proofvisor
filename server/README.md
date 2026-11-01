@@ -225,7 +225,9 @@ eq`), `startIndex`/`count` paging, `POST`, `PUT`, `PATCH`
 `application/scim+json` and SCIM error bodies with `scimType`.
 
 - Creating a user whose email is new makes an account with a random
-  password and a verified email, and a membership with the default role.
+  password (the person signs in through SSO or resets it once) and a
+  membership with the default role. The account remembers which
+  workspace's SCIM created it.
 - `active: false` or `DELETE` runs the deprovision action: `deactivate`
   revokes the member's sessions and API keys and blocks sign-in to this
   org until the IdP re-activates them; `remove` deletes the membership.
@@ -241,6 +243,16 @@ eq`), `startIndex`/`count` paging, `POST`, `PUT`, `PATCH`
   accounts are not marked as having a verified mailbox, like SAML
   just-in-time accounts, so they can never capture a later Google or
   Microsoft sign-in.
+- An account with no workspace left (the person was removed or left) is
+  re-attached only by the workspace whose SCIM created it; any other
+  existing account gets 409 `uniqueness`, and an invite is the way in.
+- SCIM changes the login email (`userName`) only of accounts its own
+  workspace's SCIM created (otherwise 400 `mutability`). The change
+  clears the account's verified-mailbox mark and voids any password
+  reset or email change link sent to the old address, because the IdP's
+  word proves nothing about the new mailbox.
+- Display names lose control and invisible formatting characters
+  (including bidirectional overrides) and are cut to 80 characters.
 
 ### Billing and plan limits
 

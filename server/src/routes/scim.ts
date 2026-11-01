@@ -135,6 +135,7 @@ const membershipSelect = {
       email: true,
       displayName: true,
       scimExternalId: true,
+      scimProvisionedOrgId: true,
       scimGroupMembers: {
         select: { group: { select: { id: true, displayName: true, orgId: true } } },
       },
@@ -155,6 +156,7 @@ type MembershipRow = {
     email: string;
     displayName: string | null;
     scimExternalId: string | null;
+    scimProvisionedOrgId: string | null;
     scimGroupMembers: { group: { id: string; displayName: string; orgId: string } }[];
   };
 };
@@ -371,7 +373,23 @@ function changesFromBody(b: UserBody): UserChanges {
   return c;
 }
 
+// Display names from the IdP get the same limits as signup (80
+// characters, no CR/LF/NUL), plus no control or format characters: the
+// bidi controls among them would let a name render reversed in the
+// members list and audit export. They are cleaned rather than refused so
+// a long or odd directory name never blocks provisioning.
+function cleanDisplayName(v: string | null): string | null {
+  if (v === null) return null;
+  const cleaned = v.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
+  return cleaned ? Array.from(cleaned).slice(0, 80).join("").trim() : null;
+}
+
 function resolveDisplayName(current: string | null, c: UserChanges): string | null | undefined {
+  const raw = rawDisplayName(current, c);
+  return raw === undefined ? undefined : cleanDisplayName(raw);
+}
+
+function rawDisplayName(current: string | null, c: UserChanges): string | null | undefined {
   if (c.displayName !== undefined) return c.displayName === "" ? null : c.displayName;
   if (c.givenName === undefined && c.familyName === undefined) return undefined;
   const parts = splitName(current);
@@ -713,7 +731,17 @@ async function resolveMemberValues(orgId: string, values: unknown): Promise<stri
 // -------------------------------------------------------------------
 
 async function applyUserChanges(req: FastifyRequest, m: MembershipRow, c: UserChanges): Promise<{ membership: MembershipRow | null; removed: boolean }> {
-  const userData: { email?: string; scimExternalId?: string | null; displayName?: string | null } = {};
+  const userData: {
+    email?: string;
+    scimExternalId?: string | null;
+    displayName?: string | null;
+    emailVerifiedAt?: null;
+    resetTokenHash?: null;
+    resetTokenAt?: null;
+    pendingEmail?: null;
+    pendingEmailTokenHash?: null;
+    pendingEmailAt?: null;
+  } = {};
   if (c.email && c.email !== m.user.email) {
     // Changing the login email of an account that also belongs to
     // another organisation would let this tenant's IdP redirect the
@@ -722,9 +750,32 @@ async function applyUserChanges(req: FastifyRequest, m: MembershipRow, c: UserCh
     if (otherOrgs > 0) {
       throw new ScimError(400, "userName cannot be changed for a user who is also a member of another organisation.", "mutability");
     }
+    // Only accounts this organisation's SCIM created are the IdP's to
+    // re-address. A person who signed up or accepted an invite owns their
+    // login email; a new address plus a password reset mailed to it would
+    // hand their account to whoever controls the new mailbox.
+    if (m.user.scimProvisionedOrgId !== m.orgId) {
+      throw new ScimError(
+        400,
+        "userName can only be changed for accounts this organisation's SCIM provisioning created. The user can change their own email under Account settings.",
+        "mutability",
+      );
+    }
     const taken = await db.user.findUnique({ where: { email: c.email }, select: { id: true } });
     if (taken && taken.id !== m.userId) throw new ScimError(409, `userName ${c.email} is already in use.`, "uniqueness");
     userData.email = c.email;
+    // The IdP's word proves nothing about the new mailbox. Keeping
+    // emailVerifiedAt would let this tenant rename one of its verified
+    // accounts to a stranger's address and capture that person's first
+    // Google/GitHub sign-in (oauth.ts links verified accounts by email).
+    // Links mailed to the old address (password reset, pending email
+    // change) are voided with it.
+    userData.emailVerifiedAt = null;
+    userData.resetTokenHash = null;
+    userData.resetTokenAt = null;
+    userData.pendingEmail = null;
+    userData.pendingEmailTokenHash = null;
+    userData.pendingEmailAt = null;
   }
   // Name and external id are account-wide: only this org's own
   // accounts take them from this org's IdP.
@@ -741,7 +792,11 @@ async function applyUserChanges(req: FastifyRequest, m: MembershipRow, c: UserCh
         event: "scim.user.updated",
         ...scimActor(req),
         target: userData.email ?? m.user.email,
-        metadata: { membershipId: m.id, changed: Object.keys(userData), previousEmail: userData.email ? m.user.email : undefined },
+        metadata: {
+          membershipId: m.id,
+          changed: Object.keys(userData).filter((k) => k === "email" || k === "scimExternalId" || k === "displayName"),
+          previousEmail: userData.email ? m.user.email : undefined,
+        },
         req,
       },
       req.log,
@@ -946,7 +1001,7 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
 
     const existing = await db.user.findUnique({
       where: { email },
-      select: { id: true, displayName: true, scimExternalId: true, memberships: { select: { orgId: true } } },
+      select: { id: true, displayName: true, scimExternalId: true, scimProvisionedOrgId: true, memberships: { select: { orgId: true } } },
     });
     if (existing && existing.memberships.some((m) => m.orgId === orgId)) {
       throw new ScimError(409, `A user with userName ${email} already exists in this organisation.`, "uniqueness");
@@ -958,6 +1013,18 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
       throw new ScimError(
         409,
         `${email} already has a ProofVisor account in another workspace. Invite them from Settings → Members instead.`,
+        "uniqueness",
+      );
+    }
+    // An account with no workspace left (the person was removed, or left)
+    // is re-attached only when this organisation's SCIM created it — the
+    // usual "remove, then re-assign in the IdP" cycle. Any other such
+    // account is still the person's own; attaching it would let this
+    // tenant re-address it and take it over with a password reset.
+    if (existing && existing.scimProvisionedOrgId !== orgId) {
+      throw new ScimError(
+        409,
+        `${email} already has a ProofVisor account. Invite them from Settings → Members instead.`,
         "uniqueness",
       );
     }
@@ -997,6 +1064,7 @@ export async function scimRoutes(app: FastifyInstance): Promise<void> {
             passwordHash: await hashPassword(randomToken(32) + randomToken(32)),
             displayName,
             scimExternalId: changes.externalId ?? null,
+            scimProvisionedOrgId: orgId,
             // Deliberately NOT emailVerifiedAt, exactly like SAML JIT
             // (routes/saml.ts): the provisioning IdP is configured by
             // this tenant and can assert ANY address, and

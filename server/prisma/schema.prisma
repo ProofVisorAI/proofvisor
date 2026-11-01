@@ -51,6 +51,13 @@ model User {
   // created by signup, invite, OAuth or SAML JIT. Looked up by the
   // `externalId eq "…"` filter IdPs issue before every create.
   scimExternalId   String?
+  // The organisation whose SCIM endpoint created this account, or null
+  // for accounts made by signup, invite, OAuth or SAML JIT. Only that
+  // organisation's IdP may change the account's login email or re-attach
+  // it after removal: anyone else's account is the person's own, and a
+  // tenant that could re-address it could take it over with a password
+  // reset mailed to the new address.
+  scimProvisionedOrgId String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 

@@ -574,3 +574,64 @@ test("SCIM creates count against the same seat usage the billing endpoint report
   const after = await owner.client.json("GET", "/api/v1/billing");
   assert.equal(after.data.usage.members, seats + 1);
 });
+
+test("SCIM re-addresses only accounts its own workspace's SCIM created, and drops their verification", async () => {
+  const t = await tenant("shared");
+  const first = `readdress.${Date.now().toString(36)}@example.test`;
+  const u = await t.idp.json("POST", "/scim/v2/Users", { userName: first }, { headers: scimHeaders });
+  assert.equal(u.status, 201, JSON.stringify(u.data));
+  // Pretend the person proved the mailbox and has a reset link pending.
+  await pg.query('UPDATE users SET "emailVerifiedAt" = NOW(), "resetTokenHash" = $1, "resetTokenAt" = NOW() WHERE email = $2', ["pending-reset", first]);
+  const second = `readdressed.${Date.now().toString(36)}@example.test`;
+  const moved = await t.idp.json("PATCH", `/scim/v2/Users/${u.data.id}`, patch([{ op: "replace", path: "userName", value: second }]), { headers: scimHeaders });
+  assert.equal(moved.status, 200, JSON.stringify(moved.data));
+  const row = await pg.query('SELECT "emailVerifiedAt", "resetTokenHash" FROM users WHERE email = $1', [second]);
+  assert.equal(row.rows[0].emailVerifiedAt, null, "the new address is not verified by the IdP's word");
+  assert.equal(row.rows[0].resetTokenHash, null, "a reset link mailed to the old address is void");
+
+  // An invited member owns their login email, even in a one-workspace account.
+  const invited = await provisionMember(api.base, t.owner, "member", "readdress-invited");
+  const listed = await t.idp.json("GET", `/scim/v2/Users?filter=${encodeURIComponent(`userName eq "${invited.email}"`)}`);
+  const refused = await t.idp.json("PATCH", `/scim/v2/Users/${listed.data.Resources[0].id}`,
+    patch([{ op: "replace", path: "userName", value: `taken-over.${Date.now().toString(36)}@attacker.example` }]), { headers: scimHeaders });
+  assert.equal(refused.status, 400, JSON.stringify(refused.data));
+  assert.equal(refused.data.scimType, "mutability");
+  const still = await pg.query("SELECT email FROM users WHERE id = $1", [invited.userId]);
+  assert.equal(still.rows[0].email, invited.email);
+});
+
+test("an account with no workspace left is re-attached only by the workspace whose SCIM created it", async () => {
+  const t = await tenant("shared");
+  const other = await tenant("verify-gate");
+  // A person who joined by invite and was later removed everywhere.
+  const leaver = await provisionMember(api.base, t.owner, "member", "leaver");
+  await pg.query('DELETE FROM memberships WHERE "userId" = $1', [leaver.userId]);
+  for (const idp of [t.idp, other.idp]) {
+    const r = await idp.json("POST", "/scim/v2/Users", { userName: leaver.email }, { headers: scimHeaders });
+    assert.equal(r.status, 409, JSON.stringify(r.data));
+    assert.equal(r.data.scimType, "uniqueness");
+  }
+  // An account this workspace's SCIM created comes back after removal …
+  const email = `cycle.${Date.now().toString(36)}@example.test`;
+  const made = await t.idp.json("POST", "/scim/v2/Users", { userName: email }, { headers: scimHeaders });
+  assert.equal(made.status, 201);
+  await pg.query('DELETE FROM memberships WHERE id = $1', [made.data.id]);
+  // … but never into another workspace.
+  const stolen = await other.idp.json("POST", "/scim/v2/Users", { userName: email }, { headers: scimHeaders });
+  assert.equal(stolen.status, 409, JSON.stringify(stolen.data));
+  const back = await t.idp.json("POST", "/scim/v2/Users", { userName: email }, { headers: scimHeaders });
+  assert.equal(back.status, 201, JSON.stringify(back.data));
+});
+
+test("SCIM display names lose control and bidi characters and are capped at 80", async () => {
+  const { idp } = await tenant("shared");
+  const r = await idp.json("POST", "/scim/v2/Users", {
+    userName: `names.${Date.now().toString(36)}@example.test`,
+    displayName: "Mallory‮evil\u0000\r\nAdmin",
+  }, { headers: scimHeaders });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.equal(r.data.displayName, "Mallory evil Admin");
+  const long = await idp.json("PATCH", `/scim/v2/Users/${r.data.id}`, patch([{ op: "replace", path: "displayName", value: "x".repeat(150) }]), { headers: scimHeaders });
+  assert.equal(long.status, 200, JSON.stringify(long.data));
+  assert.equal(long.data.displayName, "x".repeat(80));
+});
