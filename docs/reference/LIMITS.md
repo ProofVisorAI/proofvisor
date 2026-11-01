@@ -106,6 +106,7 @@ tests exercised.
 | Limit | Default | Notes |
 | --- | --- | --- |
 | Kafka payload | 1 MiB per record | Set by broker; the harness never emits records larger than 512 KiB. |
+| Kafka compression | None, gzip, LZ4 or Snappy when reading | The harness writes uncompressed records. Reading a zstd-compressed batch fails with "Unimplemented compression", because the zstd version our Kafka client depends on has open security advisories. Do not set `compression.type=zstd` on ProofVisor topics. |
 | NATS payload | 1 MiB per message | Set by broker. |
 | Embedded Bridge partition file size | 1 GiB per segment | Rolled over automatically. |
 

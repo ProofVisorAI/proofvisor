@@ -60,10 +60,19 @@ cold-store-aws = ["cold-store", "object_store/aws"]
 version = "0.50"
 optional = true
 
+# zstd is left out on purpose. rskafka 0.6 pins zstd 0.13, which has
+# RUSTSEC-2026-0391/0398/0403/0410, and the fixes exist only in zstd 0.14.
+# 0403 is reachable here: fetched batches come from the broker, and the
+# `legacy` frame decoder can expose uninitialized memory on a bad frame.
+# ProofVisor produces with `Compression::NoCompression`, so a zstd batch on
+# our topics can only come from another writer; fetching one now fails with
+# "Unimplemented compression" instead of being decoded. Re-enable
+# `compression-zstd` once rskafka depends on zstd >= 0.14.3.
 [dependencies.rskafka]
 version = "0.6"
 optional = true
-features = ["transport-tls"]
+default-features = false
+features = ["transport-tls", "compression-gzip", "compression-lz4", "compression-snappy"]
 
 # rskafka 0.6 and async-nats share the rustls 0.23 line; `rustls-tls` is
 # the workspace-wide client-config surface for both connectors. PEM
