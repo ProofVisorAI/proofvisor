@@ -4140,7 +4140,11 @@
     if (!p.enabled) return '<span class="pill neutral enf" title="Disabled policies are left out of the bundle daemons pull.">Disabled — not in the bundle</span>';
     if (!e.deployments) return '<span class="pill neutral enf" title="Register a deployment; its page shows how to start pulling policies.">No daemons yet</span>';
     var staleNames = (deps || []).filter(function (d) { return !d.isDemo && d.policyBundle && d.policyBundle.stale; }).map(function (d) { return d.name; });
-    var never = e.deployments - e.applied - e.stale;
+    // `applied` counts the daemons that enforce THIS policy; `current`
+    // counts every daemon on the current bundle, so the ones that
+    // pulled it but refused this policy are not reported as "never".
+    var current = typeof e.current === "number" ? e.current : e.applied;
+    var never = e.deployments - current - e.stale;
     var cls = e.applied === e.deployments ? "ok" : (e.applied > 0 ? "warn" : "neutral");
     var html = '<span class="pill ' + cls + ' enf" title="' + esc(never > 0 ? never + " daemon" + (never === 1 ? " has" : "s have") + " not pulled a bundle yet (each deployment's page shows how to turn pulling on)" : "Every daemon runs the current bundle") + '">' +
       esc("Enforced by " + e.applied + " of " + e.deployments + " daemon" + (e.deployments === 1 ? "" : "s")) + "</span>";

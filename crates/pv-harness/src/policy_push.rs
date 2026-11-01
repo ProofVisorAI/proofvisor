@@ -324,6 +324,22 @@ fn compile_rate(policy: &BundlePolicy) -> Result<RateRule, String> {
     })
 }
 
+/// A request a token-rate rule refused: which console policy, and the
+/// message the client and the audit event carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateRefusal {
+    /// Console name of the token-rate policy that refused the request.
+    pub policy: String,
+    /// The refusal as the client and the stop-reason event see it.
+    pub message: String,
+}
+
+impl std::fmt::Display for RateRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// Per-principal token-rate limits from the pushed bundle.
 ///
 /// Prompt tokens are checked and recorded at admission; completion
@@ -375,7 +391,7 @@ impl RateLimits {
 
     /// Admit `tokens` for `principal`, or name the rule that refuses them.
     /// Admitted tokens are recorded against every rule.
-    pub fn admit(&self, principal: &str, tokens: u64) -> Result<(), String> {
+    pub fn admit(&self, principal: &str, tokens: u64) -> Result<(), RateRefusal> {
         let rules = self.rules();
         if rules.is_empty() {
             return Ok(());
@@ -388,12 +404,15 @@ impl RateLimits {
         for (rule, window) in &windows {
             let used = window.current_at(now);
             if used.saturating_add(tokens) > rule.max_tokens {
-                return Err(format!(
-                    "policy {:?}: token rate limit exceeded ({used} of {} tokens used in the last {} s)",
-                    rule.policy,
-                    rule.max_tokens,
-                    rule.window_ms / 1000
-                ));
+                return Err(RateRefusal {
+                    policy: rule.policy.clone(),
+                    message: format!(
+                        "policy {:?}: token rate limit exceeded ({used} of {} tokens used in the last {} s)",
+                        rule.policy,
+                        rule.max_tokens,
+                        rule.window_ms / 1000
+                    ),
+                });
             }
         }
         for (_, window) in &windows {
@@ -714,9 +733,11 @@ mod tests {
         assert!(limits.admit("alice", 60).is_ok());
         limits.record("alice", 30);
         let refused = limits.admit("alice", 20).unwrap_err();
+        assert_eq!(refused.policy, "llm.velocity");
+        let text = refused.to_string();
         assert!(
-            refused.contains("llm.velocity") && refused.contains("90 of 100"),
-            "{refused}"
+            text.contains("llm.velocity") && text.contains("90 of 100"),
+            "{text}"
         );
         assert!(limits.admit("alice", 10).is_ok(), "exactly at the cap is allowed");
         assert!(limits.admit("bob", 100).is_ok(), "windows are per principal");

@@ -308,7 +308,10 @@ export async function currentOrgEtag(orgId: string): Promise<string> {
 
 export interface PolicyEnforcement {
   deployments: number;
+  /** Daemons on the current bundle whose status lists THIS policy as applied. */
   applied: number;
+  /** Daemons on the current bundle, whether or not they applied this policy. */
+  current: number;
   stale: number;
   unsupported: number;
 }
@@ -319,6 +322,8 @@ export interface OrgEnforcementSnapshot {
   deployments: number;
   applied: number;
   stale: number;
+  /** policy id → number of current-bundle deployments reporting it applied */
+  appliedByPolicy: Map<string, number>;
   /** policy id → number of deployments reporting it unsupported */
   unsupportedByPolicy: Map<string, number>;
   /** Per-deployment status, keyed by deployment id. */
@@ -351,6 +356,7 @@ export async function orgEnforcementSnapshot(orgId: string): Promise<OrgEnforcem
     deployments: deployments.length,
     applied: 0,
     stale: 0,
+    appliedByPolicy: new Map(),
     unsupportedByPolicy: new Map(),
     byDeployment: new Map(),
   };
@@ -372,8 +378,14 @@ export async function orgEnforcementSnapshot(orgId: string): Promise<OrgEnforcem
       applied,
       unsupported,
     });
-    if (s.etag === etag) snap.applied += 1;
-    else snap.stale += 1;
+    if (s.etag === etag) {
+      snap.applied += 1;
+      // A daemon on the current bundle enforces only the policies it
+      // lists; one it reports unsupported (or omits) is not enforcing it.
+      for (const id of new Set(applied)) {
+        snap.appliedByPolicy.set(id, (snap.appliedByPolicy.get(id) ?? 0) + 1);
+      }
+    } else snap.stale += 1;
     const seen = new Set<string>();
     for (const u of unsupported) {
       if (seen.has(u.id)) continue;
@@ -387,7 +399,8 @@ export async function orgEnforcementSnapshot(orgId: string): Promise<OrgEnforcem
 export function enforcementFor(snap: OrgEnforcementSnapshot, policyId: string): PolicyEnforcement {
   return {
     deployments: snap.deployments,
-    applied: snap.applied,
+    applied: snap.appliedByPolicy.get(policyId) ?? 0,
+    current: snap.applied,
     stale: snap.stale,
     unsupported: snap.unsupportedByPolicy.get(policyId) ?? 0,
   };

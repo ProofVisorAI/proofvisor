@@ -2395,16 +2395,17 @@ impl AppState {
         // refusal debits nothing. Admitted tokens count against the
         // window even if a budget below then refuses the request, which
         // errs on the strict side.
-        if let Err(reason) = self
+        if let Err(refusal) = self
             .pushed_rates
             .admit(&principal_id_for_budget(&identity), compression.tokens_after)
         {
-            let error = PipelineError::blocked(reason);
-            worker_permit.submit(self.failure_job(
+            let error = PipelineError::blocked(refusal.message);
+            worker_permit.submit(self.policy_failure_job(
                 Arc::clone(&session),
                 identity.clone(),
                 StopReason::PolicyBlocked,
                 error.to_string(),
+                Some(refusal.policy),
             ));
             return Err(error);
         }
@@ -2494,12 +2495,22 @@ impl AppState {
             }
             // Genuine cap exhaustion — latch (upstream rounds 11-13).
             session.latch_enforcement(StopReason::BudgetExceeded);
-            let error = PipelineError::blocked(format!("{limit} exceeded (cap {cap})"));
-            worker_permit.submit(self.failure_job(
+            // When the binding cap came from a console-pushed budget
+            // policy, the refusal names it, as the tool path does.
+            let policy = self
+                .sandbox
+                .pushed()
+                .budget_policy_for(&self.config.budget, &limit, cap);
+            let error = PipelineError::blocked(match &policy {
+                Some(name) => format!("policy {name:?}: {limit} exceeded (cap {cap})"),
+                None => format!("{limit} exceeded (cap {cap})"),
+            });
+            worker_permit.submit(self.policy_failure_job(
                 Arc::clone(&session),
                 identity.clone(),
                 StopReason::BudgetExceeded,
                 error.to_string(),
+                policy,
             ));
             return Err(error);
         }
@@ -3899,6 +3910,25 @@ impl AppState {
         self.worker
             .try_submit(self.failure_job(session, identity, stop_reason, reason))
             .map_err(PipelineError::unavailable_source)
+    }
+
+    /// A failure job for a request a console-pushed policy refused: the
+    /// stop-reason payload also names the policy, so the console can
+    /// attribute the block to it (the tool path does the same through
+    /// `ToolVerdict::Blocked::policy`).
+    fn policy_failure_job(
+        &self,
+        session: Arc<Session>,
+        identity: AgentIdentity,
+        stop_reason: StopReason,
+        reason: String,
+        policy: Option<String>,
+    ) -> WorkerJob {
+        let mut job = self.failure_job(session, identity, stop_reason, reason);
+        if let (Some(policy), Value::Object(payload)) = (policy, &mut job.payload) {
+            payload.insert("policy".to_owned(), Value::String(policy));
+        }
+        job
     }
 
     fn failure_job(

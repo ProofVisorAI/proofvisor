@@ -553,7 +553,7 @@
     var real = deps.filter(function (d) { return !d.isDemo; });
     var applied = real.filter(function (d) { return d.policyBundle && !d.policyBundle.stale; }).length;
     var stale = real.filter(function (d) { return d.policyBundle && d.policyBundle.stale; }).length;
-    out.enforcement = { deployments: real.length, applied: applied, stale: stale, unsupported: 0 };
+    out.enforcement = { deployments: real.length, applied: applied, current: applied, stale: stale, unsupported: 0 };
     return out;
   }
   function mockSpecError(detail) {

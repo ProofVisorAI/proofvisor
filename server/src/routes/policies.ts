@@ -123,7 +123,7 @@ function toWire(
     spec: enforceable ? parseSpecOrNull(p.kind, p.scope, p.body) : null,
     enforcement: snap
       ? enforcementFor(snap, p.id)
-      : { deployments: 0, applied: 0, stale: 0, unsupported: 0 },
+      : { deployments: 0, applied: 0, current: 0, stale: 0, unsupported: 0 },
   };
 }
 

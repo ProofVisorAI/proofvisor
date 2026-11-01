@@ -181,7 +181,7 @@ let pulls = 0;
 function pull() {
   const viaEnv = pulls++ > 0;
   return spawnSync(pvctlBin, [
-    "console-sync", "--spool-dir", join(work, "spool/atif"),
+    "console-sync", "--spool-dir", join(work, "spool/atif"), "--bridge-dir", join(work, "data/bridge"),
     "--console-url", API, "--deployment", deploymentId, "--token-file", tokenFile,
     "--state-file", join(work, "sync-state.json"),
     "--pull-policies", ...(viaEnv ? [] : ["--policy-bundle-file", bundleFile]),
@@ -226,6 +226,21 @@ for (let i = 0; i < 4 && !refused; i++) {
 check("the principal is refused once its token window is full", !!refused && refused.text.includes("llm.velocity"), refused ? refused.text.slice(0, 200) : "never refused");
 
 // ── Console view ────────────────────────────────────────────────────
+// The refusal reaches the console as a block attributed to the rate
+// policy: the daemon names the policy in the stop-reason event, pvctl
+// uploads it as a block, and the policy's counters show it.
+// The daemon commits bridge records in groups, so the refusal can take a
+// few seconds to reach disk; keep syncing until the console counts it.
+let attributed = null;
+for (let i = 0; i < 15; i++) {
+  const synced = pull();
+  check("pvctl uploads the daemon's events", synced.status === 0, synced.stderr + synced.stdout);
+  attributed = (await api("/api/v1/policies")).json.policies.find((p) => p.id === ids.rate);
+  if (attributed.hits24h >= 1 && attributed.blocks24h >= 1) break;
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+}
+check("the console attributes the refusal to the rate policy",
+  attributed.hits24h >= 1 && attributed.blocks24h >= 1, JSON.stringify({ hits: attributed.hits24h, blocks: attributed.blocks24h }));
 const listed = await api("/api/v1/policies");
 const deny = listed.json.policies.find((p) => p.id === ids.deny);
 check("the console shows the policy enforced by 1 of 1 daemon",

@@ -1760,35 +1760,32 @@ fn bridge_record_to_event(
                 event.add_tools_allowed = 1;
             }
             // Per-policy attribution when the daemon names the policy in
-            // the OCSF payload. `bounded_text` (not the fallback-carrying
-            // bounded_nonempty): an empty/whitespace name must yield NO
-            // attribution rather than inventing a literal "policy" row
-            // the operator can't find in their inventory.
-            event.policy_name = payload
-                .get("policy")
-                .or_else(|| payload.get("policy_name"))
-                .and_then(serde_json::Value::as_str)
-                .map(|name| {
-                    // Same Cc/Cf strip as bounded_nonempty — a bidi
-                    // override here 400s (and wedges) the whole batch.
-                    let cleaned = strip_control_and_format(name);
-                    bounded_text(
-                        cleaned.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}'),
-                        MAX_AGENT_UNITS,
-                    )
-                })
-                .filter(|name| !name.is_empty());
+            // the OCSF payload.
+            event.policy_name = bridge_policy_attribution(payload);
             event
         }
-        "agent.stop_reason" => bridge_ingest_event(
-            &session_external_id,
-            seq,
-            EventKind::Guard,
-            bridge_stop_reason_tag(value).as_str(),
-            None,
-            body,
-            occurred_at.clone(),
-        ),
+        "agent.stop_reason" => {
+            // A request the daemon refused on behalf of a console
+            // policy (a pushed token-rate or budget rule) names it in
+            // the payload; it counts as a block of that policy, not as a
+            // plain guard event.
+            let policy = bridge_policy_attribution(payload);
+            let mut event = bridge_ingest_event(
+                &session_external_id,
+                seq,
+                if policy.is_some() {
+                    EventKind::Block
+                } else {
+                    EventKind::Guard
+                },
+                bridge_stop_reason_tag(value).as_str(),
+                None,
+                body,
+                occurred_at.clone(),
+            );
+            event.policy_name = policy;
+            event
+        }
         "agent.compression" => bridge_ingest_event(
             &session_external_id,
             seq,
@@ -1986,6 +1983,29 @@ fn bridge_tool_tag(payload: &serde_json::Value) -> String {
         }
     }
     "tool".to_owned()
+}
+
+/// The console policy a bridge payload attributes an event to
+/// (`payload.policy` / `payload.policy_name`), cleaned the way other
+/// names are. `bounded_text` (not the fallback-carrying
+/// `bounded_nonempty`): an empty or whitespace name must yield NO
+/// attribution rather than inventing a literal "policy" row the operator
+/// cannot find in their inventory.
+fn bridge_policy_attribution(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("policy")
+        .or_else(|| payload.get("policy_name"))
+        .and_then(serde_json::Value::as_str)
+        .map(|name| {
+            // Same Cc/Cf strip as bounded_nonempty — a bidi override
+            // here 400s (and wedges) the whole batch.
+            let cleaned = strip_control_and_format(name);
+            bounded_text(
+                cleaned.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}'),
+                MAX_AGENT_UNITS,
+            )
+        })
+        .filter(|name| !name.is_empty())
 }
 
 fn bridge_stop_reason_tag(value: &serde_json::Value) -> String {
@@ -3372,6 +3392,58 @@ mod tests {
     /// policyName, and one bidi override (Cf) in a bridge payload's
     /// policy attribution 400'd — and permanently wedged — the whole
     /// event batch. Empty-after-strip yields NO attribution.
+    #[test]
+    fn refusals_naming_a_console_policy_count_as_blocks_of_that_policy() {
+        let stop_reason = |payload: serde_json::Value| {
+            stored_bridge_event(
+                "agent.stop_reason",
+                7,
+                json!({
+                    "metadata": {"uid": "evt-stop", "sequence": 3},
+                    "class_name": "agent.stop_reason",
+                    "time": 1767225600000u64,
+                    "time_iso": "2026-01-01T00:00:00.000Z",
+                    "status_id": 2,
+                    "session_uid": "signed-s",
+                    "stop_reason": "policy_blocked",
+                    "ai_agent": {
+                        "version": "1.0.0",
+                        "charter": {"name": "signed-agent", "type_id": 1},
+                        "instance_uid": "inst-1"
+                    },
+                    "payload": payload
+                }),
+            )
+        };
+        // A pushed token-rate or budget rule refused the request: the
+        // daemon names the policy, and the console counts a block for it.
+        let named = stop_reason(json!({
+            "reason": "policy \"llm.velocity\": token rate limit exceeded (90 of 100 tokens used in the last 60 s)",
+            "policy": "llm.velocity",
+        }));
+        let BridgeRecordMapping::Mapped(mapped) =
+            bridge_record_to_event(1, 0, "agent.stop_reason", &named, 1_800_000_000_000)
+        else {
+            panic!("stop reason should map");
+        };
+        assert_eq!(mapped.event.kind, EventKind::Block);
+        assert_eq!(mapped.event.policy_name.as_deref(), Some("llm.velocity"));
+        assert_eq!(
+            mapped.event.add_tools_blocked, 0,
+            "a refused request is not a blocked tool call"
+        );
+
+        // Any other stop reason stays a plain guard event with no attribution.
+        let plain = stop_reason(json!({"reason": "max_tokens exceeded (cap 5)"}));
+        let BridgeRecordMapping::Mapped(mapped) =
+            bridge_record_to_event(1, 0, "agent.stop_reason", &plain, 1_800_000_000_000)
+        else {
+            panic!("stop reason should map");
+        };
+        assert_eq!(mapped.event.kind, EventKind::Guard);
+        assert_eq!(mapped.event.policy_name, None);
+    }
+
     #[test]
     fn policy_names_are_stripped_of_control_and_format_chars() {
         assert_eq!(strip_control_and_format("p\u{202E}q"), "pq");
