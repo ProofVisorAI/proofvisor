@@ -246,7 +246,13 @@ mod tests {
 
         let file = std::env::temp_dir().join(format!("pv-pushed-ref-{}.json", std::process::id()));
         std::fs::write(&file, r#"{"type":"object"}"#).unwrap();
-        let file_ref = format!("file://{}", file.display());
+        // A valid file URL on every platform: `file:///C:/…` on Windows.
+        let path = file.display().to_string().replace('\\', "/");
+        let file_ref = if path.starts_with('/') {
+            format!("file://{path}")
+        } else {
+            format!("file:///{path}")
+        };
         let err = PushedSchema::compile("p", "t", &json!({"$ref": file_ref})).unwrap_err();
         let _ = std::fs::remove_file(&file);
         assert!(err.contains("may not reference external documents"), "{err}");
