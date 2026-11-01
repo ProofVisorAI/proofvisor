@@ -2505,14 +2505,14 @@ async fn append_journal(
         }
         if journal_created {
             pv_core::fsutil::sync_directory(&directory).map_err(|error| {
-                    // Drop the full path entirely; the
-                    // sibling `session = %session.id` field on the
-                    // downstream warn already scopes this to a
-                    // specific session, and the containing directory
-                    // is `atif_spool_dir` — same across the whole
-                    // deployment.
-                    format!("fsync journal directory: {error}")
-                })?;
+                // Drop the full path entirely; the
+                // sibling `session = %session.id` field on the
+                // downstream warn already scopes this to a
+                // specific session, and the containing directory
+                // is `atif_spool_dir` — same across the whole
+                // deployment.
+                format!("fsync journal directory: {error}")
+            })?;
         }
         Ok(())
     })
