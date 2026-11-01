@@ -30,10 +30,20 @@ if (!daemonBin || !pvctlBin) {
 
 let step = 0;
 let daemon;
+// PUSH_E2E_CLEANUP=1 also cleans up when a check fails: the script exits
+// right after, so this uses curl synchronously.
+function cleanupAfterFailure() {
+  if (process.env.PUSH_E2E_CLEANUP !== "1" || !cookie) return;
+  const base = ["-s", "-o", "/dev/null", "-m", "30", "-H", `Origin: ${ORIGIN}`, "-H", "Sec-Fetch-Site: same-origin", "-H", `Cookie: ${cookie}`];
+  spawnSync("curl", [...base, "-X", "POST", "-H", "Content-Type: application/json",
+    "-d", JSON.stringify({ password: "correcthorse42x", confirm: "DELETE MY ACCOUNT" }), API + "/api/v1/auth/me/delete-account"]);
+}
+
 function check(label, ok, detail = "") {
   step += 1;
   console.log(`${ok ? "ok  " : "FAIL"} [${step}] ${label}${!ok && detail ? " — " + detail : ""}`);
   if (!ok) {
+    cleanupAfterFailure();
     if (daemon) {
       console.log("--- daemon log tail ---\n" + daemon.log().split("\n").slice(-25).join("\n"));
       daemon.proc.kill("SIGKILL");
@@ -283,5 +293,17 @@ daemon = null;
 
 llm.close();
 tools.close();
+
+// PUSH_E2E_CLEANUP=1: remove what this run created. Needed when the API
+// under test is a real deployment, where nothing may be left behind.
+if (process.env.PUSH_E2E_CLEANUP === "1") {
+  const removedDeployment = await api(`/api/v1/deployments/${deploymentId}?force=1`, { method: "DELETE" });
+  check("cleanup: the deployment is deleted", removedDeployment.status === 200 || removedDeployment.status === 204, removedDeployment.text);
+  const removedAccount = await api("/api/v1/auth/me/delete-account", {
+    method: "POST",
+    body: { password: "correcthorse42x", confirm: "DELETE MY ACCOUNT" },
+  });
+  check("cleanup: the account and its organisation are deleted", removedAccount.status === 200 || removedAccount.status === 204, removedAccount.text);
+}
 console.log(`policy-push-e2e: ${step} checks passed`);
 process.exit(existsSync(work) ? 0 : 0);
