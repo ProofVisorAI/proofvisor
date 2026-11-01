@@ -5,15 +5,15 @@ name: Publish public tool
 # default — and force-pushes a content snapshot (no monorepo history)
 # to a SEPARATE public repository.
 #
-# DISABLED on push since 2026-11-01. The rename pointed this at
+# MANUAL ONLY since 2026-11-01. The rename pointed this at
 # ProofVisorAI/proofvisor, which is this monorepo itself: had the deploy
 # key been registered there, the first push to main would have replaced
 # the monorepo's main with the pruned snapshot and dropped its history
-# (it failed only because the key was not authorised). The monorepo is
-# public now, so the snapshot has no audience until a separate tool
-# repository exists. To publish again: create that repository, register
-# TOOL_DEPLOY_KEY on it as a write deploy key, set TOOL_REPO below to
-# its name, and run this workflow by hand.
+# (it failed only because the key was not authorised). The real target
+# is ProofVisorAI/agentvisor (the repository AgentVisorAI/agentvisor
+# before the organisation rename), which holds the "monorepo-deploy"
+# write key. Restore the push trigger only once that snapshot should
+# follow every merge again.
 #
 # The include list mirrors every path the crates reference at compile
 # time (include_str!/include_bytes!/rerun-if-changed audit):
@@ -27,7 +27,7 @@ on:
 
 env:
   # The separate public tool repository. Must never be this monorepo.
-  TOOL_REPO: ProofVisorAI/proofvisor-tool
+  TOOL_REPO: ProofVisorAI/agentvisor
 
 permissions:
   contents: read
