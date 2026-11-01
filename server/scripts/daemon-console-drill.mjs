@@ -48,7 +48,7 @@ try {
   const cookieJar = join(fixture, "owner.jar");
   await writeFile(tokenFile, data.ingestToken, { mode: 0o600 });
   const host = new URL(API).hostname;
-  await writeFile(cookieJar, `# Netscape HTTP Cookie File\n${host}\tFALSE\t/\tFALSE\t0\tav_session\t${cookie.slice("pv_session=".length)}\n`, { mode: 0o600 });
+  await writeFile(cookieJar, `# Netscape HTTP Cookie File\n${host}\tFALSE\t/\tFALSE\t0\tpv_session\t${cookie.slice("pv_session=".length)}\n`, { mode: 0o600 });
   const child = spawn(process.execPath, [join(repo, "scripts/crash-drill.mjs")], {
     cwd: repo,
     stdio: "inherit",

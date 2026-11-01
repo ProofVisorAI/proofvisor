@@ -2892,8 +2892,7 @@ impl ToolExecution {
                 Err(error) => return Err(error.to_string()),
             }
             if let Some(directory) = execution.intent_path.parent() {
-                if let Err(error) = std::fs::File::open(directory).and_then(|directory| directory.sync_all())
-                {
+                if let Err(error) = pv_core::fsutil::sync_directory(directory) {
                     tracing::warn!(
                         path = %pv_core::fsutil::basename(&execution.intent_path),
                         %error,
@@ -2969,9 +2968,7 @@ impl ToolExecution {
             .map_err(|error| ClaimError::Backend(error.to_string()))?;
         file.sync_all()
             .map_err(|error| ClaimError::Backend(error.to_string()))?;
-        std::fs::File::open(directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| ClaimError::Backend(error.to_string()))
+        pv_core::fsutil::sync_directory(directory).map_err(|error| ClaimError::Backend(error.to_string()))
     }
 
     async fn persist(&self, outcome: &ToolOutcome) -> Result<(), String> {

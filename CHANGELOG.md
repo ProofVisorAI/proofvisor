@@ -62,7 +62,9 @@ exercised against release binaries in CI on every push
   path is provided. Setup root is `~/.agentvisor/`; the systemd unit and
   Kubernetes manifest are renamed accordingly. `find_server_binary`
   still falls back to the legacy binary names for source-built installs.
-- **Minimum supported Rust version raised to 1.94.**
+- **Minimum supported Rust version raised to 1.95.** wasmtime 48 (the
+  WebAssembly policy engine) needs 1.95, and only the 48 line carries the
+  fixes for RUSTSEC-2026-0420 and RUSTSEC-2026-0324.
 - Exchanged tokens now bind each revocation ancestor to its issuer. Reissue
   exchanged tokens created by older builds: tokens without issuer ancestry
   are refused because their revocation identity is ambiguous.
@@ -448,6 +450,11 @@ exercised against release binaries in CI on every push
 
 ### Fixed
 
+- Windows: the daemon's journal, tool-intent claim and intent release
+  flushed their folder by opening it as a file, which Windows refuses
+  ("Access is denied"), so the journal stopped and tool calls failed.
+  They now use `pv_core::fsutil::sync_directory`, which skips the folder
+  flush on Windows as the rest of the code already did.
 - Console in live mode no longer invents data: sessions showed a default
   model name and user, deployments showed a fabricated token prefix, the
   overview event count was hard-coded to zero, the members table labelled

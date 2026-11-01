@@ -2504,9 +2504,7 @@ async fn append_journal(
             journal.sync_data().map_err(|error| error.to_string())?;
         }
         if journal_created {
-            std::fs::File::open(&directory)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|error| {
+            pv_core::fsutil::sync_directory(&directory).map_err(|error| {
                     // Drop the full path entirely; the
                     // sibling `session = %session.id` field on the
                     // downstream warn already scopes this to a
