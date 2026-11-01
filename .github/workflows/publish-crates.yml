@@ -48,18 +48,38 @@ jobs:
       # Verify the tag version matches the workspace version so a
       # `git tag vX.Y.Z` pointing at a workspace still on the OLD
       # version does not silently republish under the old number.
-      # workflow_dispatch runs skip this check (no tag).
+      # A pre-release tag (v0.1.0-rc.8) never matches the workspace
+      # version (0.1.0) and must not publish 0.1.0 to crates.io: it
+      # runs the dry-run gate only, so every release candidate still
+      # proves the workspace packages, and the upload waits for the
+      # final tag. Before this, every rc tag failed here in 30 s and
+      # the gate never ran. workflow_dispatch runs skip this check.
       - name: Verify tag matches workspace version
+        id: tag
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
           tag_version="${GITHUB_REF_NAME#v}"
           workspace_version=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = //;s/"//g')
-          if [ "$tag_version" != "$workspace_version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME (=$tag_version) does not match workspace version $workspace_version"
-            echo "Update workspace.package.version in Cargo.toml before tagging."
-            exit 1
-          fi
+          case "$tag_version" in
+            *-*)
+              base_version="${tag_version%%-*}"
+              if [ "$base_version" != "$workspace_version" ]; then
+                echo "::error::pre-release tag $GITHUB_REF_NAME (=$base_version) does not match workspace version $workspace_version"
+                exit 1
+              fi
+              echo "Pre-release tag: dry-run only, no upload."
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              if [ "$tag_version" != "$workspace_version" ]; then
+                echo "::error::tag $GITHUB_REF_NAME (=$tag_version) does not match workspace version $workspace_version"
+                echo "Update workspace.package.version in Cargo.toml before tagging."
+                exit 1
+              fi
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       # Dry-run the whole workspace before any real upload. `cargo
       # publish --workspace --dry-run` (native since cargo 1.90, and the
@@ -83,7 +103,7 @@ jobs:
       - name: Should publish?
         id: gate
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ steps.tag.outputs.prerelease }}" = "false" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.dry_run }}" = "false" ]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"

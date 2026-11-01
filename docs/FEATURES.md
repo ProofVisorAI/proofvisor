@@ -311,21 +311,18 @@ with demonstration data, which is what the public site shows by default.
   it) and the API runs on Render at `https://api.proofvisor.com` (the
   old `api.agentvisorai.me` still answers, same service). The old
   domain `agentvisorai.me` forwards (301, front page only) to the new
-  one. Render's Auto-Deploy for this service is **off**: a merge to
-  `main` does not deploy by itself; use Manual Deploy in the Render
-  dashboard (the `render.yaml` blueprint says `autoDeploy: true`, the
-  existing service predates it).
-- **Mail still goes out from Resend's sandbox sender**
-  (`ProofVisor <onboarding@resend.dev>`), which delivers only to the
-  Resend account owner. Verification, password-reset and invitation
-  emails to anyone else need `proofvisor.com` verified as a sending
-  domain in Resend (DNS records at the registrar) and `EMAIL_FROM`
-  changed to match.
-- **No identity-provider sign-in is configured on the live API.** No
-  Google or Microsoft client is set, so only email and password (and
-  passkeys, which are bound to `proofvisor.com`) work until a client
-  id and secret are added; SAML and SCIM are built in and off by
-  default.
+  one. Render's Auto-Deploy for this service is on and set to deploy
+  **after CI checks pass**: a merge to `main` deploys once that
+  commit's GitHub checks are green (a commit whose CI run was cancelled
+  because a newer commit superseded it is skipped; the newer commit
+  deploys). The container applies database migrations at start.
+- **Mail goes out from `ProofVisor <no-reply@proofvisor.com>`.** The
+  domain is verified at Resend (a test message from it was accepted on
+  2026-11-01) and the live service's `EMAIL_FROM` already uses it.
+- **Sign-in with Google is live** (the live API advertises it);
+  Microsoft needs an Entra app registration (`MICROSOFT_CLIENT_ID` and
+  `MICROSOFT_CLIENT_SECRET`) before its button appears. SAML and SCIM
+  are built in and off by default.
 - **Security review depth.** The code added on 2026-10-31 and the
   rename's compatibility were reviewed line by line on those days. On
   2026-11-01 the older console API code (every route, the auth,
