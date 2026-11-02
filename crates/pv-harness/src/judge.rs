@@ -47,6 +47,16 @@ pub const DENIALS_PER_KEY: usize = 16;
 pub const DENIAL_LOG_KEYS: usize = 20_000;
 /// Longest mission `task` statement.
 pub const MAX_TASK_CHARS: usize = 4_096;
+/// Default concurrency limit for background judging.
+pub const DEFAULT_BACKGROUND_CONCURRENCY: usize = 8;
+/// Largest deadline for an adapter used by background judging. Session
+/// close at shutdown allows 3 s, and a pending background verdict holds
+/// the close, so it must finish well inside that.
+pub const MAX_BACKGROUND_DEADLINE_MS: u64 = 2_500;
+/// Longest standing rule text.
+pub const MAX_RULE_CHARS: usize = 2_000;
+/// Longest model output kept for the loop breaker's second opinion.
+pub const MAX_LOOP_TEXT_CHARS: usize = 4_096;
 /// Largest drift state file read at startup.
 pub const MAX_DRIFT_STATE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -281,6 +291,113 @@ fn default_max_pending() -> usize {
     10_000
 }
 
+/// Which recorded outputs trace judging reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceSource {
+    /// A tool's response body, after the call completed.
+    Tool,
+    /// The model's answer (message, reasoning, or tool-call request).
+    Model,
+}
+
+impl TraceSource {
+    /// Stable wire string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::Model => "model",
+        }
+    }
+}
+
+/// `[judge.trace]`: judge recorded outputs after the fact, off the request
+/// path. Each verdict becomes an `agent.judge` event (and an ATIF step),
+/// so the session's receipt covers it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeTraceConfig {
+    /// Adapter name.
+    pub adapter: String,
+    /// Predicate to score (default `output_safe@1`).
+    #[serde(default = "default_trace_predicate")]
+    pub predicate: String,
+    /// Outputs to judge (default both).
+    #[serde(default = "default_trace_sources")]
+    pub sources: Vec<TraceSource>,
+    /// A verdict whose positive label is above this is a finding
+    /// (`finding: true`, higher severity). Default 0.7.
+    #[serde(default = "default_finding_above")]
+    pub finding_above: f64,
+    /// Required (`true`) with a cloud adapter: outputs then leave the harness.
+    #[serde(default)]
+    pub allow_cloud: bool,
+    /// Longest output sent, in characters (default 16384).
+    #[serde(default = "default_max_output_chars")]
+    pub max_output_chars: usize,
+}
+
+fn default_trace_predicate() -> String {
+    pv_judge::OUTPUT_SAFE.to_owned()
+}
+fn default_trace_sources() -> Vec<TraceSource> {
+    vec![TraceSource::Tool, TraceSource::Model]
+}
+fn default_finding_above() -> f64 {
+    0.7
+}
+fn default_max_output_chars() -> usize {
+    16_384
+}
+
+/// `[judge.breaker]`: the loop breaker's second opinion. When a model
+/// output's semantic delta falls inside `[ambiguous_low, ambiguous_high]`,
+/// the judge decides whether the step counts as no progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeBreakerConfig {
+    /// Adapter name.
+    pub adapter: String,
+    /// Predicate to score (default `loop_progress@1`).
+    #[serde(default = "default_breaker_predicate")]
+    pub predicate: String,
+    /// Lower end of the ambiguous delta range.
+    pub ambiguous_low: f64,
+    /// Upper end of the ambiguous delta range.
+    pub ambiguous_high: f64,
+    /// The step counts as no progress when the positive label's
+    /// probability is above this (default 0.5).
+    #[serde(default = "default_looping_above")]
+    pub looping_above: f64,
+    /// Required (`true`) with a cloud adapter: model outputs then leave
+    /// the harness.
+    #[serde(default)]
+    pub allow_cloud: bool,
+}
+
+fn default_breaker_predicate() -> String {
+    pv_judge::LOOP_PROGRESS.to_owned()
+}
+fn default_looping_above() -> f64 {
+    0.5
+}
+
+/// `[[judge.standing_rules]]`: a rule the agent must keep in view. When
+/// context compression cuts the only copy of its text from a request,
+/// the rule is appended back as a system message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandingRuleConfig {
+    /// Identifier recorded when the rule is re-pinned.
+    pub id: String,
+    /// The rule's exact text, as the application sends it.
+    pub text: String,
+}
+
+fn default_background_concurrency() -> usize {
+    DEFAULT_BACKGROUND_CONCURRENCY
+}
+
 /// `[judge]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -312,6 +429,20 @@ pub struct JudgeConfig {
     /// Runtime calibration check.
     #[serde(default)]
     pub drift: Option<JudgeDriftConfig>,
+    /// Judge calls in flight for background judging (recorded outputs and
+    /// the loop breaker's second opinion), kept apart from tool-call
+    /// admission so background work never starves it (default 8).
+    #[serde(default = "default_background_concurrency")]
+    pub background_max_concurrency: usize,
+    /// Trace judging.
+    #[serde(default)]
+    pub trace: Option<JudgeTraceConfig>,
+    /// The loop breaker's second opinion.
+    #[serde(default)]
+    pub breaker: Option<JudgeBreakerConfig>,
+    /// Standing rules re-pinned after context compression.
+    #[serde(default)]
+    pub standing_rules: Vec<StandingRuleConfig>,
 }
 
 fn default_max_concurrency() -> usize {
@@ -405,9 +536,23 @@ impl JudgeConfig {
             }
             collect_adapter_errors(adapter, errors);
         }
-        if self.tools.is_empty() {
-            errors.push("[judge] is set but no [[judge.tools]] are tagged for semantic review".to_owned());
+        if self.tools.is_empty()
+            && self.trace.is_none()
+            && self.breaker.is_none()
+            && self.standing_rules.is_empty()
+        {
+            errors.push(
+                "[judge] is set but enables nothing: tag tools under [[judge.tools]], or set \
+                 [judge.trace], [judge.breaker] or [[judge.standing_rules]]"
+                    .to_owned(),
+            );
         }
+        if !(1..=MAX_CONCURRENCY_CEILING).contains(&self.background_max_concurrency) {
+            errors.push(format!(
+                "judge.background_max_concurrency must be between 1 and {MAX_CONCURRENCY_CEILING}"
+            ));
+        }
+        self.collect_background_errors(&adapters, registry.as_ref(), errors);
         let mut tools = BTreeSet::new();
         let mut bound_predicates = BTreeSet::new();
         for tool in &self.tools {
@@ -522,6 +667,102 @@ impl JudgeConfig {
             .is_some_and(|drift| drift.state_file.trim().is_empty())
         {
             errors.push("judge.drift.state_file must not be empty".to_owned());
+        }
+    }
+
+    fn collect_background_errors(
+        &self,
+        adapters: &BTreeMap<&str, &JudgeAdapterConfig>,
+        registry: Option<&PredicateRegistry>,
+        errors: &mut Vec<String>,
+    ) {
+        let mut check = |section: &str, adapter_name: &str, predicate_id: &str, allow_cloud: bool| {
+            let predicate = registry.and_then(|registry| registry.get(predicate_id));
+            if registry.is_some() && predicate.is_none() {
+                errors.push(format!(
+                    "[judge.{section}] names unknown predicate {predicate_id:?}"
+                ));
+            }
+            let Some(adapter) = adapters.get(adapter_name) else {
+                errors.push(format!(
+                    "[judge.{section}] names unknown adapter {adapter_name:?}"
+                ));
+                return;
+            };
+            if adapter.kind == JudgeAdapterKind::Cloud && !allow_cloud {
+                errors.push(format!(
+                    "[judge.{section}] uses cloud adapter {adapter_name:?}: recorded outputs would \
+                     leave the harness; set allow_cloud = true in [judge.{section}] to opt in"
+                ));
+            }
+            if adapter.deadline() > Duration::from_millis(MAX_BACKGROUND_DEADLINE_MS) {
+                errors.push(format!(
+                    "[judge.{section}] adapter {adapter_name:?} has a deadline above \
+                     {MAX_BACKGROUND_DEADLINE_MS} ms; background verdicts hold session close, \
+                     which has 3 s at shutdown"
+                ));
+            }
+            if let (JudgeAdapterKind::Local, Some(predicate)) = (adapter.kind, predicate) {
+                let labels: BTreeSet<&str> = adapter.output_labels.iter().map(String::as_str).collect();
+                let expected: BTreeSet<&str> = predicate.labels.iter().map(String::as_str).collect();
+                if labels != expected || adapter.output_labels.len() != predicate.labels.len() {
+                    errors.push(format!(
+                        "judge adapter {adapter_name:?} output_labels {:?} must be exactly the labels of {} ({:?})",
+                        adapter.output_labels, predicate.id, predicate.labels
+                    ));
+                }
+            }
+        };
+        if let Some(trace) = &self.trace {
+            check("trace", &trace.adapter, &trace.predicate, trace.allow_cloud);
+        }
+        if let Some(breaker) = &self.breaker {
+            check(
+                "breaker",
+                &breaker.adapter,
+                &breaker.predicate,
+                breaker.allow_cloud,
+            );
+        }
+        if let Some(trace) = &self.trace {
+            if trace.sources.is_empty() {
+                errors.push("[judge.trace] sources must name tool, model, or both".to_owned());
+            }
+            if pv_judge::threshold_to_ppm(trace.finding_above).is_err() {
+                errors.push("[judge.trace] finding_above must be a probability in [0, 1]".to_owned());
+            }
+            if !(1..=1_000_000).contains(&trace.max_output_chars) {
+                errors.push("[judge.trace] max_output_chars must be between 1 and 1000000".to_owned());
+            }
+        }
+        if let Some(breaker) = &self.breaker {
+            let low = pv_judge::threshold_to_ppm(breaker.ambiguous_low);
+            let high = pv_judge::threshold_to_ppm(breaker.ambiguous_high);
+            match (low, high) {
+                (Ok(low), Ok(high)) if low < high => {}
+                _ => errors.push("[judge.breaker] needs 0 <= ambiguous_low < ambiguous_high <= 1".to_owned()),
+            }
+            if pv_judge::threshold_to_ppm(breaker.looping_above).is_err() {
+                errors.push("[judge.breaker] looping_above must be a probability in [0, 1]".to_owned());
+            }
+        }
+        let mut rule_ids = BTreeSet::new();
+        for rule in &self.standing_rules {
+            if !is_name(&rule.id) {
+                errors.push(format!(
+                    "standing rule id {:?} must be 1..=64 characters of [A-Za-z0-9_.-]",
+                    rule.id
+                ));
+            }
+            if !rule_ids.insert(rule.id.as_str()) {
+                errors.push(format!("standing rule {:?} is defined more than once", rule.id));
+            }
+            if rule.text.trim().is_empty() || rule.text.chars().count() > MAX_RULE_CHARS {
+                errors.push(format!(
+                    "standing rule {:?} text must be 1..={MAX_RULE_CHARS} characters",
+                    rule.id
+                ));
+            }
         }
     }
 
@@ -679,6 +920,12 @@ pub(crate) struct ContextInputs<'a> {
 /// The running judge: runner, tool bindings, rollout state.
 pub struct JudgeService {
     runner: JudgeRunner,
+    /// Background judging (traces, the breaker) has its own concurrency
+    /// limit, so it can never starve tool-call admission.
+    background: JudgeRunner,
+    trace: Option<JudgeTraceConfig>,
+    breaker: Option<JudgeBreakerConfig>,
+    standing_rules: Vec<StandingRuleConfig>,
     mode: JudgeMode,
     tools: BTreeMap<String, Vec<JudgeTask>>,
     adapter_kinds: BTreeMap<String, AdapterKind>,
@@ -726,6 +973,11 @@ impl JudgeService {
             adapter_kinds.insert(adapter_config.name.clone(), adapter.kind());
             slots.insert(adapter_config.name.clone(), AdapterSlot { adapter, deadline });
         }
+        let background = JudgeRunner::new(
+            slots.clone(),
+            Arc::clone(&registry),
+            config.background_max_concurrency,
+        )?;
         let runner = JudgeRunner::new(slots, registry, config.max_concurrency)?;
         let tools = config
             .tools
@@ -780,6 +1032,10 @@ impl JudgeService {
         );
         Ok(Self {
             runner,
+            background,
+            trace: config.trace.clone(),
+            breaker: config.breaker.clone(),
+            standing_rules: config.standing_rules.clone(),
             mode: match config.mode {
                 JudgeModeConfig::Shadow => JudgeMode::Shadow,
                 JudgeModeConfig::Enforce => JudgeMode::Enforce,
@@ -794,6 +1050,59 @@ impl JudgeService {
             denials: parking_lot::Mutex::new(DenialLog::default()),
             metrics,
         })
+    }
+
+    /// Trace judging settings, when `[judge.trace]` is set.
+    pub fn trace(&self) -> Option<&JudgeTraceConfig> {
+        self.trace.as_ref()
+    }
+
+    /// The loop breaker's second opinion settings, when `[judge.breaker]` is set.
+    pub fn breaker(&self) -> Option<&JudgeBreakerConfig> {
+        self.breaker.as_ref()
+    }
+
+    /// Standing rules re-pinned after context compression.
+    pub fn standing_rules(&self) -> &[StandingRuleConfig] {
+        &self.standing_rules
+    }
+
+    /// Background calls in flight.
+    pub fn background_in_flight(&self) -> usize {
+        self.background.in_flight()
+    }
+
+    /// Score one predicate on the background runner.
+    pub(crate) async fn score_background(
+        &self,
+        adapter: &str,
+        predicate: &str,
+        tool: &str,
+        arguments: &Value,
+        context: &SessionContext,
+    ) -> (JudgeOutcome, u64) {
+        let started = std::time::Instant::now();
+        let task = JudgeTask {
+            predicate_id: predicate.to_owned(),
+            adapter: adapter.to_owned(),
+        };
+        let outcome = self
+            .background
+            .evaluate(std::slice::from_ref(&task), tool, arguments, context)
+            .await
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                JudgeOutcome::Failed(JudgeFailure {
+                    predicate_id: predicate.to_owned(),
+                    model: unknown_pin(adapter),
+                    kind: pv_judge::FailureKind::Unavailable,
+                    detail: "the background runner returned no outcome".to_owned(),
+                    latency_us: 0,
+                })
+            });
+        self.count_calls(std::slice::from_ref(&outcome));
+        (outcome, micros_since(started))
     }
 
     /// Shadow or enforce.
@@ -967,6 +1276,17 @@ impl JudgeService {
     }
 
     fn observe(&self, outcomes: &[JudgeOutcome], judge_us: u64) {
+        self.count_calls(outcomes);
+        self.metrics
+            .histogram_with_bounds(
+                "pv_judge_wait_seconds",
+                "Time a judged tool call waited for the semantic judge",
+                pv_core::metrics::WIDE_LATENCY_BOUNDS_US,
+            )
+            .observe_us(judge_us);
+    }
+
+    fn count_calls(&self, outcomes: &[JudgeOutcome]) {
         for outcome in outcomes {
             self.metrics
                 .counter(
@@ -979,13 +1299,6 @@ impl JudgeService {
                 )
                 .inc();
         }
-        self.metrics
-            .histogram_with_bounds(
-                "pv_judge_wait_seconds",
-                "Time a judged tool call waited for the semantic judge",
-                pv_core::metrics::WIDE_LATENCY_BOUNDS_US,
-            )
-            .observe_us(judge_us);
     }
 
     /// Count a judge decision.
@@ -1240,6 +1553,309 @@ pub async fn calibrate_from_config(
     );
     let runner = JudgeRunner::new(slots, Arc::new(judge.registry()?), judge.max_concurrency)?;
     pv_judge::calibration::calibrate(&runner, adapter, examples).await
+}
+
+// ---------------------------------------------------------------------------
+// Background judging: recorded outputs, the breaker's second opinion,
+// and `agent.judge` events.
+// ---------------------------------------------------------------------------
+
+/// Holds a session open (its pending-job count) while a background
+/// verdict is on its way, so a close waits for it and the verdict lands
+/// inside what the session's receipt signs. Released on drop, whatever
+/// happens to the task (completion, panic, cancellation at shutdown).
+pub(crate) struct PendingGuard(Arc<crate::session::Session>);
+
+impl PendingGuard {
+    pub(crate) fn new(session: Arc<crate::session::Session>) -> Self {
+        session.worker_job_started();
+        Self(session)
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.0.worker_job_finished();
+    }
+}
+
+/// A recorded output the audit worker hands over once its step is durable.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedOutput {
+    pub(crate) source: TraceSource,
+    pub(crate) tool: Option<String>,
+    pub(crate) text: String,
+}
+
+/// The judge as the audit worker sees it.
+pub struct JudgeHooks {
+    service: Arc<JudgeService>,
+    worker: crate::worker::WorkerHandle,
+    pdp: Arc<crate::authz::PolicyDecisionPoint>,
+    metrics: Arc<pv_core::metrics::Registry>,
+}
+
+/// The hooks slot shared by the application state and the audit worker,
+/// so the judge can be attached after both exist.
+pub type SharedJudgeHooks = Arc<parking_lot::RwLock<Option<Arc<JudgeHooks>>>>;
+
+impl JudgeHooks {
+    pub(crate) fn new(
+        service: Arc<JudgeService>,
+        worker: crate::worker::WorkerHandle,
+        pdp: Arc<crate::authz::PolicyDecisionPoint>,
+        metrics: Arc<pv_core::metrics::Registry>,
+    ) -> Self {
+        Self {
+            service,
+            worker,
+            pdp,
+            metrics,
+        }
+    }
+
+    /// The judge service.
+    pub fn service(&self) -> &Arc<JudgeService> {
+        &self.service
+    }
+
+    fn context(&self, session: &crate::session::Session, intent: &str) -> SessionContext {
+        let identity = session.current_identity();
+        let facts = crate::authz::CallerFacts {
+            instance_uid: &identity.instance_uid,
+            charter: &identity.charter.name,
+            subject: None,
+        };
+        self.service.context(&ContextInputs {
+            session_id: &session.id,
+            intent: intent.to_owned(),
+            missions: self.pdp.applicable_missions(&facts),
+            charter: &identity.charter.name,
+            delegation_depth: 0,
+            parents: Vec::new(),
+        })
+    }
+
+    /// Publish an `agent.judge` event (and, for unsigned sessions, an ATIF
+    /// step) for `session`. A full audit queue drops it and counts the drop.
+    pub(crate) fn emit(&self, session: &Arc<crate::session::Session>, payload: Value) {
+        let kind = payload
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("finding")
+            .to_owned();
+        match self.worker.try_reserve(&session.id) {
+            Ok(permit) => permit.submit(crate::worker::WorkerJob {
+                session: Arc::clone(session),
+                identity: session.current_identity(),
+                class: pv_events::EventClass::Judge,
+                atif: Some(crate::worker::AtifCapture {
+                    source: pv_atif::Source::System,
+                    message: Value::String(format!("semantic judge {kind}: {payload}")),
+                    reasoning_content: None,
+                    model_name: None,
+                    tool_calls: None,
+                    observation: None,
+                    llm_call_count: Some(0),
+                }),
+                payload,
+                text: String::new(),
+                analyze_loop: false,
+                status: pv_events::StatusId::Success,
+                stop_reason: None,
+                native_stop_reason: None,
+                metrics: pv_events::EventMetrics::default(),
+                cost_usd_micros: 0,
+                prompt_token_correction: 0,
+                response_marker: None,
+                response_attempt: None,
+            }),
+            Err(error) => {
+                tracing::warn!(session = %session.id, %error, kind, "semantic judge event dropped: audit queue full");
+                self.metrics
+                    .counter(
+                        &format!("pv_judge_events_dropped_total{{kind=\"{kind}\"}}"),
+                        "Semantic judge events dropped because the audit queue was full",
+                    )
+                    .inc();
+            }
+        }
+    }
+
+    /// Judge a durable recorded output in the background, when trace
+    /// judging covers its source. Never delays the request that produced it.
+    pub(crate) fn after_capture(
+        self: &Arc<Self>,
+        session: Arc<crate::session::Session>,
+        output: CapturedOutput,
+    ) {
+        let Some(trace) = self.service.trace() else {
+            return;
+        };
+        if !trace.sources.contains(&output.source) || output.text.trim().is_empty() {
+            return;
+        }
+        let guard = PendingGuard::new(Arc::clone(&session));
+        let hooks = Arc::clone(self);
+        tokio::spawn(async move {
+            let _guard = guard;
+            hooks.judge_trace(&session, output).await;
+        });
+    }
+
+    async fn judge_trace(&self, session: &Arc<crate::session::Session>, output: CapturedOutput) {
+        let Some(trace) = self.service.trace() else {
+            return;
+        };
+        let text = truncate_chars(&output.text, trace.max_output_chars);
+        let tool = output.tool.clone().unwrap_or_else(|| "model".to_owned());
+        let intent = match &output.tool {
+            Some(tool) => self.pdp.intent_for(tool),
+            None => "model.output".to_owned(),
+        };
+        let context = self.context(session, &intent);
+        let arguments = serde_json::json!({"source": output.source.as_str(), "output": text});
+        let (outcome, judge_us) = self
+            .service
+            .score_background(&trace.adapter, &trace.predicate, &tool, &arguments, &context)
+            .await;
+        let positive = self.positive_label(&trace.predicate);
+        let risk_ppm = match &outcome {
+            JudgeOutcome::Scored(verdict) => positive.as_deref().and_then(|label| verdict.ppm(label)),
+            JudgeOutcome::Failed(_) => None,
+        };
+        let finding_above_ppm = pv_judge::threshold_to_ppm(trace.finding_above).unwrap_or(pv_judge::PPM_ONE);
+        let finding = risk_ppm.is_some_and(|ppm| ppm > finding_above_ppm);
+        if finding {
+            self.metrics
+                .counter(
+                    &format!(
+                        "pv_judge_trace_findings_total{{source=\"{}\"}}",
+                        output.source.as_str()
+                    ),
+                    "Recorded outputs the semantic judge flagged",
+                )
+                .inc();
+        }
+        let record = pv_judge::OutcomeRecord::from_outcome(
+            &outcome,
+            &trace.adapter,
+            self.service.adapter_kind(&trace.adapter),
+        );
+        self.emit(
+            session,
+            serde_json::json!({
+                "kind": "trace",
+                "source": output.source.as_str(),
+                "tool": output.tool,
+                "finding": finding,
+                "risk_ppm": risk_ppm,
+                "finding_above_ppm": finding_above_ppm,
+                "output_sha256": pv_core::digest::sha256_hex(output.text.as_bytes()),
+                "judge_us": judge_us,
+                "verdict": record,
+            }),
+        );
+    }
+
+    fn positive_label(&self, predicate: &str) -> Option<String> {
+        self.service
+            .background
+            .registry()
+            .get(predicate)
+            .map(|def| def.positive_label.clone())
+    }
+
+    /// The loop breaker's second opinion on an ambiguous step: `Some(true)`
+    /// when the step should count as no progress, `Some(false)` when it
+    /// should count as progress, `None` (keep the breaker's own decision)
+    /// when the delta is outside the ambiguous range or the judge fails.
+    /// Records an `agent.judge` event whenever the judge was asked.
+    pub(crate) async fn second_opinion(
+        &self,
+        session: &Arc<crate::session::Session>,
+        delta: f32,
+        previous: Option<&str>,
+        current: &str,
+    ) -> Option<bool> {
+        let breaker = self.service.breaker()?;
+        let delta_ppm = delta_to_ppm(delta);
+        let low = pv_judge::threshold_to_ppm(breaker.ambiguous_low).ok()?;
+        let high = pv_judge::threshold_to_ppm(breaker.ambiguous_high).ok()?;
+        if !(low..=high).contains(&delta_ppm) {
+            return None;
+        }
+        let context = self.context(session, "model.output");
+        let arguments = serde_json::json!({
+            "previous": previous.map(|text| truncate_chars(text, MAX_LOOP_TEXT_CHARS)),
+            "current": truncate_chars(current, MAX_LOOP_TEXT_CHARS),
+        });
+        let (outcome, judge_us) = self
+            .service
+            .score_background(
+                &breaker.adapter,
+                &breaker.predicate,
+                "model",
+                &arguments,
+                &context,
+            )
+            .await;
+        let looping_above = pv_judge::threshold_to_ppm(breaker.looping_above).unwrap_or(pv_judge::PPM_ONE);
+        let positive = self.positive_label(&breaker.predicate);
+        let opinion = match &outcome {
+            JudgeOutcome::Scored(verdict) => positive
+                .as_deref()
+                .and_then(|label| verdict.ppm(label))
+                .map(|ppm| ppm > looping_above),
+            JudgeOutcome::Failed(_) => None,
+        };
+        self.metrics
+            .counter(
+                &format!(
+                    "pv_judge_breaker_opinions_total{{opinion=\"{}\"}}",
+                    match opinion {
+                        Some(true) => "looping",
+                        Some(false) => "progressing",
+                        None => "unavailable",
+                    }
+                ),
+                "Second opinions the semantic judge gave the loop breaker",
+            )
+            .inc();
+        let record = pv_judge::OutcomeRecord::from_outcome(
+            &outcome,
+            &breaker.adapter,
+            self.service.adapter_kind(&breaker.adapter),
+        );
+        self.emit(
+            session,
+            serde_json::json!({
+                "kind": "breaker",
+                "delta_ppm": delta_ppm,
+                "ambiguous_low_ppm": low,
+                "ambiguous_high_ppm": high,
+                "looping": opinion,
+                "judge_us": judge_us,
+                "verdict": record,
+            }),
+        );
+        opinion
+    }
+}
+
+/// A breaker delta (0 to 2) in parts per million, saturating.
+fn delta_to_ppm(delta: f32) -> u32 {
+    if !delta.is_finite() || delta <= 0.0 {
+        return 0;
+    }
+    pv_judge::prob_to_ppm(f64::from(delta).min(1.0))
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => text.get(..cut).unwrap_or(text).to_owned(),
+        None => text.to_owned(),
+    }
 }
 
 #[cfg(test)]

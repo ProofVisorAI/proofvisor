@@ -205,6 +205,7 @@ Bridge OCSF topics map to ingest events as follows:
 | `agent.compression` | `audit` | Body includes metrics including pruned token count when present. |
 | `agent.identity` | `audit` | Identity validation evidence. |
 | `agent.receipt` | skipped | Receipts are uploaded separately from the receipt spool. |
+| `agent.judge` | skipped | Semantic-judge findings are not uploaded; read them from the Bridge (`pvctl event-tail --topic agent.judge`). |
 
 `pvctl setup` can create the console config for you. At the end of the
 guided setup, answer yes to "Connect to the hosted console?", accept or
@@ -540,6 +541,10 @@ state store and are shared.
 | `pv_judge_decisions_total{mode="…",decision="…",enforced="…"}` | Sudden change in the `deny` or `ask` share | The judge's behaviour shifted (new traffic, a model change, drift). In shadow mode this is the would-have-blocked rate. |
 | `pv_judge_pilot_cap_reached_total` | Any increase | The pilot's daily block cap was reached and score-based blocks are being let through for the rest of the day. |
 | `pv_judge_drift_tripped` (gauge) | > 0 | A predicate is in ask-by-default mode after the calibration drift check. Recalibrate, then reset it. |
+| `pv_judge_trace_findings_total{source="…"}` | Sudden increase | Recorded tool or model outputs the judge flagged (for example instructions planted in a tool response). Read the `agent.judge` events for the sessions involved. |
+| `pv_judge_breaker_opinions_total{opinion="unavailable"}` | Sustained rate > 0 | The judge could not give the loop breaker its second opinion; the breaker is deciding alone. |
+| `pv_judge_events_dropped_total{kind="…"}` | Any increase | An `agent.judge` event was dropped because the audit queue was full. The decision it described still applied. |
+| `pv_judge_rules_repinned_total` | Sudden increase | Compression is cutting standing rules from long conversations and the harness is appending them back. |
 | `pv_judge_drift_persist_failures_total` | Any increase | A drift switch or reset could not be saved to `[judge.drift] state_file`; it applies now but may not survive a restart. Check the file's directory and disk. |
 | `pv_workload_assertions_rejected_total{reason="…"}` | Sustained rate > 0 of `chain`, `signature`, or `replay` | Workload identity assertions are refused. `chain` usually means `[workload_identity].ca_file` does not match the foundation's instance identity CA; `replay` or `signature` can indicate a stolen or forged assertion; `unregistered` means an app has no `[[workload_identities]]` entry. |
 

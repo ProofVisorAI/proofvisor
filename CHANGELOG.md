@@ -304,6 +304,19 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- **Semantic judge: trace judging, the loop breaker's second opinion,
+  standing-rule re-pinning, and `agent.judge` events.** `[judge.trace]`
+  judges recorded tool and model outputs after the fact, off the request
+  path; `[judge.breaker]` asks the judge whether an ambiguous step is a
+  loop; `[[judge.standing_rules]]` appends a rule back when compression
+  cut its text. Findings, second opinions, and shadow-mode would-be
+  blocks are published on a new OCSF class, `agent.judge` (class_uid
+  9907), and recorded as ATIF steps, so receipts cover them. Background
+  judging has its own concurrency limit (`background_max_concurrency`).
+  An embedded Bridge created before the topic existed gains it at
+  startup when `[judge]` is set. **Rollback:** an earlier build cannot
+  finalize a session whose journal contains an `agent.judge` record;
+  let open sessions close before rolling back.
 - **Semantic judge (`[judge]`, new crate `pv-judge`).** Tools listed
   under `[[judge.tools]]` are scored on named, versioned predicates
   (`arg_matches_task@1`, `child_uses_parent_entitlement@1`,

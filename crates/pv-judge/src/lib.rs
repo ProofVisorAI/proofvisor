@@ -49,7 +49,8 @@ pub use model::{
     SessionContext, Verdict, PPM_ONE,
 };
 pub use predicate::{
-    PredicateDef, PredicateRegistry, ARG_MATCHES_TASK, CHILD_USES_PARENT_ENTITLEMENT, MEMORY_WRITE_SAFE,
+    PredicateDef, PredicateRegistry, ARG_MATCHES_TASK, CHILD_USES_PARENT_ENTITLEMENT, LOOP_PROGRESS,
+    MEMORY_WRITE_SAFE, OUTPUT_SAFE,
 };
 pub use record::{JudgeMode, JudgeRecord, OutcomeRecord};
 pub use thresholds::{

@@ -172,41 +172,37 @@ impl SessionLoopState {
         step_tokens: u64,
         nearest_similarity: Option<f32>,
     ) -> BreakerVerdict {
+        self.observe_embedding_with_opinion(embedding, step_tokens, nearest_similarity, None)
+    }
+
+    /// The delta [`Self::observe_embedding_with_similarity`] would compute
+    /// for this embedding right now, without recording anything. A caller
+    /// that wants a second opinion on an ambiguous step reads it first,
+    /// then records the step with [`Self::observe_embedding_with_opinion`]
+    /// (the worker processes one session's steps in order, so nothing
+    /// changes in between).
+    pub fn peek_delta(&self, embedding: &[f32], nearest_similarity: Option<f32>) -> f32 {
+        let inner = self.inner.lock();
+        step_delta(&inner.recent_embeddings, embedding, nearest_similarity)
+    }
+
+    /// Same as [`Self::observe_embedding_with_similarity`], except that
+    /// `near_zero`, when given, replaces the "delta below epsilon"
+    /// decision for this step: `Some(true)` counts it as no progress,
+    /// `Some(false)` as progress. The delta itself is still computed and
+    /// reported.
+    pub fn observe_embedding_with_opinion(
+        &self,
+        embedding: Vec<f32>,
+        step_tokens: u64,
+        nearest_similarity: Option<f32>,
+        near_zero: Option<bool>,
+    ) -> BreakerVerdict {
         let mut inner = self.inner.lock();
         inner.tokens_consumed = inner.tokens_consumed.saturating_add(step_tokens);
 
-        // Fail-closed on non-finite or all-zero embeddings: a hostile
-        // or misconfigured embedder can produce NaN/Inf vectors (any
-        // arithmetic through `cosine`'s clamp path would return NaN,
-        // and NaN < delta_epsilon is false, so the streak resets on
-        // every step and the breaker never trips). An all-zero vector
-        // is the ONNX embedder's error fallback — treating it as
-        // maximum novelty lets a client with malformed prompts drive
-        // the breaker into "novel-forever" mode. In both cases, treat
-        // the step as a duplicate of the previous one (delta = 0),
-        // which conservatively grows the streak.
-        let embedding_is_finite = embedding.iter().all(|x| x.is_finite());
-        let embedding_is_all_zero = embedding.iter().all(|x| *x == 0.0);
-        let embedding_is_hostile = !embedding_is_finite || embedding_is_all_zero;
-
-        let adjacent_delta = if embedding_is_hostile {
-            0.0
-        } else if inner.recent_embeddings.is_empty() {
-            1.0 // first step: maximum novelty by definition
-        } else {
-            // Minimum delta against ANY recent embedding — catches
-            // A,B,A,B alternation, not only exact-adjacent repeats.
-            inner
-                .recent_embeddings
-                .iter()
-                .map(|prev| 1.0 - cosine(prev, &embedding))
-                .fold(f32::INFINITY, f32::min)
-        };
-        let delta = nearest_similarity
-            .filter(|similarity| similarity.is_finite())
-            .map_or(adjacent_delta, |similarity| {
-                adjacent_delta.min(1.0 - similarity.clamp(-1.0, 1.0))
-            });
+        let embedding_is_hostile = is_hostile(&embedding);
+        let delta = step_delta(&inner.recent_embeddings, &embedding, nearest_similarity);
         // Only record the embedding for future comparisons when it's
         // usable — a stored NaN vector would poison every subsequent
         // step's cosine.
@@ -217,7 +213,7 @@ impl SessionLoopState {
             }
         }
 
-        if delta < self.cfg.delta_epsilon {
+        if near_zero.unwrap_or(delta < self.cfg.delta_epsilon) {
             inner.streak += 1;
         } else {
             inner.streak = 0;
@@ -269,6 +265,47 @@ impl SessionLoopState {
     }
 }
 
+/// Fail-closed on non-finite or all-zero embeddings: a hostile or
+/// misconfigured embedder can produce NaN/Inf vectors (any arithmetic
+/// through `cosine`'s clamp path would return NaN, and NaN <
+/// delta_epsilon is false, so the streak resets on every step and the
+/// breaker never trips). An all-zero vector is the ONNX embedder's error
+/// fallback — treating it as maximum novelty lets a client with
+/// malformed prompts drive the breaker into "novel-forever" mode. In both
+/// cases the step counts as a duplicate of the previous one (delta = 0),
+/// which conservatively grows the streak.
+fn is_hostile(embedding: &[f32]) -> bool {
+    let embedding_is_finite = embedding.iter().all(|x| x.is_finite());
+    let embedding_is_all_zero = embedding.iter().all(|x| *x == 0.0);
+    !embedding_is_finite || embedding_is_all_zero
+}
+
+/// Semantic delta of a step against the recent window (and the optional
+/// nearest prior-step similarity from a distributed vector engine).
+fn step_delta(
+    recent: &std::collections::VecDeque<Vec<f32>>,
+    embedding: &[f32],
+    nearest_similarity: Option<f32>,
+) -> f32 {
+    let adjacent_delta = if is_hostile(embedding) {
+        0.0
+    } else if recent.is_empty() {
+        1.0 // first step: maximum novelty by definition
+    } else {
+        // Minimum delta against ANY recent embedding — catches
+        // A,B,A,B alternation, not only exact-adjacent repeats.
+        recent
+            .iter()
+            .map(|prev| 1.0 - cosine(prev, embedding))
+            .fold(f32::INFINITY, f32::min)
+    };
+    nearest_similarity
+        .filter(|similarity| similarity.is_finite())
+        .map_or(adjacent_delta, |similarity| {
+            adjacent_delta.min(1.0 - similarity.clamp(-1.0, 1.0))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -281,6 +318,31 @@ mod tests {
             min_tokens: 1000,
             ..BreakerConfig::default()
         }
+    }
+
+    #[test]
+    fn peek_reports_the_delta_without_recording_and_an_opinion_overrides_the_decision() {
+        let e = HashEmbedder::default();
+        let s = SessionLoopState::new(cfg());
+        let step = e.embed("check the inventory service for SKU 12345");
+        assert!(
+            (s.peek_delta(&step, None) - 1.0).abs() < 1e-6,
+            "first step is maximum novelty"
+        );
+        s.observe_embedding(step.clone(), 600);
+        let peeked = s.peek_delta(&step, None);
+        assert!(peeked < 0.01, "an identical step has delta ~0: {peeked}");
+        // Peeking twice changes nothing.
+        assert!((s.peek_delta(&step, None) - peeked).abs() < 1e-6);
+        // A second opinion says the repeated step is progress: no streak.
+        let v = s.observe_embedding_with_opinion(step.clone(), 600, None, Some(false));
+        assert!(matches!(v, BreakerVerdict::Progressing { .. }), "{v:?}");
+        // And that a novel step is a loop: the streak grows to a trip.
+        let mut last = None;
+        for text in ["alpha one", "bravo two", "charlie three"] {
+            last = Some(s.observe_embedding_with_opinion(e.embed(text), 600, None, Some(true)));
+        }
+        assert!(matches!(last, Some(BreakerVerdict::Tripped { .. })), "{last:?}");
     }
 
     #[test]

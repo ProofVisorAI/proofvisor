@@ -70,6 +70,10 @@ pub struct Session {
     journal_index: AtomicU64,
     /// Loop-breaker state.
     pub loop_state: pv_loopdetect::SessionLoopState,
+    /// The model's previous output (bounded), for the semantic judge's
+    /// second opinion on the loop breaker. Kept only while a judge is
+    /// attached.
+    last_model_output: parking_lot::Mutex<Option<String>>,
     /// Signed workflow: incremental event chain.
     pub chain: Mutex<EventChain>,
     /// Unsigned workflow: ATIF steps.
@@ -239,6 +243,7 @@ impl Session {
             seq: AtomicU64::new(0),
             journal_index: AtomicU64::new(0),
             loop_state: pv_loopdetect::SessionLoopState::new(breaker),
+            last_model_output: parking_lot::Mutex::new(None),
             totals: Totals::default(),
             last_activity_ms: AtomicU64::new(pv_core::time::now_ms()),
             last_activity_instant: Mutex::new(Instant::now()),
@@ -712,6 +717,20 @@ impl Session {
             })),
         };
         *self.atif.lock() = pv_atif::TrajectoryBuilder::new(agent, Some(self.id.clone()));
+    }
+
+    /// The model's previous output, when recorded.
+    pub(crate) fn last_model_output(&self) -> Option<String> {
+        self.last_model_output.lock().clone()
+    }
+
+    /// Record the model's latest output (cut to the judge's limit).
+    pub(crate) fn set_last_model_output(&self, text: &str) {
+        let bounded = match text.char_indices().nth(crate::judge::MAX_LOOP_TEXT_CHARS) {
+            Some((cut, _)) => text.get(..cut).unwrap_or(text),
+            None => text,
+        };
+        *self.last_model_output.lock() = Some(bounded.to_owned());
     }
 
     pub(crate) fn worker_job_started(&self) {

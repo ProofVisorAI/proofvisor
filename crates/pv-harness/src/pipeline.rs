@@ -235,6 +235,8 @@ pub struct AppState {
     /// Semantic judge, when `[judge]` is set. The sandbox carries the
     /// matching threshold policy.
     pub judge: Option<Arc<crate::judge::JudgeService>>,
+    /// The judge's hooks, shared with the audit worker.
+    pub(crate) judge_hooks: crate::judge::SharedJudgeHooks,
 }
 
 /// Pre-resolved metric handles for the request hot path so the
@@ -1924,6 +1926,7 @@ impl AppState {
             None
         };
         let content_sink = crate::content::SharedContentSink::default();
+        let judge_hooks = crate::judge::SharedJudgeHooks::default();
         let worker = crate::worker::spawn_worker_with_outputs(
             config.worker_channel_capacity,
             Arc::clone(&bridge),
@@ -1935,6 +1938,7 @@ impl AppState {
             crate::content::AuditOutputs {
                 redaction: redaction.clone(),
                 content: Arc::clone(&content_sink),
+                judge: Arc::clone(&judge_hooks),
             },
         );
         let finalizer = Finalizer::with_bridge(
@@ -2138,6 +2142,7 @@ impl AppState {
             content_sink,
             workload,
             judge: None,
+            judge_hooks,
         })
     }
 
@@ -2146,6 +2151,12 @@ impl AppState {
     /// thresholds the judge's verdicts meet are the configured ones.
     #[must_use]
     pub fn with_judge(mut self, judge: Arc<crate::judge::JudgeService>) -> Self {
+        *self.judge_hooks.write() = Some(Arc::new(crate::judge::JudgeHooks::new(
+            Arc::clone(&judge),
+            self.worker.clone(),
+            Arc::clone(&self.pdp),
+            Arc::clone(&self.metrics),
+        )));
         self.judge = Some(judge);
         self
     }
@@ -2415,8 +2426,8 @@ impl AppState {
         };
 
         let stage = Instant::now();
-        let compression = if self.config.compression_enabled {
-            pv_compress::compress(
+        let (compression, repinned_rules) = if self.config.compression_enabled {
+            let outcome = pv_compress::compress(
                 &payload,
                 &pv_compress::CompressionConfig {
                     // Authenticate compression stubs under a key derived
@@ -2426,14 +2437,18 @@ impl AppState {
                     marker_key: Some(pv_compress::derive_marker_key(&self.journal_key)),
                     ..pv_compress::CompressionConfig::default()
                 },
-            )
+            );
+            self.repin_standing_rules(&payload, outcome)
         } else {
-            pv_compress::CompressionOutcome {
-                payload,
-                tokens_before: raw_prompt_tokens,
-                tokens_after: raw_prompt_tokens,
-                changed: false,
-            }
+            (
+                pv_compress::CompressionOutcome {
+                    payload,
+                    tokens_before: raw_prompt_tokens,
+                    tokens_after: raw_prompt_tokens,
+                    changed: false,
+                },
+                Vec::new(),
+            )
         };
         self.observe_stage("compression", stage);
 
@@ -2600,6 +2615,11 @@ impl AppState {
                     "tokens_before": compression.tokens_before,
                     "tokens_after": compression.tokens_after,
                 });
+                // Standing rules compression had cut and that were
+                // appended back.
+                if let (false, Some(object)) = (repinned_rules.is_empty(), record.as_object_mut()) {
+                    object.insert("repinned_rules".to_owned(), serde_json::json!(repinned_rules));
+                }
                 // Which pushed transforms rewrote the request, and how
                 // many matches each replaced. The matched text is gone.
                 if let (false, Some(object)) = (transforms.is_empty(), record.as_object_mut()) {
@@ -3864,6 +3884,23 @@ impl AppState {
                 );
             }
         }
+        // Shadow mode: a would-be block is also its own `agent.judge`
+        // event, so a SIEM can follow the rollout on that topic alone.
+        if let Some(record) = judge_record
+            .as_ref()
+            .filter(|record| record.mode == pv_judge::JudgeMode::Shadow && record.would_block)
+        {
+            if let Some(hooks) = self.judge_hooks.read().clone() {
+                hooks.emit(
+                    &session,
+                    serde_json::json!({
+                        "kind": "shadow",
+                        "tool": parsed_call.as_ref().map(|request| request.tool.clone()),
+                        "record": record,
+                    }),
+                );
+            }
+        }
         let tool_call_id = parsed_call
             .as_ref()
             .and_then(|request| request.id.as_ref())
@@ -3935,6 +3972,44 @@ impl AppState {
         });
         drop(admission);
         Ok((verdict, session))
+    }
+
+    /// Context integrity after compression: a standing rule whose text the
+    /// original request carried but the compressed one no longer does is
+    /// appended back as a system message, and the token count is
+    /// recomputed so budgets and the receipt charge what is forwarded.
+    /// Exact text, deterministic, no judge call on the chat path.
+    fn repin_standing_rules(
+        &self,
+        original: &Value,
+        mut outcome: pv_compress::CompressionOutcome,
+    ) -> (pv_compress::CompressionOutcome, Vec<String>) {
+        let Some(judge) = &self.judge else {
+            return (outcome, Vec::new());
+        };
+        if !outcome.changed || judge.standing_rules().is_empty() {
+            return (outcome, Vec::new());
+        }
+        let mut repinned = Vec::new();
+        for rule in judge.standing_rules() {
+            if !messages_contain(original, &rule.text) || messages_contain(&outcome.payload, &rule.text) {
+                continue;
+            }
+            if let Some(messages) = outcome.payload.get_mut("messages").and_then(Value::as_array_mut) {
+                messages.push(serde_json::json!({"role": "system", "content": rule.text}));
+                repinned.push(rule.id.clone());
+            }
+        }
+        if !repinned.is_empty() {
+            outcome.tokens_after = pv_core::tokens::approx_tokens_json(&outcome.payload);
+            self.metrics
+                .counter(
+                    "pv_judge_rules_repinned_total",
+                    "Standing rules appended back after context compression cut them",
+                )
+                .add(u64::try_from(repinned.len()).unwrap_or(u64::MAX));
+        }
+        (outcome, repinned)
     }
 
     /// Score a tagged tool's call before the session admission lock, when
@@ -4872,6 +4947,25 @@ fn delegation_parents(validated: &pv_identity::ValidatedIdentity) -> Vec<String>
         actor = claim.act.as_deref();
     }
     parents
+}
+
+/// True when any chat message's text contains `needle` (plain string
+/// content, or the `text` of content parts).
+fn messages_contain(payload: &Value, needle: &str) -> bool {
+    payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|message| match message.get("content") {
+            Some(Value::String(text)) => text.contains(needle),
+            Some(Value::Array(parts)) => parts.iter().any(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains(needle))
+            }),
+            _ => false,
+        })
 }
 
 /// A tagged call scored before the session admission lock.

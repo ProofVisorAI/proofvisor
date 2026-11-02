@@ -2448,6 +2448,16 @@ impl HarnessConfig {
         }
         if let Some(judge) = &self.judge {
             judge.collect_errors(errors);
+            if let Some(range) = &judge.breaker {
+                let epsilon = f64::from(self.breaker.delta_epsilon);
+                if !(range.ambiguous_low..=range.ambiguous_high).contains(&epsilon) {
+                    errors.push(format!(
+                        "[judge.breaker] ambiguous range [{}, {}] does not contain the loop \
+                         breaker's delta_epsilon {epsilon}; the second opinion would never be asked",
+                        range.ambiguous_low, range.ambiguous_high
+                    ));
+                }
+            }
         }
         if let Some(workload) = &self.workload_identity {
             if workload.ca_file.trim().is_empty() {

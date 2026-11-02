@@ -121,6 +121,9 @@ pub struct AuditOutputs {
     pub redaction: Option<Arc<pv_redact::RedactionEngine>>,
     /// Optional content dispatcher.
     pub content: SharedContentSink,
+    /// The semantic judge's hooks, when attached (trace judging and the
+    /// loop breaker's second opinion).
+    pub judge: crate::judge::SharedJudgeHooks,
 }
 
 impl AuditOutputs {
@@ -129,6 +132,7 @@ impl AuditOutputs {
         Self {
             redaction,
             content: SharedContentSink::default(),
+            judge: crate::judge::SharedJudgeHooks::default(),
         }
     }
 
