@@ -109,13 +109,14 @@ chat-completions format.
 
 ## 4. The CLI (`pvctl`)
 
-Twenty-one subcommands, none of them stubs: guided `setup`, `init` with
+Twenty-two subcommands, none of them stubs: guided `setup`, `init` with
 presets, `doctor`, `health`, `start`, `sidecar`, `keygen`, `pubkey`,
 `receipt-locate`, `spool-prune`, `receipt-verify`, `atif-validate`,
 `manifest-validate`, `bridge-provision`, `event-tail`,
 `session-promote`, `token-revoke`, `instance-revoke`, `config-validate`,
 `console-sync` (uploads evidence to the hosted console, with a watch
-mode) and `loadgen`.
+mode), `loadgen` and `judge-calibrate` (measures a semantic-judge model
+on a labelled set and fails below set floors; see section 11).
 
 ## 5. The hosted console (proofvisor.com/app and api.proofvisor.com)
 
@@ -346,6 +347,34 @@ with demonstration data, which is what the public site shows by default.
   policy and budget enforcement, relay, receipts) were reviewed line by
   line as well; the findings are fixed (section 10).
 
+- **Semantic judge: what is not proven or not built.** These items
+  belong to section 11.
+  - No trained judge model and no labelled data set exist yet. The
+    tests use a small toy ONNX classifier, and the scenario script uses
+    a stand-in judge service that speaks the cloud contract.
+  - No real-binary test covers three situations:
+    - after a restart, outputs that were already judged are not judged
+      again;
+    - an embedded Bridge created by an older build gains the
+      `agent.judge` topic, and a daemon with an operator's own manifest
+      that lacks it refuses to start;
+    - shutdown waits for a background verdict still on its way.
+
+    Tests inside the process cover the code involved, but not these
+    situations end to end.
+  - The hosted console does not receive `agent.judge` events;
+    `console-sync` skips them.
+  - Standing rules are put back by exact text, not by a judge
+    predicate per rule as the build specification proposed, and not
+    through the loop breaker's inject path.
+  - The breaker's second opinion runs inside the audit worker, so a
+    slow judge call also delays the audit records of other sessions
+    that share that worker.
+  - Tools are tagged for review in `[[judge.tools]]`, not inside their
+    schema files.
+  - The prior-denial log, the review queue and the drift state are kept
+    per instance.
+
 ## 8. Verification record for 2026-10-31 and 2026-11-01
 
 All on the merged `integration/all` branch. Every row was rerun on
@@ -495,3 +524,33 @@ of 55 with the rebuilt daemon and `pvctl`; SAML browser suite 8 of 8;
 console browser suite all checks; Redis contract (8) and revocation (7)
 suites against a live single node and a live six-node cluster; the
 daemon's AuthZEN client against the public Topaz and Cerbos servers.
+
+## 11. Semantic judge (added on 2026-11-01)
+
+The judge scores questions that schemas and rules cannot answer, such
+as "do these arguments fit the agent's task?", and returns a probability
+for each label. Policy turns the probabilities into allow, ask or deny,
+and the signed audit trail records every verdict. The configuration is
+in `docs/reference/CONFIGURATION.md` (section "Semantic judge") and the
+runbook in `docs/reference/OPERATIONS.md`. `scripts/judge-scenarios.py`
+runs 17 scenarios against the release binaries, with a stand-in model
+provider, billing backend and judge service. The numbers in the table
+refer to those scenarios.
+
+| Feature | Proof |
+|---|---|
+| Tool calls on `/v1/mcp` for tools listed in `[[judge.tools]]` are scored after the schema gate and before policy; other tools take the same path as before. | `e2e_judge.rs`; scenarios 1 and 7a |
+| Thresholds and WASM policies (interface version 2, `evaluate_v2`) decide allow, ask (`APPROVAL_REQUIRED`) or deny (`JUDGE_DENIED`), naming the predicate. | `e2e_judge.rs`; version 2 policies in `e2e_judge_edges.rs` and `e2e_judge_full_stack.rs`; scenarios 2 and 3 |
+| A delegated agent retrying what an agent above it was refused is caught from the session's recorded refusals. | `e2e_judge.rs`; scenario 4 |
+| Timeouts, outages, malformed answers, saturation and model-pin mismatches refuse or hold the call, never allow it silently. | `e2e_judge_edges.rs`, `e2e_process_restart.rs` (`judge_enforces_across_kill_and_restart_and_fails_closed_when_it_dies`); scenarios 5, 6 and 7b |
+| Each verdict (all label probabilities, the model pin, the latency, the threshold that decided) is in the signed event chain and the trajectory; editing it breaks the receipt. | `e2e_judge.rs` (`the_receipt_signs_the_verdict_and_tampering_breaks_it`), `e2e_judge_full_stack.rs`; scenario 9 |
+| A local ONNX scorer refuses to load a model or tokenizer whose hash differs from its pin; a cloud judge needs a per-tool opt-in and receives redacted input. | `local_onnx.rs`, `cloud_contract.rs`; scenario 9 (no personal data or prompt text reached the judge) |
+| `pvctl judge-calibrate` and a build-time test enforce a measured floor of separation between labels. | `calibrate.rs`, `e2e_judge_cli.rs`; scenario 11 |
+| Reviewed verdicts feed a drift check by confidence band; when accuracy stops rising with confidence, judged calls are held for approval, and this survives a restart. | `e2e_judge.rs`; scenario 8 |
+| Shadow mode scores and never blocks, and publishes each would-be block as an `agent.judge` event; a capped pilot blocks at most a set number of calls per tool per day. | `e2e_judge_background.rs`; scenarios 10, 12 and 14 |
+| Recorded tool outputs and model answers are judged in the background, and findings are published as `agent.judge` events (OCSF class 9907) that the receipt covers. A slow verdict does not delay the reply, and a session close waits for it. | `e2e_judge_background.rs`; scenario 13 |
+| The loop breaker asks the judge when a step's change is ambiguous: repetition that is progress is spared, and a real loop trips the breaker. | `e2e_judge_background.rs`, `crates/pv-loopdetect` unit tests; scenario 16 |
+| A standing rule that compression cut is put back after the leading system messages, and the token count is recomputed. | `e2e_judge_background.rs`; scenario 15 |
+| An embedded Bridge created before the `agent.judge` topic existed gains it at start when `[judge]` is set. | `crates/pv-bridge/tests/embedded_contract.rs` (`missing_topics_are_added_to_an_existing_bridge`) |
+
+What is not proven or not built is listed in section 7.

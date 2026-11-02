@@ -120,6 +120,12 @@ pub struct Session {
     pending_jobs: AtomicU64,
     /// Notification used by finalization to await a drained worker queue.
     jobs_drained: tokio::sync::Notify,
+    /// Background semantic-judge verdicts not yet recorded. Kept apart
+    /// from `pending_jobs` so that requests waiting for their own audit
+    /// record never wait for the judge; only finalization waits for both.
+    background_jobs: AtomicU64,
+    /// Notification used by finalization to await background verdicts.
+    background_drained: tokio::sync::Notify,
     /// Set when an upstream action could not be captured completely.
     capture_failed: AtomicU64,
     /// RAM-cliff guard: count of unsigned ATIF steps
@@ -258,6 +264,8 @@ impl Session {
             promoted: AtomicU64::new(0),
             pending_jobs: AtomicU64::new(0),
             jobs_drained: tokio::sync::Notify::new(),
+            background_jobs: AtomicU64::new(0),
+            background_drained: tokio::sync::Notify::new(),
             capture_failed: AtomicU64::new(0),
             atif_steps: AtomicU64::new(0),
             lifecycle: std::sync::atomic::AtomicU8::new(SessionState::Open as u8),
@@ -770,6 +778,37 @@ impl Session {
             }
             notified.await;
         }
+    }
+
+    pub(crate) fn background_job_started(&self) {
+        self.background_jobs.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn background_job_finished(&self) {
+        if self.background_jobs.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.background_drained.notify_waiters();
+        }
+    }
+
+    /// Wait until every background semantic-judge verdict for this
+    /// session has been handed to the audit worker. A verdict submits its
+    /// event before it stops counting here, so waiting for this and then
+    /// for [`Self::wait_for_worker_jobs`] covers the recorded verdict too.
+    pub async fn wait_for_background_jobs(&self) {
+        loop {
+            let notified = self.background_drained.notified();
+            let mut notified = std::pin::pin!(notified);
+            notified.as_mut().enable();
+            if self.background_jobs.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Number of background semantic-judge verdicts not yet recorded.
+    pub fn background_jobs_count(&self) -> u64 {
+        self.background_jobs.load(Ordering::Acquire)
     }
 
     /// Number of forwarded chat responses currently streaming.

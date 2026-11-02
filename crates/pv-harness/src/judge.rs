@@ -1560,22 +1560,23 @@ pub async fn calibrate_from_config(
 // and `agent.judge` events.
 // ---------------------------------------------------------------------------
 
-/// Holds a session open (its pending-job count) while a background
-/// verdict is on its way, so a close waits for it and the verdict lands
-/// inside what the session's receipt signs. Released on drop, whatever
+/// Holds a session open (its background-verdict count) while a
+/// background verdict is on its way, so a close waits for it and the
+/// verdict lands inside what the session's receipt signs. The count is
+/// not the worker's pending-job count, which requests wait on. Released on drop, whatever
 /// happens to the task (completion, panic, cancellation at shutdown).
 pub(crate) struct PendingGuard(Arc<crate::session::Session>);
 
 impl PendingGuard {
     pub(crate) fn new(session: Arc<crate::session::Session>) -> Self {
-        session.worker_job_started();
+        session.background_job_started();
         Self(session)
     }
 }
 
 impl Drop for PendingGuard {
     fn drop(&mut self) {
-        self.0.worker_job_finished();
+        self.0.background_job_finished();
     }
 }
 
@@ -1779,6 +1780,11 @@ impl JudgeHooks {
         current: &str,
     ) -> Option<bool> {
         let breaker = self.service.breaker()?;
+        // With no earlier answer there is nothing to compare, and a delta
+        // above 1 (opposite directions) is plain novelty, not ambiguity.
+        if previous.is_none() || !delta.is_finite() || delta > 1.0 {
+            return None;
+        }
         let delta_ppm = delta_to_ppm(delta);
         let low = pv_judge::threshold_to_ppm(breaker.ambiguous_low).ok()?;
         let high = pv_judge::threshold_to_ppm(breaker.ambiguous_high).ok()?;

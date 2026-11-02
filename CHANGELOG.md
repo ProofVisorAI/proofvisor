@@ -308,8 +308,8 @@ exercised against release binaries in CI on every push
   standing-rule re-pinning, and `agent.judge` events.** `[judge.trace]`
   judges recorded tool and model outputs after the fact, off the request
   path; `[judge.breaker]` asks the judge whether an ambiguous step is a
-  loop; `[[judge.standing_rules]]` appends a rule back when compression
-  cut its text. Findings, second opinions, and shadow-mode would-be
+  loop; `[[judge.standing_rules]]` adds a rule back, after the leading
+  system messages, when compression cut its text. Findings, second opinions, and shadow-mode would-be
   blocks are published on a new OCSF class, `agent.judge` (class_uid
   9907), and recorded as ATIF steps, so receipts cover them. Background
   judging has its own concurrency limit (`background_max_concurrency`).

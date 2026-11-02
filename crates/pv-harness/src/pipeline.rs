@@ -3996,7 +3996,14 @@ impl AppState {
                 continue;
             }
             if let Some(messages) = outcome.payload.get_mut("messages").and_then(Value::as_array_mut) {
-                messages.push(serde_json::json!({"role": "system", "content": rule.text}));
+                // After the leading system messages, never at the end: the
+                // caller's last message is what the audit record captures
+                // as this turn, and what decides whether the model answers.
+                let at = messages
+                    .iter()
+                    .take_while(|message| matches!(message["role"].as_str(), Some("system" | "developer")))
+                    .count();
+                messages.insert(at, serde_json::json!({"role": "system", "content": rule.text}));
                 repinned.push(rule.id.clone());
             }
         }
@@ -4005,7 +4012,7 @@ impl AppState {
             self.metrics
                 .counter(
                     "pv_judge_rules_repinned_total",
-                    "Standing rules appended back after context compression cut them",
+                    "Standing rules pinned back after context compression cut them",
                 )
                 .add(u64::try_from(repinned.len()).unwrap_or(u64::MAX));
         }

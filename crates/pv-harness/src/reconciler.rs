@@ -1018,7 +1018,15 @@ impl Finalizer {
             committed: false,
         };
         session.wait_for_streams().await;
-        session.wait_for_worker_jobs().await;
+        // A queued worker job can start a background verdict, and a
+        // verdict submits a worker job: wait until both counts are zero.
+        loop {
+            session.wait_for_background_jobs().await;
+            session.wait_for_worker_jobs().await;
+            if session.background_jobs_count() == 0 && session.pending_jobs_count() == 0 {
+                break;
+            }
+        }
         if session.capture_failed() {
             self.emit_quarantine_event(&session).await?;
             self.metrics

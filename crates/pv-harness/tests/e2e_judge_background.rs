@@ -293,6 +293,42 @@ async fn upstream(answer: &'static str) -> (String, Arc<Mutex<Vec<Value>>>) {
 // ── Trace judging ───────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_trace_verdict_does_not_delay_the_tool_reply() {
+    let url = backend(INJECTED).await;
+    let mut judge = base_judge();
+    judge.trace = Some(trace());
+    let mock = scripted(Arc::default(), Duration::from_millis(1_800));
+    let h = build(judge, &mock, |config| {
+        config.tool_upstream_url = Some(url);
+        config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
+    });
+    let started = Instant::now();
+    let reply = tool(&h, "t-fast", "unsigned", "read_ticket").await;
+    let elapsed = started.elapsed();
+    assert_eq!(reply.status, 200, "{}", reply.json);
+    // Had the reply waited for the verdict, the verdict would be recorded
+    // by now. This holds however busy the machine is, unless the reply
+    // alone took longer than the judge's 1.8 s.
+    let session = h.state.sessions.get("t-fast").unwrap();
+    assert_eq!(
+        session.background_jobs_count(),
+        1,
+        "the tool reply waited for the background verdict ({elapsed:?})"
+    );
+    assert!(
+        judge_events(&h.bus, "t-fast").is_empty(),
+        "the tool reply came after the verdict ({elapsed:?})"
+    );
+    // The verdict still lands, and the close waits for it.
+    h.state
+        .finalizer
+        .close_session(session, pv_events::StopReason::SessionClosed)
+        .await
+        .unwrap();
+    assert_eq!(judge_events(&h.bus, "t-fast").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tool_outputs_are_judged_and_the_finding_is_in_the_unsigned_trajectory() {
     let url = backend(INJECTED).await;
     let mut judge = base_judge();
@@ -613,9 +649,17 @@ async fn a_standing_rule_cut_by_compression_is_pinned_back() {
     let reply = chat(&h, "r-1", long_conversation(long)).await;
     assert_eq!(reply.status, 200, "{}", reply.json);
     let forwarded = seen.lock()[0].clone();
-    let last = forwarded["messages"].as_array().unwrap().last().unwrap().clone();
-    assert_eq!(last["role"], "system");
-    assert_eq!(last["content"], RULE, "the rule is appended back verbatim");
+    let messages = forwarded["messages"].as_array().unwrap();
+    assert_eq!(
+        messages[1],
+        json!({"role": "system", "content": RULE}),
+        "the rule comes back verbatim, right after the leading system message"
+    );
+    assert_eq!(
+        messages.last().unwrap()["content"],
+        "Continue.",
+        "the caller's last message stays last"
+    );
     assert_eq!(
         forwarded.to_string().matches(RULE).count(),
         1,
@@ -628,6 +672,29 @@ async fn a_standing_rule_cut_by_compression_is_pinned_back() {
         record["tokens_after"],
         pv_core::tokens::approx_tokens_json(&forwarded),
         "tokens are recounted after the re-pin"
+    );
+    // The audit record of the turn is still the caller's message.
+    let session = h.state.sessions.get("r-1").unwrap();
+    let outcome = h
+        .state
+        .finalizer
+        .close_session(session, pv_events::StopReason::SessionClosed)
+        .await
+        .unwrap();
+    let pv_harness::reconciler::FinalizeOutcome::Atif { path } = outcome else {
+        panic!("expected an ATIF file")
+    };
+    let trajectory: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let steps = trajectory["steps"].as_array().unwrap();
+    assert!(
+        steps
+            .iter()
+            .any(|step| step["source"] == "user" && step["message"] == "Continue."),
+        "the recorded turn must be the caller's last message: {steps:?}"
+    );
+    assert!(
+        !steps.iter().any(|step| step["message"] == RULE),
+        "the re-pinned rule must not stand in for the caller's turn"
     );
 
     // A rule compression kept is not duplicated.
@@ -737,4 +804,11 @@ fn background_settings_are_validated() {
     judge.breaker.as_mut().unwrap().ambiguous_high = 0.6;
     config.judge = Some(judge);
     assert!(config.validate().unwrap_err().contains("delta_epsilon"));
+    // A range that ends exactly at the threshold contains it.
+    let mut config = common::leaked_test_config();
+    config.breaker.delta_epsilon = 0.05;
+    let mut judge = breaker_judge();
+    judge.breaker.as_mut().unwrap().ambiguous_high = 0.05;
+    config.judge = Some(judge);
+    assert!(config.validate().is_ok(), "{:?}", config.validate());
 }

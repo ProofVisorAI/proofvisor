@@ -412,7 +412,7 @@ covers running it.
 
 | Phase | Configuration | What happens |
 | --- | --- | --- |
-| Shadow | `mode = "shadow"` | The judge scores every tagged call and never blocks. Each `agent.tool_call` event's `payload.judge.would_block` says whether judge-aware policy would have blocked a call the rest of policy allowed. Compare that against what actually happened before enforcing. |
+| Shadow | `mode = "shadow"` | The judge scores every tagged call and never blocks. Each `agent.tool_call` event's `payload.judge.would_block` says whether judge-aware policy would have blocked a call the rest of policy allowed, and each such call is also published as its own `agent.judge` event (`payload.kind = "shadow"`). Compare that against what actually happened before enforcing. |
 | Capped pilot | `mode = "enforce"` with `[judge.pilot] daily_block_cap` | Policy acts on the verdicts for the tagged tools, but at most `daily_block_cap` score-based blocks per tool per UTC day. Later ones are recorded (`pilot_cap_reached: true`) and let through. Tag only a few tools per design partner. |
 | Scale | `mode = "enforce"`, no `[judge.pilot]` | Widen `[[judge.tools]]` once calibration holds. |
 
@@ -428,6 +428,9 @@ covers running it.
 | Model answers with an unpinned identity (cloud) | Deny, and an error log line. | `JUDGE_UNAVAILABLE` |
 | Local model or tokenizer file does not hash to its pin | The daemon refuses to start and logs the hash it found. | none (boot error) |
 | Local adapter configured in a build without the `onnx` feature | The daemon refuses to start; `pvctl config-validate` reports it. | none (boot error) |
+| Background judge (`[judge.trace]`) fails, times out, or is saturated (`background_max_concurrency` verdicts in flight) | Nothing is blocked. The `agent.judge` event records the failure in its `verdict.status`, with no finding. | none |
+| Breaker second opinion fails | The loop breaker keeps its own decision for that step. | none |
+| Audit queue full when a finding is published | The finding is dropped and counted in `pv_judge_events_dropped_total`. | none |
 
 Shadow mode never blocks, whatever fails; the failure is recorded in
 the verdict's `status`. The process-level test
@@ -544,7 +547,7 @@ state store and are shared.
 | `pv_judge_trace_findings_total{source="…"}` | Sudden increase | Recorded tool or model outputs the judge flagged (for example instructions planted in a tool response). Read the `agent.judge` events for the sessions involved. |
 | `pv_judge_breaker_opinions_total{opinion="unavailable"}` | Sustained rate > 0 | The judge could not give the loop breaker its second opinion; the breaker is deciding alone. |
 | `pv_judge_events_dropped_total{kind="…"}` | Any increase | An `agent.judge` event was dropped because the audit queue was full. The decision it described still applied. |
-| `pv_judge_rules_repinned_total` | Sudden increase | Compression is cutting standing rules from long conversations and the harness is appending them back. |
+| `pv_judge_rules_repinned_total` | Sudden increase | Compression is cutting standing rules from long conversations and the harness is adding them back. |
 | `pv_judge_drift_persist_failures_total` | Any increase | A drift switch or reset could not be saved to `[judge.drift] state_file`; it applies now but may not survive a restart. Check the file's directory and disk. |
 | `pv_workload_assertions_rejected_total{reason="…"}` | Sustained rate > 0 of `chain`, `signature`, or `replay` | Workload identity assertions are refused. `chain` usually means `[workload_identity].ca_file` does not match the foundation's instance identity CA; `replay` or `signature` can indicate a stolen or forged assertion; `unregistered` means an app has no `[[workload_identities]]` entry. |
 

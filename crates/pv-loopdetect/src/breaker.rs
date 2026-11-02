@@ -190,7 +190,8 @@ impl SessionLoopState {
     /// `near_zero`, when given, replaces the "delta below epsilon"
     /// decision for this step: `Some(true)` counts it as no progress,
     /// `Some(false)` as progress. The delta itself is still computed and
-    /// reported.
+    /// reported. An unusable embedding (non-finite or all zero) always
+    /// counts as no progress, whatever `near_zero` says.
     pub fn observe_embedding_with_opinion(
         &self,
         embedding: Vec<f32>,
@@ -213,6 +214,13 @@ impl SessionLoopState {
             }
         }
 
+        // An unusable embedding always counts as no progress (fail
+        // closed); no opinion can turn it into progress.
+        let near_zero = if embedding_is_hostile {
+            Some(true)
+        } else {
+            near_zero
+        };
         if near_zero.unwrap_or(delta < self.cfg.delta_epsilon) {
             inner.streak += 1;
         } else {
@@ -343,6 +351,19 @@ mod tests {
             last = Some(s.observe_embedding_with_opinion(e.embed(text), 600, None, Some(true)));
         }
         assert!(matches!(last, Some(BreakerVerdict::Tripped { .. })), "{last:?}");
+    }
+
+    #[test]
+    fn an_opinion_cannot_turn_an_unusable_embedding_into_progress() {
+        let s = SessionLoopState::new(cfg());
+        let dimension = HashEmbedder::default().embed("x").len();
+        for unusable in [vec![0.0; dimension], vec![f32::NAN; dimension]] {
+            let v = s.observe_embedding_with_opinion(unusable, 600, None, Some(false));
+            assert!(
+                !matches!(v, BreakerVerdict::Progressing { .. }),
+                "an unusable embedding counted as progress: {v:?}"
+            );
+        }
     }
 
     #[test]

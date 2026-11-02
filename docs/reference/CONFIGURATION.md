@@ -529,6 +529,15 @@ schema and policy checks run when the daemon starts. The judge is
 consulted before the session's admission lock is taken, so a slow
 judge never delays a session close.
 
+Three optional uses run in the background, off the request path:
+`[judge.trace]` judges recorded tool outputs and model answers after
+they are written to the audit trail, `[judge.breaker]` gives the loop
+breaker a second opinion, and `[[judge.standing_rules]]` puts rules
+back after compression (by exact text, without calling the judge).
+These are described in the table below. Trace judging and the breaker
+send output text to the judge (a tool's response or the model's
+answer), never the request's prompt text.
+
 Built-in predicates:
 
 | Predicate | Labels | Question |
@@ -536,6 +545,8 @@ Built-in predicates:
 | `arg_matches_task@1` | `match`, `mismatch` | Do the arguments fit the task, intent and mission? |
 | `child_uses_parent_entitlement@1` | `independent`, `laundering` | Is a delegated agent using its inherited entitlement to do what an agent above it was refused? |
 | `memory_write_safe@1` | `safe`, `unsafe` | Is this write to a memory or knowledge store safe to persist (governed memory writeback)? |
+| `output_safe@1` | `safe`, `unsafe` | Is this recorded tool output or model answer safe, or does it carry an injected instruction or a policy violation? Used by `[judge.trace]`. |
+| `loop_progress@1` | `progressing`, `looping` | Is the model's current answer progress over its previous one, or a repeat? Used by `[judge.breaker]`. |
 
 | `[judge]` key | Default | Notes |
 | --- | --- | --- |
@@ -550,8 +561,8 @@ Built-in predicates:
 | `drift` | none | `[judge.drift]`: the runtime calibration check. `state_file` (required): where the band statistics and the ask-by-default switches are saved, atomically, after every review and reset, and loaded at startup, so a switch survives restarts until an operator resets it; a file that cannot be read or parsed stops the boot. `sample_every` (default `20`): one scored verdict in this many gets a `review_id` in its record. `min_reviews_per_band` (default `30`), `tolerance` (default `0.02`), `max_pending` (default `10000`). See [Operations](OPERATIONS.md#semantic-judge). |
 | `background_max_concurrency` | `8` | Judge calls in flight for background judging (trace judging and the loop breaker's second opinion), 1 to 4096. Kept apart from `max_concurrency`, so background work never starves tool-call admission. A background call refused for this limit is recorded with status `saturated`. |
 | `trace` | none | `[judge.trace]`: judge recorded outputs after the fact, off the request path. `adapter` (required), `predicate` (default `output_safe@1`), `sources` (`["tool", "model"]` by default: tool response bodies and the model's answers; request text is never sent), `finding_above` (default `0.7`: a verdict whose risky label is above it is a finding), `allow_cloud` (required `true` with a cloud adapter), `max_output_chars` (default `16384`). |
-| `breaker` | none | `[judge.breaker]`: the loop breaker's second opinion. `adapter` (required), `predicate` (default `loop_progress@1`), `ambiguous_low` and `ambiguous_high` (required; the range of semantic delta where the judge decides, which must contain the breaker's `delta_epsilon`), `looping_above` (default `0.5`), `allow_cloud`. Only the model's answers (the previous and the current one) are sent, never request text. If the judge fails, the breaker keeps its own decision. |
-| `standing_rules` | `[]` | `[[judge.standing_rules]]` with `id` and `text`: rules an agent must keep in view. When compression changes a request and the request carried a rule's exact text before compression but not after, the rule is appended back as a system message and the token count is recomputed before any budget is charged. The compression record lists the re-pinned ids in `repinned_rules`. This check is by exact text and does not call the judge, so the chat path is not slowed; it replaces the spec's "one predicate per standing rule". |
+| `breaker` | none | `[judge.breaker]`: the loop breaker's second opinion. `adapter` (required), `predicate` (default `loop_progress@1`), `ambiguous_low` and `ambiguous_high` (required; the range of semantic delta where the judge decides, which must contain the breaker's `delta_epsilon`), `looping_above` (default `0.5`), `allow_cloud`. Only the model's answers (the previous and the current one) are sent, never request text. If the judge fails, the breaker keeps its own decision. The judge is not asked about a session's first answer, about a change above 1, or about an embedding that is not usable (that step always counts as no progress). The second opinion runs inside the audit worker that records the step, before the breaker decides. The worker handles sessions in fixed groups, one job at a time, so a slow judge call also delays the audit records of other sessions in the same group, by up to the adapter's deadline. Keep this adapter's `deadline_ms` short. |
+| `standing_rules` | `[]` | `[[judge.standing_rules]]` with `id` and `text`: rules an agent must keep in view. When compression changes a request and the request carried a rule's exact text before compression but not after, the rule is added back as a system message, right after the leading system messages, and the token count is recomputed before any budget is charged. The compression record lists the re-pinned ids in `repinned_rules`. This check is by exact text and does not call the judge, so the chat path is not slowed; it replaces the spec's "one predicate per standing rule". |
 
 | `[[judge.adapters]]` key | Default | Notes |
 | --- | --- | --- |
@@ -573,7 +584,16 @@ missions, refusals) comes first and the arguments last, so when the
 text exceeds `max_input_tokens` only the end of the arguments is cut:
 padded arguments cannot push the task out of the model's view. Give
 judged tools a schema with `maxLength` limits if the end of long
-arguments matters. A cloud judge receives the full arguments. The cloud contract is documented in
+arguments matters. A cloud judge receives the full arguments.
+
+A cloud judge is a second path by which data leaves the harness: without
+the judge, the harness sends data out only to the upstream model
+provider and the configured tool backend. Tool arguments go to a cloud
+judge only for tools whose `[[judge.tools]]` entry sets `allow_cloud =
+true`; outputs and model answers go to it only when `[judge.trace]` or
+`[judge.breaker]` sets `allow_cloud = true`. Redaction (`redact`, on by
+default) runs before each request is sent. List these settings for
+enterprise buyers when describing where their data goes. The cloud contract is documented in
 `crates/pv-judge/src/cloud.rs`; a vendor is integrated by a small
 translator in front of its API, or by speaking the contract directly.
 
