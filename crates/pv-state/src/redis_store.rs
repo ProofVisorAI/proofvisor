@@ -765,6 +765,65 @@ impl StateStore for RedisStore {
             }
         }
     }
+
+    fn shares_recent_lists(&self) -> bool {
+        true
+    }
+
+    fn push_recent(&self, key: &str, value: &str, keep: usize) -> Result<(), StateError> {
+        let keep = isize::try_from(keep.max(1)).unwrap_or(isize::MAX);
+        match &self.backend {
+            RedisBackend::Single(pool) => push_recent_on(
+                &mut pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+                value,
+                keep,
+            ),
+            RedisBackend::Cluster(pool) => push_recent_on(
+                &mut *pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+                value,
+                keep,
+            ),
+        }
+    }
+
+    fn recent(&self, key: &str) -> Result<Vec<String>, StateError> {
+        match &self.backend {
+            RedisBackend::Single(pool) => recent_on(
+                &mut pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+            ),
+            RedisBackend::Cluster(pool) => recent_on(
+                &mut *pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+            ),
+        }
+    }
+}
+
+/// LPUSH, LTRIM and EXPIRE in one MULTI/EXEC: one key, so one slot.
+fn push_recent_on<C: redis::ConnectionLike>(
+    conn: &mut C,
+    key: &str,
+    value: &str,
+    keep: isize,
+) -> Result<(), StateError> {
+    redis::pipe()
+        .atomic()
+        .lpush(key, value)
+        .ignore()
+        .ltrim(key, 0, keep - 1)
+        .ignore()
+        .expire(key, i64::try_from(BUDGET_COUNTER_TTL_SECS).unwrap_or(i64::MAX))
+        .ignore()
+        .query::<()>(conn)
+        .map_err(|e| StateError::Backend(e.to_string()))
+}
+
+fn recent_on<C: redis::ConnectionLike>(conn: &mut C, key: &str) -> Result<Vec<String>, StateError> {
+    conn.lrange(key, 0, -1)
+        .map_err(|e| StateError::Backend(e.to_string()))
 }
 
 /// Bounded SCAN+DEL loop against a single-node connection. Each SCAN

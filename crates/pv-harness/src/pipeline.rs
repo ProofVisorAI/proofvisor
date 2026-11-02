@@ -2151,6 +2151,9 @@ impl AppState {
     /// thresholds the judge's verdicts meet are the configured ones.
     #[must_use]
     pub fn with_judge(mut self, judge: Arc<crate::judge::JudgeService>) -> Self {
+        // A store shared between instances also keeps the refusals the
+        // judge sees, so delegated agents on other instances see them.
+        judge.share_denials(Arc::clone(&self.store));
         *self.judge_hooks.write() = Some(Arc::new(crate::judge::JudgeHooks::new(
             Arc::clone(&judge),
             self.worker.clone(),

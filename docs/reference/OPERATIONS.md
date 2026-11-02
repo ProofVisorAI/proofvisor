@@ -487,18 +487,23 @@ exist only when `operator_tokens` and `[judge.drift]` are both set.
 
 ### State kept per instance
 
-The prior-denial log (the refusals the judge sees as context), the
-sampled verdicts waiting for review, and the concurrency limit live in
-each harness process and start empty after a restart; a review of a
-verdict sampled before a restart answers `unknown_review_id`. The drift
+The prior-denial log holds the refusals the judge sees as context. With
+`state_backend = "redis"` it is kept in Redis as well as in each
+process, so a delegated agent served by another instance sees the
+refusals of the agents above it. Each list keeps the newest 16 refusals
+and expires 24 hours after its last refusal. If Redis cannot be read,
+the judge uses the instance's own entries and counts the failure in
+`pv_judge_shared_denials_errors_total`. With the in-memory backend the
+log lives only in the process. The sampled verdicts waiting for review
+and the concurrency limit live in each harness process and start empty
+after a restart; a review of a verdict sampled before a restart answers
+`unknown_review_id`. The drift
 statistics and switches are saved to each instance's `state_file`, so
 they survive that instance's restarts but are not shared: give every
 instance its own file, send each review to the instance that sampled
 the verdict, and reset a switch on every instance where it tripped
-(`GET /admin/v1/judge/drift` shows which). With several instances,
-route a session and its delegated children to the same instance if the
-judge should see their refusals. The pilot cap counters live in the
-state store and are shared.
+(`GET /admin/v1/judge/drift` shows which). The pilot cap counters live
+in the state store and are shared.
 
 ## Metrics you should alert on
 
@@ -546,6 +551,7 @@ state store and are shared.
 | `pv_judge_drift_tripped` (gauge) | > 0 | A predicate is in ask-by-default mode after the calibration drift check. Recalibrate, then reset it. |
 | `pv_judge_trace_findings_total{source="…"}` | Sudden increase | Recorded tool or model outputs the judge flagged (for example instructions planted in a tool response). Read the `agent.judge` events for the sessions involved. |
 | `pv_judge_breaker_opinions_total{opinion="unavailable"}` | Sustained rate > 0 | The judge could not give the loop breaker its second opinion; the breaker is deciding alone. |
+| `pv_judge_shared_denials_errors_total{op="…"}` | Any increase | The judge could not read (`read`) or write (`write`) the refusal log in Redis; delegated agents on other instances may not see a parent's refusal until Redis is reachable again. |
 | `pv_judge_breaker_opinions_total{opinion="paused"}` | Any increase | The breaker's judge failed 3 times in a row, so the breaker stopped asking for 30 seconds. Check the judge before the pause ends. |
 | `pv_judge_events_dropped_total{kind="…"}` | Any increase | An `agent.judge` event was dropped because the audit queue was full. The decision it described still applied. |
 | `pv_judge_rules_repinned_total` | Sudden increase | Compression is cutting standing rules from long conversations and the harness is adding them back. |

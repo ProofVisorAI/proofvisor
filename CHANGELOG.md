@@ -320,6 +320,9 @@ exercised against release binaries in CI on every push
   events. **Rollback:** an older `pvctl` would number scheme-2 sessions
   as scheme 1, and the console would drop some of their later events as
   duplicates; finish syncing open sessions before downgrading `pvctl`.
+  With `state_backend = "redis"` the judge's prior-denial log is also
+  kept in Redis (newest 16 per key, 24-hour expiry), so a delegated
+  agent served by another instance sees its parent's refusals.
   An embedded Bridge created before the topic existed gains it at
   startup when `[judge]` is set. **Rollback:** an earlier build cannot
   finalize a session whose journal contains an `agent.judge` record;

@@ -253,6 +253,30 @@ pub trait StateStore: Send + Sync {
     fn remove_prefix(&self, prefix: &str) {
         let _ = prefix;
     }
+
+    /// True when this backend is shared between harness instances and
+    /// supports [`Self::push_recent`] and [`Self::recent`].
+    fn shares_recent_lists(&self) -> bool {
+        false
+    }
+
+    /// Put `value` at the front of the list at `key` and keep only its
+    /// newest `keep` entries, atomically. Backends that share state
+    /// expire the list like their counters.
+    fn push_recent(&self, key: &str, value: &str, keep: usize) -> Result<(), StateError> {
+        let _ = (key, value, keep);
+        Err(StateError::Backend(
+            "this state backend does not keep shared lists".to_owned(),
+        ))
+    }
+
+    /// The list at `key`, newest first (empty when absent).
+    fn recent(&self, key: &str) -> Result<Vec<String>, StateError> {
+        let _ = key;
+        Err(StateError::Backend(
+            "this state backend does not keep shared lists".to_owned(),
+        ))
+    }
 }
 
 /// Reject duplicate keys in one multi-spend batch (shared here so the

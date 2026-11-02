@@ -377,8 +377,9 @@ with demonstration data, which is what the public site shows by default.
     that share that worker.
   - Tools are tagged for review in `[[judge.tools]]`, not inside their
     schema files.
-  - The prior-denial log, the review queue and the drift state are kept
-    per instance.
+  - The review queue and the drift state are kept per instance. The
+    prior-denial log is shared through Redis when `state_backend =
+    "redis"`; with the in-memory backend it is kept per instance.
 
 ## 8. Verification record for 2026-10-31 and 2026-11-01
 

@@ -519,6 +519,102 @@ async fn a_child_agent_sees_its_parents_refusals() {
     ));
 }
 
+/// Two harness instances sharing one Redis: the parent is refused on the
+/// first, and its child, served by the second, still sees that refusal.
+/// Runs when `PV_REDIS_URL` names a live server.
+#[cfg(feature = "redis")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_on_another_instance_sees_its_parents_refusals() {
+    let Ok(url) = std::env::var("PV_REDIS_URL") else {
+        eprintln!("SKIPPED (PV_REDIS_URL unset): needs a live Redis");
+        return;
+    };
+    let store: Arc<dyn pv_state::StateStore> =
+        Arc::new(pv_state::redis_store::RedisStore::connect(&url).unwrap());
+    let mut judge = judge_config(JudgeModeConfig::Enforce);
+    judge.tools[0].predicates.push(JudgePredicateBinding {
+        id: CHILD_USES_PARENT_ENTITLEMENT.into(),
+        adapter: "scripted".into(),
+    });
+    judge.thresholds.push(JudgeThresholdConfig {
+        predicate: CHILD_USES_PARENT_ENTITLEMENT.into(),
+        label: "laundering".into(),
+        deny_above: Some(0.7),
+        ask_above: None,
+        min_confidence: None,
+    });
+    let instance = |seed: u8| {
+        let mut config = common::leaked_test_config();
+        config.require_identity = true;
+        config.judge = Some(judge.clone());
+        let bus = Arc::new(common::RecordingBus::default());
+        let sandbox = sandbox(&config, &judge);
+        let state = common::app_state_with_identity_on(
+            config,
+            sandbox,
+            Arc::clone(&bus) as _,
+            seed,
+            HMAC_SECRET,
+            HMAC_KID,
+            Arc::new(pv_identity::InMemoryRevocationStore::new()),
+            Arc::clone(&store),
+        );
+        let mock = Arc::new(MockJudge::new(pin(), mismatch(0.05)));
+        let mut adapters: BTreeMap<String, Arc<dyn pv_judge::JudgeAdapter>> = BTreeMap::new();
+        adapters.insert("scripted".into(), Arc::clone(&mock) as _);
+        let service = JudgeService::new(&judge, adapters, Arc::clone(&state.metrics)).unwrap();
+        let state = Arc::new((*state).clone().with_judge(Arc::new(service)));
+        assert!(state.judge.as_ref().unwrap().denials_shared());
+        Harness { state, bus, mock }
+    };
+    let first = instance(7);
+    let second = instance(8);
+    let audience = first.state.config.audience.clone();
+    // Unique names, so earlier runs against the same Redis do not count.
+    let parent_uid = format!("agent-parent-{}", pv_core::new_event_uid());
+    first.mock.set_for_predicate(ARG_MATCHES_TASK, mismatch(0.9));
+    let parent_jwt = mint(&claims(&audience, &pv_core::new_event_uid(), &parent_uid));
+    let refused = call(
+        &first,
+        &format!("s-{}", pv_core::new_event_uid()),
+        "update_ticket",
+        json!({"table": "refunds"}),
+        Some(&parent_jwt),
+    )
+    .await;
+    assert_eq!(code(&refused), "JUDGE_DENIED", "{}", refused.json);
+
+    let mut child = claims(&audience, &pv_core::new_event_uid(), "agent-child");
+    child.parent_token = Some(parent_jwt);
+    second.mock.set_scorer(|request| {
+        if request.predicate_id == CHILD_USES_PARENT_ENTITLEMENT {
+            let laundering =
+                request.context.prior_denials.iter().any(|denial| {
+                    denial.source == pv_judge::DenialSource::Parent && denial.tool == request.tool
+                });
+            let p = if laundering { 0.9 } else { 0.05 };
+            MockBehavior::scores(&[("independent", 1.0 - p), ("laundering", p)])
+        } else {
+            mismatch(0.1)
+        }
+    });
+    let reply = call(
+        &second,
+        &format!("s-{}", pv_core::new_event_uid()),
+        "update_ticket",
+        json!({"table": "refunds"}),
+        Some(&mint(&child)),
+    )
+    .await;
+    assert_eq!(code(&reply), "JUDGE_DENIED", "{}", reply.json);
+    let seen = second.mock.last_request().unwrap();
+    assert!(seen
+        .context
+        .prior_denials
+        .iter()
+        .any(|denial| denial.instance_uid == parent_uid && denial.source == pv_judge::DenialSource::Parent));
+}
+
 #[tokio::test]
 async fn reviews_trip_the_drift_gate_and_an_operator_resets_it() {
     let mut judge = judge_config(JudgeModeConfig::Enforce);

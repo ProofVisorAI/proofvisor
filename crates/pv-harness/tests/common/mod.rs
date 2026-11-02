@@ -221,6 +221,31 @@ pub fn app_state_with_revocation(
     hmac_kid: &str,
     revocation: Arc<dyn pv_identity::RevocationStore>,
 ) -> Arc<AppState> {
+    app_state_with_identity_on(
+        config,
+        sandbox,
+        bus,
+        signer_seed,
+        hmac_secret,
+        hmac_kid,
+        revocation,
+        Arc::new(InMemoryStore::new()),
+    )
+}
+
+/// [`app_state_with_revocation`] on a caller-chosen state store, for
+/// several harness instances sharing one store.
+#[allow(dead_code, clippy::too_many_arguments)]
+pub fn app_state_with_identity_on(
+    config: HarnessConfig,
+    sandbox: Sandbox,
+    bus: Arc<dyn EventBus>,
+    signer_seed: u8,
+    hmac_secret: &[u8],
+    hmac_kid: &str,
+    revocation: Arc<dyn pv_identity::RevocationStore>,
+    store: Arc<dyn pv_state::StateStore>,
+) -> Arc<AppState> {
     let mut validator = pv_identity::IdentityValidator::new(&config.audience);
     validator.set_max_chain_depth(config.max_delegation_depth);
     if let Some(pattern) = &config.identity_human_subject_pattern {
@@ -240,7 +265,7 @@ pub fn app_state_with_revocation(
     Arc::new(
         AppState::new(
             config,
-            Arc::new(InMemoryStore::new()),
+            store,
             Arc::new(sandbox),
             bus,
             Some(Arc::new(validator)),
