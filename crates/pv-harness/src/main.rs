@@ -108,6 +108,16 @@ async fn run(config_override: Option<PathBuf>) -> Result<()> {
     // spool recovery, the reconciler) assumes it is the only writer.
     let _spool_lock = acquire_spool_lock(std::path::Path::new(&config.atif_spool_dir))?;
     let bridge = build_bridge(&config, &manifest)?;
+    if config.judge.is_some() {
+        let topic = pv_events::EventClass::Judge.topic();
+        if !bridge.topics().iter().any(|known| known == topic) {
+            anyhow::bail!(
+                "[judge] is enabled but the Bridge has no `{topic}` topic: add it to the manifest \
+                 at {} (same settings as the other topics) and restart",
+                config.bridge_manifest_path
+            );
+        }
+    }
 
     let sandbox = with_judge_policy(&config, load_sandbox(&config)?)?;
     let store = build_store(&config)?;
@@ -1426,6 +1436,10 @@ topics:
     partitions: 1
     retention: { hot_hours: 168 }
     schema_ref: schemas/ocsf-agent-event.schema.json
+  - name: agent.judge
+    partitions: 1
+    retention: { hot_hours: 168 }
+    schema_ref: schemas/ocsf-agent-event.schema.json
 "#;
 
 /// Load the Bridge manifest, falling back to the embedded built-in when
@@ -1932,6 +1946,16 @@ fn build_bridge(config: &HarnessConfig, manifest: &BridgeManifest) -> Result<Arc
                 }
             }
             let bridge = if path.join("manifest.yaml").exists() {
+                // A bridge provisioned before `agent.judge` existed gains
+                // the topic when the judge is enabled; nothing else in
+                // the provisioned manifest changes.
+                if config.judge.is_some() {
+                    let added = EmbeddedBroker::add_missing_topics(&path, manifest)
+                        .context("add the semantic judge's topic to the embedded Bridge")?;
+                    if !added.is_empty() {
+                        tracing::info!(topics = ?added, "added topics to the embedded Bridge");
+                    }
+                }
                 EmbeddedBroker::open(&path)
             } else {
                 EmbeddedBroker::provision(&path, manifest)
