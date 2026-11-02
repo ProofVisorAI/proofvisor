@@ -48,13 +48,14 @@
         "agent.receipt",
         "agent.compression",
         "agent.identity",
-        "agent.session"
+        "agent.session",
+        "agent.judge"
       ]
     },
-    "class_uid": { "type": "integer", "minimum": 9901, "maximum": 9906 },
+    "class_uid": { "type": "integer", "minimum": 9901, "maximum": 9907 },
     "category_uid": { "const": 6 },
     "activity_id": { "type": "integer", "minimum": 0, "maximum": 99 },
-    "type_uid": { "type": "integer", "minimum": 990100, "maximum": 990699 },
+    "type_uid": { "type": "integer", "minimum": 990100, "maximum": 990799 },
     "time": { "type": "integer", "minimum": 1, "maximum": 253402300799999 },
     "time_iso": {
       "type": "string",

@@ -1552,6 +1552,9 @@ async fn persist_job(
     if job.session.capture_failed() {
         return Ok(None);
     }
+    // The judge, when attached. Read once, outside any await.
+    let judge = outputs.judge.read().clone();
+    let captured_output = judge.as_ref().and_then(|_| captured_output(&job));
     let response_marker = job.response_marker.clone();
     let is_llm_agent_response = job
         .atif
@@ -1600,11 +1603,28 @@ async fn persist_job(
                         None
                     }
                 };
-                let verdict = job.session.loop_state.observe_embedding_with_similarity(
+                // Model output only (never request text): an ambiguous step
+                // gets the semantic judge's second opinion when configured.
+                let model_output = job.class != EventClass::Compression;
+                let opinion = match &judge {
+                    Some(hooks) if model_output && hooks.service().breaker().is_some() => {
+                        let delta = job.session.loop_state.peek_delta(&embedding, similarity);
+                        let previous = job.session.last_model_output();
+                        hooks
+                            .second_opinion(&job.session, delta, previous.as_deref(), &job.text)
+                            .await
+                    }
+                    _ => None,
+                };
+                let verdict = job.session.loop_state.observe_embedding_with_opinion(
                     embedding.clone(),
                     step_tokens,
                     similarity,
+                    opinion,
                 );
+                if model_output && judge.is_some() {
+                    job.session.set_last_model_output(&job.text);
+                }
                 if let Err(error) = vector_sink.record(&job.session.session_scope, &embedding).await {
                     tracing::warn!(
                         session = %job.session.id,
@@ -1825,6 +1845,12 @@ async fn persist_job(
             ),
         )
     });
+    // Trace judging runs off this path, after the step is journaled; the
+    // pending guard it takes holds the session's close until the verdict
+    // is recorded too.
+    if let (Some(hooks), Some(output)) = (&judge, captured_output) {
+        hooks.after_capture(Arc::clone(&job.session), output);
+    }
     Ok(Some(PersistedJob {
         session: job.session,
         identity: job.identity,
@@ -1835,6 +1861,31 @@ async fn persist_job(
         response_marker,
         content,
     }))
+}
+
+/// The recorded output a job carries, for trace judging: a tool's
+/// response body (the `tool_completed` record) or the model's answer (a
+/// response capture analysed by the loop breaker). Request-side records,
+/// which hold prompt text, are never handed to the judge.
+fn captured_output(job: &WorkerJob) -> Option<crate::judge::CapturedOutput> {
+    if job.class == EventClass::Session
+        && job.payload.get("action").and_then(Value::as_str) == Some("tool_completed")
+    {
+        let text = job.atif.as_ref().and_then(|capture| capture.message.as_str())?;
+        return Some(crate::judge::CapturedOutput {
+            source: crate::judge::TraceSource::Tool,
+            tool: job.payload.get("tool").and_then(Value::as_str).map(str::to_owned),
+            text: text.to_owned(),
+        });
+    }
+    if job.analyze_loop && job.class != EventClass::Compression && !job.text.is_empty() {
+        return Some(crate::judge::CapturedOutput {
+            source: crate::judge::TraceSource::Model,
+            tool: None,
+            text: job.text.clone(),
+        });
+    }
+    None
 }
 
 /// The journaled step in content form. Unsigned sessions supply the

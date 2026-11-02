@@ -529,6 +529,15 @@ schema and policy checks run when the daemon starts. The judge is
 consulted before the session's admission lock is taken, so a slow
 judge never delays a session close.
 
+Three optional uses run in the background, off the request path:
+`[judge.trace]` judges recorded tool outputs and model answers after
+they are written to the audit trail, `[judge.breaker]` gives the loop
+breaker a second opinion, and `[[judge.standing_rules]]` puts rules
+back after compression (by exact text, without calling the judge).
+These are described in the table below. Trace judging and the breaker
+send output text to the judge (a tool's response or the model's
+answer), never the request's prompt text.
+
 Built-in predicates:
 
 | Predicate | Labels | Question |
@@ -536,6 +545,8 @@ Built-in predicates:
 | `arg_matches_task@1` | `match`, `mismatch` | Do the arguments fit the task, intent and mission? |
 | `child_uses_parent_entitlement@1` | `independent`, `laundering` | Is a delegated agent using its inherited entitlement to do what an agent above it was refused? |
 | `memory_write_safe@1` | `safe`, `unsafe` | Is this write to a memory or knowledge store safe to persist (governed memory writeback)? |
+| `output_safe@1` | `safe`, `unsafe` | Is this recorded tool output or model answer safe, or does it carry an injected instruction or a policy violation? Used by `[judge.trace]`. |
+| `loop_progress@1` | `progressing`, `looping` | Is the model's current answer progress over its previous one, or a repeat? Used by `[judge.breaker]`. |
 
 | `[judge]` key | Default | Notes |
 | --- | --- | --- |
@@ -548,6 +559,10 @@ Built-in predicates:
 | `predicates` | `[]` | Operator-defined predicates (`[[judge.predicates]]`): `id` (`name@version`), `labels` (2 to 16, `[a-z0-9_]`), `positive_label` (the risky label, used by calibration), `description`. |
 | `pilot` | none | `[judge.pilot]` `daily_block_cap`: in `enforce` mode, the most score-based judge blocks per tool per UTC day. Later ones are recorded with `pilot_cap_reached` and let through. A judge failure always keeps its block, and so does any call where a judged predicate is in ask-by-default mode after the calibration drift check. The counters live in the state store, so all instances sharing it share the cap. |
 | `drift` | none | `[judge.drift]`: the runtime calibration check. `state_file` (required): where the band statistics and the ask-by-default switches are saved, atomically, after every review and reset, and loaded at startup, so a switch survives restarts until an operator resets it; a file that cannot be read or parsed stops the boot. `sample_every` (default `20`): one scored verdict in this many gets a `review_id` in its record. `min_reviews_per_band` (default `30`), `tolerance` (default `0.02`), `max_pending` (default `10000`). See [Operations](OPERATIONS.md#semantic-judge). |
+| `background_max_concurrency` | `8` | Judge calls in flight for background judging (trace judging and the loop breaker's second opinion), 1 to 4096. Kept apart from `max_concurrency`, so background work never starves tool-call admission. A background call refused for this limit is recorded with status `saturated`. |
+| `trace` | none | `[judge.trace]`: judge recorded outputs after the fact, off the request path. `adapter` (required), `predicate` (default `output_safe@1`), `sources` (`["tool", "model"]` by default: tool response bodies and the model's answers; request text is never sent), `finding_above` (default `0.7`: a verdict whose risky label is above it is a finding), `allow_cloud` (required `true` with a cloud adapter), `max_output_chars` (default `16384`). |
+| `breaker` | none | `[judge.breaker]`: the loop breaker's second opinion. `adapter` (required), `predicate` (default `loop_progress@1`), `ambiguous_low` and `ambiguous_high` (required; the range of semantic delta where the judge decides, which must contain the breaker's `delta_epsilon`), `looping_above` (default `0.5`), `allow_cloud`. Only the model's answers (the previous and the current one) are sent, never request text. If the judge fails, the breaker keeps its own decision. The judge is not asked about a session's first answer, about a change above 1, or about an embedding that is not usable (that step always counts as no progress). The second opinion runs inside the audit worker that records the step, before the breaker decides. The worker handles sessions in fixed groups, one job at a time, so a slow judge call also delays the audit records of other sessions in the same group, by up to the adapter's deadline. The breaker's adapter must therefore have a `deadline_ms` of at most 500, or the daemon refuses to start; define a separate adapter entry for the breaker if the tool calls use a slower one. The worst-case delay is then 500 ms per ambiguous step. After 3 failed second opinions in a row, the breaker stops asking for 30 seconds and decides alone, so a judge outage does not cost every ambiguous step a full deadline. |
+| `standing_rules` | `[]` | `[[judge.standing_rules]]` with `id` and `text`: rules an agent must keep in view. When compression changes a request and the request carried a rule's exact text before compression but not after, the rule is added back as a system message, right after the leading system messages, and the token count is recomputed before any budget is charged. The compression record lists the re-pinned ids in `repinned_rules`. This check is by exact text and does not call the judge, so the chat path is not slowed. It replaces the build specification's "one predicate per standing rule" because compression never rewrites text: it keeps a message as it is, replaces a whole message with a stub, or removes spaces from JSON in tool and assistant messages. A rule whose exact text is gone was therefore cut, and a judge would add delay and possible error without catching more. The check relies on the application sending each rule with exactly the configured text. |
 
 | `[[judge.adapters]]` key | Default | Notes |
 | --- | --- | --- |
@@ -569,7 +584,16 @@ missions, refusals) comes first and the arguments last, so when the
 text exceeds `max_input_tokens` only the end of the arguments is cut:
 padded arguments cannot push the task out of the model's view. Give
 judged tools a schema with `maxLength` limits if the end of long
-arguments matters. A cloud judge receives the full arguments. The cloud contract is documented in
+arguments matters. A cloud judge receives the full arguments.
+
+A cloud judge is a second path by which data leaves the harness: without
+the judge, the harness sends data out only to the upstream model
+provider and the configured tool backend. Tool arguments go to a cloud
+judge only for tools whose `[[judge.tools]]` entry sets `allow_cloud =
+true`; outputs and model answers go to it only when `[judge.trace]` or
+`[judge.breaker]` sets `allow_cloud = true`. Redaction (`redact`, on by
+default) runs before each request is sent. List these settings for
+enterprise buyers when describing where their data goes. The cloud contract is documented in
 `crates/pv-judge/src/cloud.rs`; a vendor is integrated by a small
 translator in front of its API, or by speaking the contract directly.
 
@@ -581,6 +605,23 @@ Refusals use the JSON-RPC error shape of every other policy refusal
 | `JUDGE_DENIED` | A verdict crossed a deny threshold. |
 | `APPROVAL_REQUIRED` | Policy holds the call for human approval: a verdict fell in an ask band, the model was not confident enough, its output was malformed, the drift gate is tripped, or a version 2 policy returned `2`. Nothing ran. There is no approval queue in the harness; the agent or its host decides how to ask a person. |
 | `JUDGE_UNAVAILABLE` | The judge produced no usable verdict (timeout, crash, saturation, unpinned model) and policy failed closed. |
+
+Adapters used by `[judge.trace]` or `[judge.breaker]` must have a
+deadline of at most 2500 ms: a pending background verdict holds the
+session's close (so it is signed with the session), and at shutdown each
+close has 3 seconds.
+
+**Findings (`agent.judge` events).** Trace verdicts (`kind: "trace"`,
+with `source`, `tool`, `finding`, `risk_ppm` and the verdict), the
+breaker's second opinions (`kind: "breaker"`, with `delta_ppm`, the
+range, and `looping`), and shadow-mode would-be blocks (`kind: "shadow"`,
+with the admission record) are published on the `agent.judge` topic. Each
+is also an ATIF step, so a session's receipt covers it whether the
+session is signed (event chain) or unsigned (trajectory digest). When
+`[judge]` is set, an embedded Bridge created before this topic existed
+gains it at startup; with your own `bridge_manifest_path`, add an
+`agent.judge` topic to that file, or the daemon refuses to start and
+names the file.
 
 Judge refusals name the predicate in `error.data.predicate_id` and the
 policy `judge.thresholds` in the audit record.

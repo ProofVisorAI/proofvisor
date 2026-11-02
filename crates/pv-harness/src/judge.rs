@@ -16,9 +16,10 @@
 //! OCSF event (hashed into the signed event chain) and the ATIF tool
 //! call (hashed into a retroactive receipt).
 //!
-//! State kept in this process: the prior-denial log, the drift monitor,
-//! and the concurrency limit. A multi-instance deployment shares only
-//! the pilot cap counters (they live in the state store).
+//! State kept in this process: the drift monitor, the review queue and
+//! the concurrency limits. The prior-denial log is kept here and, when
+//! the state store is shared between instances (Redis), in the store
+//! too; the pilot cap counters live in the state store.
 
 use pv_judge::{
     AdapterKind, AdapterSlot, DenialSource, DriftConfig, DriftMonitor, FailurePolicy, JudgeAction,
@@ -47,6 +48,27 @@ pub const DENIALS_PER_KEY: usize = 16;
 pub const DENIAL_LOG_KEYS: usize = 20_000;
 /// Longest mission `task` statement.
 pub const MAX_TASK_CHARS: usize = 4_096;
+/// Default concurrency limit for background judging.
+pub const DEFAULT_BACKGROUND_CONCURRENCY: usize = 8;
+/// Largest deadline for an adapter used by background judging. Session
+/// close at shutdown allows 3 s, and a pending background verdict holds
+/// the close, so it must finish well inside that.
+pub const MAX_BACKGROUND_DEADLINE_MS: u64 = 2_500;
+/// Largest deadline for the loop breaker's adapter. The second opinion
+/// runs inside the audit worker, which records steps for a fixed group
+/// of sessions one at a time, so this is the longest one ambiguous step
+/// can delay the audit records of the other sessions in its group.
+pub const MAX_BREAKER_DEADLINE_MS: u64 = 500;
+/// Failed second opinions in a row after which the breaker stops asking.
+pub const BREAKER_FAILURES_BEFORE_PAUSE: u32 = 3;
+/// How long the breaker stops asking after that, milliseconds. During
+/// the pause it decides alone, so a judge outage does not cost every
+/// ambiguous step a full deadline.
+pub const BREAKER_PAUSE_MS: u64 = 30_000;
+/// Longest standing rule text.
+pub const MAX_RULE_CHARS: usize = 2_000;
+/// Longest model output kept for the loop breaker's second opinion.
+pub const MAX_LOOP_TEXT_CHARS: usize = 4_096;
 /// Largest drift state file read at startup.
 pub const MAX_DRIFT_STATE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -281,6 +303,113 @@ fn default_max_pending() -> usize {
     10_000
 }
 
+/// Which recorded outputs trace judging reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceSource {
+    /// A tool's response body, after the call completed.
+    Tool,
+    /// The model's answer (message, reasoning, or tool-call request).
+    Model,
+}
+
+impl TraceSource {
+    /// Stable wire string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::Model => "model",
+        }
+    }
+}
+
+/// `[judge.trace]`: judge recorded outputs after the fact, off the request
+/// path. Each verdict becomes an `agent.judge` event (and an ATIF step),
+/// so the session's receipt covers it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeTraceConfig {
+    /// Adapter name.
+    pub adapter: String,
+    /// Predicate to score (default `output_safe@1`).
+    #[serde(default = "default_trace_predicate")]
+    pub predicate: String,
+    /// Outputs to judge (default both).
+    #[serde(default = "default_trace_sources")]
+    pub sources: Vec<TraceSource>,
+    /// A verdict whose positive label is above this is a finding
+    /// (`finding: true`, higher severity). Default 0.7.
+    #[serde(default = "default_finding_above")]
+    pub finding_above: f64,
+    /// Required (`true`) with a cloud adapter: outputs then leave the harness.
+    #[serde(default)]
+    pub allow_cloud: bool,
+    /// Longest output sent, in characters (default 16384).
+    #[serde(default = "default_max_output_chars")]
+    pub max_output_chars: usize,
+}
+
+fn default_trace_predicate() -> String {
+    pv_judge::OUTPUT_SAFE.to_owned()
+}
+fn default_trace_sources() -> Vec<TraceSource> {
+    vec![TraceSource::Tool, TraceSource::Model]
+}
+fn default_finding_above() -> f64 {
+    0.7
+}
+fn default_max_output_chars() -> usize {
+    16_384
+}
+
+/// `[judge.breaker]`: the loop breaker's second opinion. When a model
+/// output's semantic delta falls inside `[ambiguous_low, ambiguous_high]`,
+/// the judge decides whether the step counts as no progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeBreakerConfig {
+    /// Adapter name.
+    pub adapter: String,
+    /// Predicate to score (default `loop_progress@1`).
+    #[serde(default = "default_breaker_predicate")]
+    pub predicate: String,
+    /// Lower end of the ambiguous delta range.
+    pub ambiguous_low: f64,
+    /// Upper end of the ambiguous delta range.
+    pub ambiguous_high: f64,
+    /// The step counts as no progress when the positive label's
+    /// probability is above this (default 0.5).
+    #[serde(default = "default_looping_above")]
+    pub looping_above: f64,
+    /// Required (`true`) with a cloud adapter: model outputs then leave
+    /// the harness.
+    #[serde(default)]
+    pub allow_cloud: bool,
+}
+
+fn default_breaker_predicate() -> String {
+    pv_judge::LOOP_PROGRESS.to_owned()
+}
+fn default_looping_above() -> f64 {
+    0.5
+}
+
+/// `[[judge.standing_rules]]`: a rule the agent must keep in view. When
+/// context compression cuts the only copy of its text from a request,
+/// the rule is appended back as a system message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandingRuleConfig {
+    /// Identifier recorded when the rule is re-pinned.
+    pub id: String,
+    /// The rule's exact text, as the application sends it.
+    pub text: String,
+}
+
+fn default_background_concurrency() -> usize {
+    DEFAULT_BACKGROUND_CONCURRENCY
+}
+
 /// `[judge]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -312,6 +441,20 @@ pub struct JudgeConfig {
     /// Runtime calibration check.
     #[serde(default)]
     pub drift: Option<JudgeDriftConfig>,
+    /// Judge calls in flight for background judging (recorded outputs and
+    /// the loop breaker's second opinion), kept apart from tool-call
+    /// admission so background work never starves it (default 8).
+    #[serde(default = "default_background_concurrency")]
+    pub background_max_concurrency: usize,
+    /// Trace judging.
+    #[serde(default)]
+    pub trace: Option<JudgeTraceConfig>,
+    /// The loop breaker's second opinion.
+    #[serde(default)]
+    pub breaker: Option<JudgeBreakerConfig>,
+    /// Standing rules re-pinned after context compression.
+    #[serde(default)]
+    pub standing_rules: Vec<StandingRuleConfig>,
 }
 
 fn default_max_concurrency() -> usize {
@@ -405,9 +548,23 @@ impl JudgeConfig {
             }
             collect_adapter_errors(adapter, errors);
         }
-        if self.tools.is_empty() {
-            errors.push("[judge] is set but no [[judge.tools]] are tagged for semantic review".to_owned());
+        if self.tools.is_empty()
+            && self.trace.is_none()
+            && self.breaker.is_none()
+            && self.standing_rules.is_empty()
+        {
+            errors.push(
+                "[judge] is set but enables nothing: tag tools under [[judge.tools]], or set \
+                 [judge.trace], [judge.breaker] or [[judge.standing_rules]]"
+                    .to_owned(),
+            );
         }
+        if !(1..=MAX_CONCURRENCY_CEILING).contains(&self.background_max_concurrency) {
+            errors.push(format!(
+                "judge.background_max_concurrency must be between 1 and {MAX_CONCURRENCY_CEILING}"
+            ));
+        }
+        self.collect_background_errors(&adapters, registry.as_ref(), errors);
         let mut tools = BTreeSet::new();
         let mut bound_predicates = BTreeSet::new();
         for tool in &self.tools {
@@ -522,6 +679,113 @@ impl JudgeConfig {
             .is_some_and(|drift| drift.state_file.trim().is_empty())
         {
             errors.push("judge.drift.state_file must not be empty".to_owned());
+        }
+    }
+
+    fn collect_background_errors(
+        &self,
+        adapters: &BTreeMap<&str, &JudgeAdapterConfig>,
+        registry: Option<&PredicateRegistry>,
+        errors: &mut Vec<String>,
+    ) {
+        let mut check = |section: &str, adapter_name: &str, predicate_id: &str, allow_cloud: bool| {
+            let predicate = registry.and_then(|registry| registry.get(predicate_id));
+            if registry.is_some() && predicate.is_none() {
+                errors.push(format!(
+                    "[judge.{section}] names unknown predicate {predicate_id:?}"
+                ));
+            }
+            let Some(adapter) = adapters.get(adapter_name) else {
+                errors.push(format!(
+                    "[judge.{section}] names unknown adapter {adapter_name:?}"
+                ));
+                return;
+            };
+            if adapter.kind == JudgeAdapterKind::Cloud && !allow_cloud {
+                errors.push(format!(
+                    "[judge.{section}] uses cloud adapter {adapter_name:?}: recorded outputs would \
+                     leave the harness; set allow_cloud = true in [judge.{section}] to opt in"
+                ));
+            }
+            if adapter.deadline() > Duration::from_millis(MAX_BACKGROUND_DEADLINE_MS) {
+                errors.push(format!(
+                    "[judge.{section}] adapter {adapter_name:?} has a deadline above \
+                     {MAX_BACKGROUND_DEADLINE_MS} ms; background verdicts hold session close, \
+                     which has 3 s at shutdown"
+                ));
+            }
+            if let (JudgeAdapterKind::Local, Some(predicate)) = (adapter.kind, predicate) {
+                let labels: BTreeSet<&str> = adapter.output_labels.iter().map(String::as_str).collect();
+                let expected: BTreeSet<&str> = predicate.labels.iter().map(String::as_str).collect();
+                if labels != expected || adapter.output_labels.len() != predicate.labels.len() {
+                    errors.push(format!(
+                        "judge adapter {adapter_name:?} output_labels {:?} must be exactly the labels of {} ({:?})",
+                        adapter.output_labels, predicate.id, predicate.labels
+                    ));
+                }
+            }
+        };
+        if let Some(trace) = &self.trace {
+            check("trace", &trace.adapter, &trace.predicate, trace.allow_cloud);
+        }
+        if let Some(breaker) = &self.breaker {
+            check(
+                "breaker",
+                &breaker.adapter,
+                &breaker.predicate,
+                breaker.allow_cloud,
+            );
+        }
+        if let Some(trace) = &self.trace {
+            if trace.sources.is_empty() {
+                errors.push("[judge.trace] sources must name tool, model, or both".to_owned());
+            }
+            if pv_judge::threshold_to_ppm(trace.finding_above).is_err() {
+                errors.push("[judge.trace] finding_above must be a probability in [0, 1]".to_owned());
+            }
+            if !(1..=1_000_000).contains(&trace.max_output_chars) {
+                errors.push("[judge.trace] max_output_chars must be between 1 and 1000000".to_owned());
+            }
+        }
+        if let Some(breaker) = &self.breaker {
+            if let Some(adapter) = adapters.get(breaker.adapter.as_str()) {
+                if adapter.deadline() > Duration::from_millis(MAX_BREAKER_DEADLINE_MS) {
+                    errors.push(format!(
+                        "[judge.breaker] adapter {:?} has a deadline above {MAX_BREAKER_DEADLINE_MS} ms; \
+                         the second opinion runs inside the audit worker and delays other sessions' \
+                         audit records for as long as it waits (define a separate adapter with a \
+                         shorter deadline_ms for the breaker)",
+                        breaker.adapter
+                    ));
+                }
+            }
+            let low = pv_judge::threshold_to_ppm(breaker.ambiguous_low);
+            let high = pv_judge::threshold_to_ppm(breaker.ambiguous_high);
+            match (low, high) {
+                (Ok(low), Ok(high)) if low < high => {}
+                _ => errors.push("[judge.breaker] needs 0 <= ambiguous_low < ambiguous_high <= 1".to_owned()),
+            }
+            if pv_judge::threshold_to_ppm(breaker.looping_above).is_err() {
+                errors.push("[judge.breaker] looping_above must be a probability in [0, 1]".to_owned());
+            }
+        }
+        let mut rule_ids = BTreeSet::new();
+        for rule in &self.standing_rules {
+            if !is_name(&rule.id) {
+                errors.push(format!(
+                    "standing rule id {:?} must be 1..=64 characters of [A-Za-z0-9_.-]",
+                    rule.id
+                ));
+            }
+            if !rule_ids.insert(rule.id.as_str()) {
+                errors.push(format!("standing rule {:?} is defined more than once", rule.id));
+            }
+            if rule.text.trim().is_empty() || rule.text.chars().count() > MAX_RULE_CHARS {
+                errors.push(format!(
+                    "standing rule {:?} text must be 1..={MAX_RULE_CHARS} characters",
+                    rule.id
+                ));
+            }
         }
     }
 
@@ -679,6 +943,12 @@ pub(crate) struct ContextInputs<'a> {
 /// The running judge: runner, tool bindings, rollout state.
 pub struct JudgeService {
     runner: JudgeRunner,
+    /// Background judging (traces, the breaker) has its own concurrency
+    /// limit, so it can never starve tool-call admission.
+    background: JudgeRunner,
+    trace: Option<JudgeTraceConfig>,
+    breaker: Option<JudgeBreakerConfig>,
+    standing_rules: Vec<StandingRuleConfig>,
     mode: JudgeMode,
     tools: BTreeMap<String, Vec<JudgeTask>>,
     adapter_kinds: BTreeMap<String, AdapterKind>,
@@ -688,6 +958,10 @@ pub struct JudgeService {
     drift_write: parking_lot::Mutex<()>,
     pilot_cap: Option<u64>,
     denials: parking_lot::Mutex<DenialLog>,
+    /// The shared state store, when it is shared between instances: the
+    /// denial log is also kept there, so an agent served by another
+    /// instance sees its parent's refusals.
+    shared_denials: std::sync::OnceLock<Arc<dyn pv_state::StateStore>>,
     metrics: Arc<pv_core::metrics::Registry>,
 }
 
@@ -726,6 +1000,11 @@ impl JudgeService {
             adapter_kinds.insert(adapter_config.name.clone(), adapter.kind());
             slots.insert(adapter_config.name.clone(), AdapterSlot { adapter, deadline });
         }
+        let background = JudgeRunner::new(
+            slots.clone(),
+            Arc::clone(&registry),
+            config.background_max_concurrency,
+        )?;
         let runner = JudgeRunner::new(slots, registry, config.max_concurrency)?;
         let tools = config
             .tools
@@ -780,6 +1059,10 @@ impl JudgeService {
         );
         Ok(Self {
             runner,
+            background,
+            trace: config.trace.clone(),
+            breaker: config.breaker.clone(),
+            standing_rules: config.standing_rules.clone(),
             mode: match config.mode {
                 JudgeModeConfig::Shadow => JudgeMode::Shadow,
                 JudgeModeConfig::Enforce => JudgeMode::Enforce,
@@ -792,8 +1075,108 @@ impl JudgeService {
             drift_write: parking_lot::Mutex::new(()),
             pilot_cap: config.pilot.map(|pilot| pilot.daily_block_cap),
             denials: parking_lot::Mutex::new(DenialLog::default()),
+            shared_denials: std::sync::OnceLock::new(),
             metrics,
         })
+    }
+
+    /// Keep the denial log in `store` as well, when the store is shared
+    /// between instances. Has no effect for a store that is not, or
+    /// after the first call.
+    pub(crate) fn share_denials(&self, store: Arc<dyn pv_state::StateStore>) {
+        if store.shares_recent_lists() {
+            let _ = self.shared_denials.set(store);
+        }
+    }
+
+    /// True when the denial log is shared between instances.
+    pub fn denials_shared(&self) -> bool {
+        self.shared_denials.get().is_some()
+    }
+
+    /// The newest refusals under `key`: the shared log merged with this
+    /// instance's, newest first. A shared log that cannot be read leaves
+    /// this instance's entries and counts the failure.
+    fn recent_denials(&self, key: &str) -> Vec<PriorDenial> {
+        let local = self.denials.lock().recent(key);
+        let Some(store) = self.shared_denials.get() else {
+            return local;
+        };
+        let shared = match store.recent(&shared_denial_key(key)) {
+            Ok(entries) => entries
+                .iter()
+                .filter_map(|entry| serde_json::from_str::<PriorDenial>(entry).ok())
+                .filter(plausible_denial)
+                .collect(),
+            Err(error) => {
+                tracing::warn!(%error, "shared judge denial log unreadable; using this instance's entries");
+                self.count_shared_denial_error("read");
+                Vec::new()
+            }
+        };
+        merge_denials(shared, local)
+    }
+
+    fn count_shared_denial_error(&self, op: &str) {
+        self.metrics
+            .counter(
+                &format!("pv_judge_shared_denials_errors_total{{op=\"{op}\"}}"),
+                "Shared judge denial log operations that failed",
+            )
+            .inc();
+    }
+
+    /// Trace judging settings, when `[judge.trace]` is set.
+    pub fn trace(&self) -> Option<&JudgeTraceConfig> {
+        self.trace.as_ref()
+    }
+
+    /// The loop breaker's second opinion settings, when `[judge.breaker]` is set.
+    pub fn breaker(&self) -> Option<&JudgeBreakerConfig> {
+        self.breaker.as_ref()
+    }
+
+    /// Standing rules re-pinned after context compression.
+    pub fn standing_rules(&self) -> &[StandingRuleConfig] {
+        &self.standing_rules
+    }
+
+    /// Background calls in flight.
+    pub fn background_in_flight(&self) -> usize {
+        self.background.in_flight()
+    }
+
+    /// Score one predicate on the background runner.
+    pub(crate) async fn score_background(
+        &self,
+        adapter: &str,
+        predicate: &str,
+        tool: &str,
+        arguments: &Value,
+        context: &SessionContext,
+    ) -> (JudgeOutcome, u64) {
+        let started = std::time::Instant::now();
+        let task = JudgeTask {
+            predicate_id: predicate.to_owned(),
+            adapter: adapter.to_owned(),
+        };
+        let outcome = self
+            .background
+            .evaluate(std::slice::from_ref(&task), tool, arguments, context)
+            .await
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                JudgeOutcome::Failed(JudgeFailure {
+                    predicate_id: predicate.to_owned(),
+                    model: unknown_pin(adapter),
+                    kind: pv_judge::FailureKind::Unavailable,
+                    detail: "the background runner returned no outcome".to_owned(),
+                    latency_us: 0,
+                })
+            });
+        self.count_calls(std::slice::from_ref(&outcome));
+        (outcome, micros_since(started))
     }
 
     /// Shadow or enforce.
@@ -858,20 +1241,21 @@ impl JudgeService {
         allowed.sort();
         allowed.dedup();
         let mut prior = Vec::new();
-        {
-            let log = self.denials.lock();
-            prior.extend(log.recent(&session_key(inputs.session_id)).into_iter().take(8));
-            for parent in &inputs.parents {
-                prior.extend(
-                    log.recent(&instance_key(parent))
-                        .into_iter()
-                        .map(|mut denial| {
-                            denial.source = DenialSource::Parent;
-                            denial
-                        })
-                        .take(8),
-                );
-            }
+        prior.extend(
+            self.recent_denials(&session_key(inputs.session_id))
+                .into_iter()
+                .take(8),
+        );
+        for parent in &inputs.parents {
+            prior.extend(
+                self.recent_denials(&instance_key(parent))
+                    .into_iter()
+                    .map(|mut denial| {
+                        denial.source = DenialSource::Parent;
+                        denial
+                    })
+                    .take(8),
+            );
         }
         prior.truncate(pv_judge::render::MAX_RENDERED_DENIALS);
         SessionContext {
@@ -902,9 +1286,26 @@ impl JudgeService {
             source: DenialSource::Session,
             instance_uid: instance_uid.to_owned(),
         };
+        let keys = [session_key(session_id), instance_key(instance_uid)];
+        if let Some(store) = self.shared_denials.get() {
+            match serde_json::to_string(&denial) {
+                Ok(entry) => {
+                    for key in &keys {
+                        if let Err(error) =
+                            store.push_recent(&shared_denial_key(key), &entry, DENIALS_PER_KEY)
+                        {
+                            tracing::warn!(%error, "shared judge denial log unwritable; kept on this instance");
+                            self.count_shared_denial_error("write");
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "judge denial not serializable"),
+            }
+        }
         let mut log = self.denials.lock();
-        log.push(session_key(session_id), denial.clone());
-        log.push(instance_key(instance_uid), denial);
+        for key in keys {
+            log.push(key, denial.clone());
+        }
     }
 
     /// Score `tool`'s predicates from synchronous code running on the
@@ -967,6 +1368,17 @@ impl JudgeService {
     }
 
     fn observe(&self, outcomes: &[JudgeOutcome], judge_us: u64) {
+        self.count_calls(outcomes);
+        self.metrics
+            .histogram_with_bounds(
+                "pv_judge_wait_seconds",
+                "Time a judged tool call waited for the semantic judge",
+                pv_core::metrics::WIDE_LATENCY_BOUNDS_US,
+            )
+            .observe_us(judge_us);
+    }
+
+    fn count_calls(&self, outcomes: &[JudgeOutcome]) {
         for outcome in outcomes {
             self.metrics
                 .counter(
@@ -979,13 +1391,6 @@ impl JudgeService {
                 )
                 .inc();
         }
-        self.metrics
-            .histogram_with_bounds(
-                "pv_judge_wait_seconds",
-                "Time a judged tool call waited for the semantic judge",
-                pv_core::metrics::WIDE_LATENCY_BOUNDS_US,
-            )
-            .observe_us(judge_us);
     }
 
     /// Count a judge decision.
@@ -1087,6 +1492,41 @@ fn session_key(session_id: &str) -> String {
 
 fn instance_key(instance_uid: &str) -> String {
     format!("i:{instance_uid}")
+}
+
+/// The shared store's key for a denial log key. Hashed, so caller-chosen
+/// session and instance ids never shape the store key; the hash sits in
+/// a hash tag, so a Redis Cluster keeps the list in one slot.
+fn shared_denial_key(key: &str) -> String {
+    format!(
+        "judge:denials:{{{}}}",
+        pv_core::digest::sha256_hex(key.as_bytes())
+    )
+}
+
+/// A denial read back from the shared store is used only if its fields
+/// are of a size the harness itself writes: the store is shared
+/// infrastructure, and this text reaches the judge.
+fn plausible_denial(denial: &PriorDenial) -> bool {
+    let fits = |text: &str, max: usize| text.chars().count() <= max && !text.chars().any(char::is_control);
+    fits(&denial.tool, 256)
+        && fits(&denial.denial_code, 64)
+        && denial.predicate_id.as_deref().is_none_or(|id| fits(id, 128))
+        && fits(&denial.instance_uid, 256)
+}
+
+/// Shared and local entries for one key, newest first, without
+/// duplicates (an entry this instance wrote is in both).
+fn merge_denials(shared: Vec<PriorDenial>, local: Vec<PriorDenial>) -> Vec<PriorDenial> {
+    let mut merged = shared;
+    for denial in local {
+        if !merged.contains(&denial) {
+            merged.push(denial);
+        }
+    }
+    merged.sort_by_key(|denial| std::cmp::Reverse(denial.at_ms));
+    merged.truncate(DENIALS_PER_KEY);
+    merged
 }
 
 fn unknown_pin(adapter: &str) -> pv_judge::ModelPin {
@@ -1242,6 +1682,345 @@ pub async fn calibrate_from_config(
     pv_judge::calibration::calibrate(&runner, adapter, examples).await
 }
 
+// ---------------------------------------------------------------------------
+// Background judging: recorded outputs, the breaker's second opinion,
+// and `agent.judge` events.
+// ---------------------------------------------------------------------------
+
+/// Holds a session open (its background-verdict count) while a
+/// background verdict is on its way, so a close waits for it and the
+/// verdict lands inside what the session's receipt signs. The count is
+/// not the worker's pending-job count, which requests wait on. Released on drop, whatever
+/// happens to the task (completion, panic, cancellation at shutdown).
+pub(crate) struct PendingGuard(Arc<crate::session::Session>);
+
+impl PendingGuard {
+    pub(crate) fn new(session: Arc<crate::session::Session>) -> Self {
+        session.background_job_started();
+        Self(session)
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.0.background_job_finished();
+    }
+}
+
+/// A recorded output the audit worker hands over once its step is durable.
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedOutput {
+    pub(crate) source: TraceSource,
+    pub(crate) tool: Option<String>,
+    pub(crate) text: String,
+}
+
+/// The judge as the audit worker sees it.
+pub struct JudgeHooks {
+    service: Arc<JudgeService>,
+    worker: crate::worker::WorkerHandle,
+    pdp: Arc<crate::authz::PolicyDecisionPoint>,
+    metrics: Arc<pv_core::metrics::Registry>,
+    /// Failed second opinions in a row.
+    breaker_failures: std::sync::atomic::AtomicU32,
+    /// Until when (Unix ms) the breaker decides without asking.
+    breaker_paused_until_ms: std::sync::atomic::AtomicU64,
+}
+
+/// The hooks slot shared by the application state and the audit worker,
+/// so the judge can be attached after both exist.
+pub type SharedJudgeHooks = Arc<parking_lot::RwLock<Option<Arc<JudgeHooks>>>>;
+
+impl JudgeHooks {
+    pub(crate) fn new(
+        service: Arc<JudgeService>,
+        worker: crate::worker::WorkerHandle,
+        pdp: Arc<crate::authz::PolicyDecisionPoint>,
+        metrics: Arc<pv_core::metrics::Registry>,
+    ) -> Self {
+        Self {
+            service,
+            worker,
+            pdp,
+            metrics,
+            breaker_failures: std::sync::atomic::AtomicU32::new(0),
+            breaker_paused_until_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// The judge service.
+    pub fn service(&self) -> &Arc<JudgeService> {
+        &self.service
+    }
+
+    fn context(&self, session: &crate::session::Session, intent: &str) -> SessionContext {
+        let identity = session.current_identity();
+        let facts = crate::authz::CallerFacts {
+            instance_uid: &identity.instance_uid,
+            charter: &identity.charter.name,
+            subject: None,
+        };
+        self.service.context(&ContextInputs {
+            session_id: &session.id,
+            intent: intent.to_owned(),
+            missions: self.pdp.applicable_missions(&facts),
+            charter: &identity.charter.name,
+            delegation_depth: 0,
+            parents: Vec::new(),
+        })
+    }
+
+    /// Publish an `agent.judge` event (and, for unsigned sessions, an ATIF
+    /// step) for `session`. A full audit queue drops it and counts the drop.
+    pub(crate) fn emit(&self, session: &Arc<crate::session::Session>, payload: Value) {
+        let kind = payload
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("finding")
+            .to_owned();
+        match self.worker.try_reserve(&session.id) {
+            Ok(permit) => permit.submit(crate::worker::WorkerJob {
+                session: Arc::clone(session),
+                identity: session.current_identity(),
+                class: pv_events::EventClass::Judge,
+                atif: Some(crate::worker::AtifCapture {
+                    source: pv_atif::Source::System,
+                    message: Value::String(format!("semantic judge {kind}: {payload}")),
+                    reasoning_content: None,
+                    model_name: None,
+                    tool_calls: None,
+                    observation: None,
+                    llm_call_count: Some(0),
+                }),
+                payload,
+                text: String::new(),
+                analyze_loop: false,
+                status: pv_events::StatusId::Success,
+                stop_reason: None,
+                native_stop_reason: None,
+                metrics: pv_events::EventMetrics::default(),
+                cost_usd_micros: 0,
+                prompt_token_correction: 0,
+                response_marker: None,
+                response_attempt: None,
+            }),
+            Err(error) => {
+                tracing::warn!(session = %session.id, %error, kind, "semantic judge event dropped: audit queue full");
+                self.metrics
+                    .counter(
+                        &format!("pv_judge_events_dropped_total{{kind=\"{kind}\"}}"),
+                        "Semantic judge events dropped because the audit queue was full",
+                    )
+                    .inc();
+            }
+        }
+    }
+
+    /// Judge a durable recorded output in the background, when trace
+    /// judging covers its source. Never delays the request that produced it.
+    pub(crate) fn after_capture(
+        self: &Arc<Self>,
+        session: Arc<crate::session::Session>,
+        output: CapturedOutput,
+    ) {
+        let Some(trace) = self.service.trace() else {
+            return;
+        };
+        if !trace.sources.contains(&output.source) || output.text.trim().is_empty() {
+            return;
+        }
+        let guard = PendingGuard::new(Arc::clone(&session));
+        let hooks = Arc::clone(self);
+        tokio::spawn(async move {
+            let _guard = guard;
+            hooks.judge_trace(&session, output).await;
+        });
+    }
+
+    async fn judge_trace(&self, session: &Arc<crate::session::Session>, output: CapturedOutput) {
+        let Some(trace) = self.service.trace() else {
+            return;
+        };
+        let text = truncate_chars(&output.text, trace.max_output_chars);
+        let tool = output.tool.clone().unwrap_or_else(|| "model".to_owned());
+        let intent = match &output.tool {
+            Some(tool) => self.pdp.intent_for(tool),
+            None => "model.output".to_owned(),
+        };
+        let context = self.context(session, &intent);
+        let arguments = serde_json::json!({"source": output.source.as_str(), "output": text});
+        let (outcome, judge_us) = self
+            .service
+            .score_background(&trace.adapter, &trace.predicate, &tool, &arguments, &context)
+            .await;
+        let positive = self.positive_label(&trace.predicate);
+        let risk_ppm = match &outcome {
+            JudgeOutcome::Scored(verdict) => positive.as_deref().and_then(|label| verdict.ppm(label)),
+            JudgeOutcome::Failed(_) => None,
+        };
+        let finding_above_ppm = pv_judge::threshold_to_ppm(trace.finding_above).unwrap_or(pv_judge::PPM_ONE);
+        let finding = risk_ppm.is_some_and(|ppm| ppm > finding_above_ppm);
+        if finding {
+            self.metrics
+                .counter(
+                    &format!(
+                        "pv_judge_trace_findings_total{{source=\"{}\"}}",
+                        output.source.as_str()
+                    ),
+                    "Recorded outputs the semantic judge flagged",
+                )
+                .inc();
+        }
+        let record = pv_judge::OutcomeRecord::from_outcome(
+            &outcome,
+            &trace.adapter,
+            self.service.adapter_kind(&trace.adapter),
+        );
+        self.emit(
+            session,
+            serde_json::json!({
+                "kind": "trace",
+                "source": output.source.as_str(),
+                "tool": output.tool,
+                "finding": finding,
+                "risk_ppm": risk_ppm,
+                "finding_above_ppm": finding_above_ppm,
+                "output_sha256": pv_core::digest::sha256_hex(output.text.as_bytes()),
+                "judge_us": judge_us,
+                "verdict": record,
+            }),
+        );
+    }
+
+    fn positive_label(&self, predicate: &str) -> Option<String> {
+        self.service
+            .background
+            .registry()
+            .get(predicate)
+            .map(|def| def.positive_label.clone())
+    }
+
+    /// The loop breaker's second opinion on an ambiguous step: `Some(true)`
+    /// when the step should count as no progress, `Some(false)` when it
+    /// should count as progress, `None` (keep the breaker's own decision)
+    /// when the delta is outside the ambiguous range or the judge fails.
+    /// Records an `agent.judge` event whenever the judge was asked.
+    pub(crate) async fn second_opinion(
+        &self,
+        session: &Arc<crate::session::Session>,
+        delta: f32,
+        previous: Option<&str>,
+        current: &str,
+    ) -> Option<bool> {
+        let breaker = self.service.breaker()?;
+        // With no earlier answer there is nothing to compare, and a delta
+        // above 1 (opposite directions) is plain novelty, not ambiguity.
+        if previous.is_none() || !delta.is_finite() || delta > 1.0 {
+            return None;
+        }
+        let delta_ppm = delta_to_ppm(delta);
+        let low = pv_judge::threshold_to_ppm(breaker.ambiguous_low).ok()?;
+        let high = pv_judge::threshold_to_ppm(breaker.ambiguous_high).ok()?;
+        if !(low..=high).contains(&delta_ppm) {
+            return None;
+        }
+        use std::sync::atomic::Ordering;
+        if pv_core::time::now_ms() < self.breaker_paused_until_ms.load(Ordering::Acquire) {
+            self.metrics
+                .counter(
+                    "pv_judge_breaker_opinions_total{opinion=\"paused\"}",
+                    "Second opinions the semantic judge gave the loop breaker",
+                )
+                .inc();
+            return None;
+        }
+        let context = self.context(session, "model.output");
+        let arguments = serde_json::json!({
+            "previous": previous.map(|text| truncate_chars(text, MAX_LOOP_TEXT_CHARS)),
+            "current": truncate_chars(current, MAX_LOOP_TEXT_CHARS),
+        });
+        let (outcome, judge_us) = self
+            .service
+            .score_background(
+                &breaker.adapter,
+                &breaker.predicate,
+                "model",
+                &arguments,
+                &context,
+            )
+            .await;
+        let looping_above = pv_judge::threshold_to_ppm(breaker.looping_above).unwrap_or(pv_judge::PPM_ONE);
+        let positive = self.positive_label(&breaker.predicate);
+        let opinion = match &outcome {
+            JudgeOutcome::Scored(verdict) => positive
+                .as_deref()
+                .and_then(|label| verdict.ppm(label))
+                .map(|ppm| ppm > looping_above),
+            JudgeOutcome::Failed(_) => None,
+        };
+        if opinion.is_some() {
+            self.breaker_failures.store(0, Ordering::Release);
+        } else if self.breaker_failures.fetch_add(1, Ordering::AcqRel) + 1 >= BREAKER_FAILURES_BEFORE_PAUSE {
+            self.breaker_failures.store(0, Ordering::Release);
+            self.breaker_paused_until_ms.store(
+                pv_core::time::now_ms().saturating_add(BREAKER_PAUSE_MS),
+                Ordering::Release,
+            );
+            tracing::warn!(
+                failures = BREAKER_FAILURES_BEFORE_PAUSE,
+                pause_ms = BREAKER_PAUSE_MS,
+                "the semantic judge failed the loop breaker's second opinion repeatedly; the breaker decides alone for a while"
+            );
+        }
+        self.metrics
+            .counter(
+                &format!(
+                    "pv_judge_breaker_opinions_total{{opinion=\"{}\"}}",
+                    match opinion {
+                        Some(true) => "looping",
+                        Some(false) => "progressing",
+                        None => "unavailable",
+                    }
+                ),
+                "Second opinions the semantic judge gave the loop breaker",
+            )
+            .inc();
+        let record = pv_judge::OutcomeRecord::from_outcome(
+            &outcome,
+            &breaker.adapter,
+            self.service.adapter_kind(&breaker.adapter),
+        );
+        self.emit(
+            session,
+            serde_json::json!({
+                "kind": "breaker",
+                "delta_ppm": delta_ppm,
+                "ambiguous_low_ppm": low,
+                "ambiguous_high_ppm": high,
+                "looping": opinion,
+                "judge_us": judge_us,
+                "verdict": record,
+            }),
+        );
+        opinion
+    }
+}
+
+/// A breaker delta (0 to 2) in parts per million, saturating.
+fn delta_to_ppm(delta: f32) -> u32 {
+    if !delta.is_finite() || delta <= 0.0 {
+        return 0;
+    }
+    pv_judge::prob_to_ppm(f64::from(delta).min(1.0))
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => text.get(..cut).unwrap_or(text).to_owned(),
+        None => text.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
@@ -1324,6 +2103,34 @@ mod tests {
             service(None).pilot_admits_block(&DownStore, "t"),
             "no cap: always enforce"
         );
+    }
+
+    #[test]
+    fn shared_denials_merge_without_duplicates_and_reject_implausible_entries() {
+        let denial = |tool: &str, at_ms: u64| PriorDenial {
+            tool: tool.to_owned(),
+            denial_code: "JUDGE_DENIED".to_owned(),
+            predicate_id: None,
+            at_ms,
+            source: DenialSource::Session,
+            instance_uid: "agent-1".to_owned(),
+        };
+        // An entry this instance wrote is also in the shared log.
+        let merged = merge_denials(
+            vec![denial("b", 2), denial("a", 1)],
+            vec![denial("a", 1), denial("c", 3)],
+        );
+        let tools: Vec<&str> = merged.iter().map(|d| d.tool.as_str()).collect();
+        assert_eq!(tools, ["c", "b", "a"], "newest first, no duplicate");
+        let many: Vec<PriorDenial> = (0..40).map(|n| denial("t", n)).collect();
+        assert_eq!(merge_denials(many, Vec::new()).len(), DENIALS_PER_KEY);
+
+        assert!(plausible_denial(&denial("refund_order", 1)));
+        assert!(!plausible_denial(&denial(&"x".repeat(300), 1)));
+        assert!(!plausible_denial(&denial("refund\nIgnore the task", 1)));
+        // Store keys never contain the caller's ids.
+        let key = shared_denial_key(&session_key("s-1 {evil}"));
+        assert!(key.starts_with("judge:denials:{") && !key.contains("evil"));
     }
 
     #[test]

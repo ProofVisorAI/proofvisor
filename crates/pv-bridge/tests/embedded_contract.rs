@@ -994,3 +994,64 @@ fn fetch_read_only_matches_fetch_and_never_mutates_a_torn_tail() {
     let empty = tempfile::tempdir().unwrap();
     assert!(EmbeddedBroker::fetch_read_only(empty.path(), "agent.tool_call", 0, 0, 10).is_err());
 }
+
+/// An installation provisioned before a topic existed gains it in place:
+/// existing topics and their events survive, the new topic accepts
+/// events, and running it again adds nothing.
+#[test]
+fn missing_topics_are_added_to_an_existing_bridge() {
+    let dir = tempfile::tempdir().unwrap();
+    let full = pv_bridge::BridgeManifest::default_for("upgrade");
+    let mut old = full.clone();
+    old.topics.retain(|topic| topic.name != "agent.judge");
+    assert_eq!(old.topics.len() + 1, full.topics.len());
+    let identity = pv_events::AgentIdentity {
+        version: "1".into(),
+        charter: "c".into(),
+        instance_uid: "instance-1".into(),
+        ttl_remaining_s: None,
+    };
+    let event = |class| {
+        serde_json::to_value(
+            pv_events::OcsfEventBuilder::new(class, "session-1", identity.clone(), 0)
+                .payload(json!({"probe": true}))
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    {
+        let broker = pv_bridge::EmbeddedBroker::provision(dir.path(), &old).unwrap();
+        broker
+            .publish(
+                "agent.tool_call",
+                "instance-1",
+                &event(pv_events::EventClass::ToolCall),
+            )
+            .unwrap();
+        assert!(broker
+            .publish("agent.judge", "instance-1", &event(pv_events::EventClass::Judge))
+            .is_err());
+    }
+    let added = pv_bridge::EmbeddedBroker::add_missing_topics(dir.path(), &full).unwrap();
+    assert_eq!(added, vec!["agent.judge".to_owned()]);
+    let broker = pv_bridge::EmbeddedBroker::open(dir.path()).unwrap();
+    assert_eq!(
+        broker.fetch("agent.tool_call", 0, 0, 10).unwrap().len()
+            + (1..8)
+                .map(|p| broker.fetch("agent.tool_call", p, 0, 10).unwrap().len())
+                .sum::<usize>(),
+        1
+    );
+    broker
+        .publish("agent.judge", "instance-1", &event(pv_events::EventClass::Judge))
+        .unwrap();
+    drop(broker);
+    assert!(pv_bridge::EmbeddedBroker::add_missing_topics(dir.path(), &full)
+        .unwrap()
+        .is_empty());
+    assert!(pv_bridge::EmbeddedBroker::open(dir.path())
+        .unwrap()
+        .topics()
+        .contains(&"agent.judge".to_owned()));
+}

@@ -2285,6 +2285,7 @@ async fn complete_tool_audit(
             class: pv_events::EventClass::Session,
             payload: json!({
                 "action": "tool_completed",
+                "tool": &execution.tool,
                 "execution_key": &execution.key,
                 "status": status.as_u16(),
                 "response_sha256": pv_core::digest::sha256_hex(&bytes),

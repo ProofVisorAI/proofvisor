@@ -19,14 +19,23 @@ const INGEST_MIN_OCCURRED_AT_MS: u64 = 946_684_800_000;
 const INGEST_FUTURE_SKEW_MS: u64 = 5 * 60 * 1_000;
 const BRIDGE_SEQ_STRIDE: u64 = 1_000_000;
 const BRIDGE_FETCH_PAGE: usize = 1_024;
-const BRIDGE_TOPICS: [&str; 6] = [
+const BRIDGE_TOPICS: [&str; 7] = [
     "agent.session",
     "agent.tool_call",
     "agent.stop_reason",
     "agent.compression",
     "agent.identity",
     "agent.receipt",
+    // Added with scheme 2: sessions numbered under an earlier scheme
+    // skip it (see `bridge_seq`).
+    "agent.judge",
 ];
+
+/// Topics numbered by scheme 1: the first six of `BRIDGE_TOPICS`.
+const SCHEME_1_TOPICS: u64 = 6;
+
+/// Seq scheme for sessions that have never synced.
+const CURRENT_SEQ_SCHEME: u8 = 2;
 
 pub(super) struct ConsoleSyncArgs {
     pub(super) spool_dir: PathBuf,
@@ -867,10 +876,13 @@ struct SessionSyncState {
     ///     COLLIDES across topics once any partition's offset reaches
     ///     1e6 (and mass-collides at the MAX_SEQ clamp); kept only for
     ///     sessions that already synced under it.
-    ///   * `Some(1)` — interleaved `offset*TOPICS + topic_idx`,
-    ///     collision-free across topics for the same session (a
-    ///     session's records sit in ONE partition per topic — the
-    ///     broker partitions by session key).
+    ///   * `Some(1)` — interleaved `offset*6 + topic_idx` over the six
+    ///     topics before `agent.judge`, collision-free across topics
+    ///     for the same session (a session's records sit in ONE
+    ///     partition per topic — the broker partitions by session
+    ///     key). `agent.judge` records are not uploaded for it: index 6
+    ///     would collide with topic 0.
+    ///   * `Some(2)` — the same interleave over all seven topics.
     ///   * `None` — never bridge-synced; resolved at scan time
     ///     (legacy iff the session already synced under legacy).
     bridge_seq_scheme: Option<u8>,
@@ -1385,8 +1397,14 @@ fn scan_bridge_candidates(
                     let seq_scheme = session_id
                         .as_ref()
                         .and_then(|id| state.sessions.get(id))
-                        .map(|session| session.bridge_seq_scheme.unwrap_or(u8::from(!session.synced_any)))
-                        .unwrap_or(1);
+                        .map(|session| {
+                            session.bridge_seq_scheme.unwrap_or(if session.synced_any {
+                                0
+                            } else {
+                                CURRENT_SEQ_SCHEME
+                            })
+                        })
+                        .unwrap_or(CURRENT_SEQ_SCHEME);
                     // Quarantine is a terminal safety decision, independent
                     // of whether its display event fits the console's seq or
                     // timestamp limits. Observe it even behind a frozen
@@ -1680,6 +1698,10 @@ fn bridge_record_to_event(
     if occurred_ms > now_ms.saturating_add(INGEST_FUTURE_SKEW_MS) {
         return BridgeRecordMapping::FutureSkew;
     }
+    // Sessions numbered before `agent.judge` existed have no seq for it.
+    if topic == "agent.judge" && seq_scheme < 2 {
+        return BridgeRecordMapping::Skipped;
+    }
     let Some(seq) = bridge_seq(seq_scheme, topic_idx, stored.offset) else {
         // Scheme-1 refusal: the interleaved seq would exceed the
         // server's MAX_SEQ cap (a partition offset beyond ~16.6M).
@@ -1804,6 +1826,20 @@ fn bridge_record_to_event(
             body,
             occurred_at.clone(),
         ),
+        // Semantic-judge findings, second opinions and shadow-mode
+        // would-be blocks: recorded, never counted as a block.
+        "agent.judge" => bridge_ingest_event(
+            &session_external_id,
+            seq,
+            EventKind::Audit,
+            "judge",
+            payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(|kind| bounded_nonempty(kind, MAX_TAG_UNITS, "judge")),
+            body,
+            occurred_at.clone(),
+        ),
         _ => return BridgeRecordMapping::Skipped,
     };
     apply_bridge_metrics(value, &mut event);
@@ -1913,7 +1949,16 @@ fn bridge_seq(scheme: u8, topic_idx: usize, offset: u64) -> Option<u64> {
     // is unique per session. Refuse (None) instead of clamping when
     // the result would exceed the server's MAX_SEQ — a clamp CREATES
     // the collision class this scheme exists to remove.
-    let topics = u64::try_from(BRIDGE_TOPICS.len()).unwrap_or(u64::MAX);
+    let topics = if scheme == 1 {
+        SCHEME_1_TOPICS
+    } else {
+        u64::try_from(BRIDGE_TOPICS.len()).unwrap_or(u64::MAX)
+    };
+    if topic >= topics {
+        // Callers skip topics the scheme does not number; refusing here
+        // keeps a mistake from colliding.
+        return None;
+    }
     let seq = offset.checked_mul(topics)?.checked_add(topic)?;
     (seq <= MAX_SEQ).then_some(seq)
 }
@@ -3166,7 +3211,7 @@ mod tests {
         assert_eq!(bridge_seq(1, 0, 1_000_000), Some(6_000_000));
         assert_ne!(bridge_seq(1, 0, 1_000_000), bridge_seq(1, 1, 0));
         let mut seen = std::collections::HashSet::new();
-        for topic_idx in 0..BRIDGE_TOPICS.len() {
+        for topic_idx in 0..6 {
             for offset in [0u64, 1, 999_999, 1_000_000, 5_000_000] {
                 assert!(
                     seen.insert(bridge_seq(1, topic_idx, offset).unwrap()),
@@ -3177,6 +3222,19 @@ mod tests {
         // Past the server cap: refuse, never clamp (clamping collides).
         assert_eq!(bridge_seq(1, 0, MAX_SEQ), None);
         assert_eq!(bridge_seq(1, 5, u64::MAX), None);
+        // Scheme 1 numbers only the six topics it was defined over, so
+        // its seqs never change; the seventh topic has none.
+        assert_eq!(bridge_seq(1, 6, 0), None);
+        assert_eq!(bridge_seq(1, 0, 1), Some(6));
+        // Scheme 2: the same interleave over seven topics.
+        assert_eq!(bridge_seq(2, 6, 0), Some(6));
+        assert_eq!(bridge_seq(2, 0, 1), Some(7));
+        let mut seen = std::collections::HashSet::new();
+        for topic_idx in 0..BRIDGE_TOPICS.len() {
+            for offset in [0u64, 1, 999_999, 1_000_000, 5_000_000] {
+                assert!(seen.insert(bridge_seq(2, topic_idx, offset).unwrap()));
+            }
+        }
     }
 
     #[test]
@@ -3290,6 +3348,99 @@ mod tests {
                 .unwrap(),
             "quarantined_crash_evidence"
         );
+    }
+
+    /// `agent.judge` was added as a seventh topic. A session already
+    /// numbered under scheme 1 keeps that numbering (the server dedups
+    /// on (session, seq)) and skips judge records, whose index would
+    /// collide with topic 0; a session that never synced is numbered
+    /// under scheme 2 and uploads them.
+    #[test]
+    fn judge_events_upload_only_for_sessions_numbered_under_scheme_2() {
+        let dir = test_tempdir("bridge-judge");
+        write_bridge_manifest(dir.path());
+        let event = |class: &str, uid: &str, session: &str, payload: serde_json::Value| {
+            json!({
+                "metadata": {"uid": uid, "sequence": 0},
+                "class_name": class,
+                "time": 1767225600000u64,
+                "time_iso": "2026-01-01T00:00:00.000Z",
+                "status_id": 1,
+                "session_uid": session,
+                "ai_agent": {"version": "1.0.0", "charter": {"name": "agent", "type_id": 1}, "instance_uid": "i"},
+                "payload": payload
+            })
+        };
+        for (offset, session) in [(0, "old-s"), (1, "new-s")] {
+            append_bridge_event(
+                dir.path(),
+                "agent.session",
+                stored_bridge_event(
+                    "agent.session",
+                    offset,
+                    event(
+                        "agent.session",
+                        &format!("open-{session}"),
+                        session,
+                        json!({"action": "opened", "workflow": "signed"}),
+                    ),
+                ),
+            );
+            append_bridge_event(
+                dir.path(),
+                "agent.judge",
+                stored_bridge_event(
+                    "agent.judge",
+                    offset,
+                    event(
+                        "agent.judge",
+                        &format!("judge-{session}"),
+                        session,
+                        json!({"kind": "trace", "finding": true}),
+                    ),
+                ),
+            );
+        }
+        let mut state = SyncState::default();
+        state.sessions.insert(
+            "old-s".to_owned(),
+            SessionSyncState {
+                last_synced_seq: 0,
+                receipt_synced: false,
+                quarantined: false,
+                synced_any: true,
+                atif_synced: false,
+                bridge_seq_scheme: Some(1),
+            },
+        );
+        let scan = scan_bridge_candidates(dir.path(), &state, &BTreeSet::new());
+        let find = |id: &str| {
+            scan.candidates
+                .iter()
+                .find(|candidate| candidate.session.external_id == id)
+                .unwrap_or_else(|| panic!("no candidate for {id}"))
+        };
+        let old = find("old-s");
+        assert_eq!(old.seq_scheme, 1);
+        assert!(
+            old.events.iter().all(|e| e.tag != "judge"),
+            "scheme 1 must skip judge records"
+        );
+        assert_eq!(old.events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![0]);
+        let new = find("new-s");
+        assert_eq!(new.seq_scheme, 2);
+        let judge = new
+            .events
+            .iter()
+            .find(|e| e.tag == "judge")
+            .expect("judge record uploaded");
+        assert_eq!(judge.kind, EventKind::Audit);
+        assert_eq!(judge.sub.as_deref(), Some("trace"));
+        assert_eq!(judge.seq, 7 + 6, "offset 1 of topic 6 under seven topics");
+        assert_eq!(new.events.iter().find(|e| e.tag == "open").unwrap().seq, 7);
+        // Both judge records were read, the skipped one included, so
+        // neither is read again.
+        assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&1));
     }
 
     #[test]

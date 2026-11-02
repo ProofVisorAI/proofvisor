@@ -194,6 +194,47 @@ impl EmbeddedBroker {
         Self::open(data_dir)
     }
 
+    /// Add to an already-provisioned bridge every topic of `manifest` it
+    /// does not have yet, and return the names added. Existing topics,
+    /// their partitions and segments are never touched; a topic present in
+    /// both keeps its provisioned spec.
+    ///
+    /// The topic directories are created first and the manifest is
+    /// replaced atomically last, so a crash leaves either the old manifest
+    /// (plus harmless empty directories, picked up by a retry) or the new
+    /// one. Call it before [`Self::open`], from the only process writing to
+    /// `data_dir` (the daemon holds its spool lock).
+    pub fn add_missing_topics(data_dir: &Path, manifest: &BridgeManifest) -> Result<Vec<String>, BusError> {
+        let manifest_path = data_dir.join("manifest.yaml");
+        let yaml = pv_core::fsutil::read_capped_string(&manifest_path, pv_core::fsutil::MAX_CONTROL_BYTES)?;
+        let mut current = BridgeManifest::from_yaml(&yaml).map_err(|e| BusError::Backend(e.to_string()))?;
+        let missing: Vec<crate::manifest::TopicSpec> = manifest
+            .topics
+            .iter()
+            .filter(|topic| !current.topics.iter().any(|existing| existing.name == topic.name))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return Ok(Vec::new());
+        }
+        current.topics.extend(missing.iter().cloned());
+        current.validate().map_err(|e| BusError::Backend(e.to_string()))?;
+        let additions = BridgeManifest {
+            topics: missing.clone(),
+            ..current.clone()
+        };
+        #[cfg(not(feature = "cold-store"))]
+        reject_cold_uri_without_feature(&additions)?;
+        let resolved = resolve_referenced_schemas(&additions)?;
+        write_referenced_schemas(data_dir, &resolved)?;
+        for topic in &missing {
+            pv_core::fsutil::create_dir_all_synced(&data_dir.join("topics").join(&topic.name))?;
+        }
+        let updated = current.to_yaml().map_err(|e| BusError::Backend(e.to_string()))?;
+        pv_core::fsutil::write_atomic(&manifest_path, updated.as_bytes())?;
+        Ok(missing.into_iter().map(|topic| topic.name).collect())
+    }
+
     /// Open an existing bridge, recovering offsets (and truncating at most one
     /// torn trailing line per partition) from the segment files.
     pub fn open(data_dir: &Path) -> Result<Self, BusError> {

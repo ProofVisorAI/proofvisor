@@ -205,6 +205,7 @@ Bridge OCSF topics map to ingest events as follows:
 | `agent.compression` | `audit` | Body includes metrics including pruned token count when present. |
 | `agent.identity` | `audit` | Identity validation evidence. |
 | `agent.receipt` | skipped | Receipts are uploaded separately from the receipt spool. |
+| `agent.judge` | `audit` | Tag `judge`, with `trace`, `breaker` or `shadow` as the sub-label; never counted as a block. Uploaded only for sessions that first synced with a `pvctl` that knows this topic. A session that was already syncing before keeps its event numbering, so its judge events are not uploaded; read them from the Bridge (`pvctl event-tail --topic agent.judge`). |
 
 `pvctl setup` can create the console config for you. At the end of the
 guided setup, answer yes to "Connect to the hosted console?", accept or
@@ -411,7 +412,7 @@ covers running it.
 
 | Phase | Configuration | What happens |
 | --- | --- | --- |
-| Shadow | `mode = "shadow"` | The judge scores every tagged call and never blocks. Each `agent.tool_call` event's `payload.judge.would_block` says whether judge-aware policy would have blocked a call the rest of policy allowed. Compare that against what actually happened before enforcing. |
+| Shadow | `mode = "shadow"` | The judge scores every tagged call and never blocks. Each `agent.tool_call` event's `payload.judge.would_block` says whether judge-aware policy would have blocked a call the rest of policy allowed, and each such call is also published as its own `agent.judge` event (`payload.kind = "shadow"`). Compare that against what actually happened before enforcing. |
 | Capped pilot | `mode = "enforce"` with `[judge.pilot] daily_block_cap` | Policy acts on the verdicts for the tagged tools, but at most `daily_block_cap` score-based blocks per tool per UTC day. Later ones are recorded (`pilot_cap_reached: true`) and let through. Tag only a few tools per design partner. |
 | Scale | `mode = "enforce"`, no `[judge.pilot]` | Widen `[[judge.tools]]` once calibration holds. |
 
@@ -427,6 +428,9 @@ covers running it.
 | Model answers with an unpinned identity (cloud) | Deny, and an error log line. | `JUDGE_UNAVAILABLE` |
 | Local model or tokenizer file does not hash to its pin | The daemon refuses to start and logs the hash it found. | none (boot error) |
 | Local adapter configured in a build without the `onnx` feature | The daemon refuses to start; `pvctl config-validate` reports it. | none (boot error) |
+| Background judge (`[judge.trace]`) fails, times out, or is saturated (`background_max_concurrency` verdicts in flight) | Nothing is blocked. The `agent.judge` event records the failure in its `verdict.status`, with no finding. | none |
+| Breaker second opinion fails | The loop breaker keeps its own decision for that step. | none |
+| Audit queue full when a finding is published | The finding is dropped and counted in `pv_judge_events_dropped_total`. | none |
 
 Shadow mode never blocks, whatever fails; the failure is recorded in
 the verdict's `status`. The process-level test
@@ -483,18 +487,23 @@ exist only when `operator_tokens` and `[judge.drift]` are both set.
 
 ### State kept per instance
 
-The prior-denial log (the refusals the judge sees as context), the
-sampled verdicts waiting for review, and the concurrency limit live in
-each harness process and start empty after a restart; a review of a
-verdict sampled before a restart answers `unknown_review_id`. The drift
+The prior-denial log holds the refusals the judge sees as context. With
+`state_backend = "redis"` it is kept in Redis as well as in each
+process, so a delegated agent served by another instance sees the
+refusals of the agents above it. Each list keeps the newest 16 refusals
+and expires 24 hours after its last refusal. If Redis cannot be read,
+the judge uses the instance's own entries and counts the failure in
+`pv_judge_shared_denials_errors_total`. With the in-memory backend the
+log lives only in the process. The sampled verdicts waiting for review
+and the concurrency limit live in each harness process and start empty
+after a restart; a review of a verdict sampled before a restart answers
+`unknown_review_id`. The drift
 statistics and switches are saved to each instance's `state_file`, so
 they survive that instance's restarts but are not shared: give every
 instance its own file, send each review to the instance that sampled
 the verdict, and reset a switch on every instance where it tripped
-(`GET /admin/v1/judge/drift` shows which). With several instances,
-route a session and its delegated children to the same instance if the
-judge should see their refusals. The pilot cap counters live in the
-state store and are shared.
+(`GET /admin/v1/judge/drift` shows which). The pilot cap counters live
+in the state store and are shared.
 
 ## Metrics you should alert on
 
@@ -540,6 +549,12 @@ state store and are shared.
 | `pv_judge_decisions_total{mode="…",decision="…",enforced="…"}` | Sudden change in the `deny` or `ask` share | The judge's behaviour shifted (new traffic, a model change, drift). In shadow mode this is the would-have-blocked rate. |
 | `pv_judge_pilot_cap_reached_total` | Any increase | The pilot's daily block cap was reached and score-based blocks are being let through for the rest of the day. |
 | `pv_judge_drift_tripped` (gauge) | > 0 | A predicate is in ask-by-default mode after the calibration drift check. Recalibrate, then reset it. |
+| `pv_judge_trace_findings_total{source="…"}` | Sudden increase | Recorded tool or model outputs the judge flagged (for example instructions planted in a tool response). Read the `agent.judge` events for the sessions involved. |
+| `pv_judge_breaker_opinions_total{opinion="unavailable"}` | Sustained rate > 0 | The judge could not give the loop breaker its second opinion; the breaker is deciding alone. |
+| `pv_judge_shared_denials_errors_total{op="…"}` | Any increase | The judge could not read (`read`) or write (`write`) the refusal log in Redis; delegated agents on other instances may not see a parent's refusal until Redis is reachable again. |
+| `pv_judge_breaker_opinions_total{opinion="paused"}` | Any increase | The breaker's judge failed 3 times in a row, so the breaker stopped asking for 30 seconds. Check the judge before the pause ends. |
+| `pv_judge_events_dropped_total{kind="…"}` | Any increase | An `agent.judge` event was dropped because the audit queue was full. The decision it described still applied. |
+| `pv_judge_rules_repinned_total` | Sudden increase | Compression is cutting standing rules from long conversations and the harness is adding them back. |
 | `pv_judge_drift_persist_failures_total` | Any increase | A drift switch or reset could not be saved to `[judge.drift] state_file`; it applies now but may not survive a restart. Check the file's directory and disk. |
 | `pv_workload_assertions_rejected_total{reason="…"}` | Sustained rate > 0 of `chain`, `signature`, or `replay` | Workload identity assertions are refused. `chain` usually means `[workload_identity].ca_file` does not match the foundation's instance identity CA; `replay` or `signature` can indicate a stolen or forged assertion; `unregistered` means an app has no `[[workload_identities]]` entry. |
 

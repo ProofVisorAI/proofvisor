@@ -335,6 +335,7 @@ fn class_label(class: EventClass) -> &'static str {
         EventClass::Compression => "compression",
         EventClass::Identity => "identity",
         EventClass::Session => "session",
+        EventClass::Judge => "judge",
         _ => "event",
     }
 }

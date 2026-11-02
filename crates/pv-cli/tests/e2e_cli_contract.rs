@@ -34,7 +34,7 @@ fn stderr(out: &Output) -> String {
 
 #[test]
 fn help_mentions_every_subcommand() {
-    // Every shipped subcommand (docs/FEATURES.md counts twenty-one).
+    // Every shipped subcommand (docs/FEATURES.md counts twenty-two).
     let expected = [
         "setup",
         "start",
@@ -57,6 +57,7 @@ fn help_mentions_every_subcommand() {
         "config-validate",
         "console-sync",
         "loadgen",
+        "judge-calibrate",
     ];
     let out = run(&["--help"]);
     assert!(out.status.success(), "pvctl --help must succeed");

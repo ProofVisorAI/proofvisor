@@ -304,6 +304,29 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- **Semantic judge: trace judging, the loop breaker's second opinion,
+  standing-rule re-pinning, and `agent.judge` events.** `[judge.trace]`
+  judges recorded tool and model outputs after the fact, off the request
+  path; `[judge.breaker]` asks the judge whether an ambiguous step is a
+  loop (its adapter's deadline is at most 500 ms, and after 3 failures in
+  a row it stops asking for 30 seconds); `[[judge.standing_rules]]` adds a rule back, after the leading
+  system messages, when compression cut its text. Findings, second opinions, and shadow-mode would-be
+  blocks are published on a new OCSF class, `agent.judge` (class_uid
+  9907), and recorded as ATIF steps, so receipts cover them. Background
+  judging has its own concurrency limit (`background_max_concurrency`).
+  `pvctl console-sync` uploads `agent.judge` events as `audit` events
+  tagged `judge`, numbered under a new scheme (2) over seven topics; a
+  session already numbered under scheme 1 keeps it and skips judge
+  events. **Rollback:** an older `pvctl` would number scheme-2 sessions
+  as scheme 1, and the console would drop some of their later events as
+  duplicates; finish syncing open sessions before downgrading `pvctl`.
+  With `state_backend = "redis"` the judge's prior-denial log is also
+  kept in Redis (newest 16 per key, 24-hour expiry), so a delegated
+  agent served by another instance sees its parent's refusals.
+  An embedded Bridge created before the topic existed gains it at
+  startup when `[judge]` is set. **Rollback:** an earlier build cannot
+  finalize a session whose journal contains an `agent.judge` record;
+  let open sessions close before rolling back.
 - **Semantic judge (`[judge]`, new crate `pv-judge`).** Tools listed
   under `[[judge.tools]]` are scored on named, versioned predicates
   (`arg_matches_task@1`, `child_uses_parent_entitlement@1`,
@@ -627,6 +650,12 @@ exercised against release binaries in CI on every push
 
 ### Fixed
 
+- **The audit trail recorded the loop breaker's corrective
+  message as the caller's turn.** With `[breaker] action = "inject"`,
+  the corrective system message is appended after the caller's last
+  message, and the request step's audit capture read the last message.
+  It now records the caller's turn; the model still receives the
+  corrective message.
 - Policy push: the console counted every daemon on the current bundle as
   enforcing every policy, so a policy a daemon had reported unsupported
   still read "Enforced by 1 of 1". `enforcement.applied` now counts the

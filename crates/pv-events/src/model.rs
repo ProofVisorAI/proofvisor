@@ -35,6 +35,11 @@ pub enum EventClass {
     /// Session lifecycle (open/close/promote).
     #[serde(rename = "agent.session")]
     Session,
+    /// Semantic-judge findings: verdicts on recorded tool and model
+    /// outputs, the loop breaker's second opinions, and shadow-mode
+    /// would-be blocks.
+    #[serde(rename = "agent.judge")]
+    Judge,
 }
 
 impl EventClass {
@@ -47,6 +52,7 @@ impl EventClass {
             Self::Compression => 9904,
             Self::Identity => 9905,
             Self::Session => 9906,
+            Self::Judge => 9907,
         }
     }
 
@@ -59,6 +65,7 @@ impl EventClass {
             Self::Compression => "agent.compression",
             Self::Identity => "agent.identity",
             Self::Session => "agent.session",
+            Self::Judge => "agent.judge",
         }
     }
 
@@ -71,6 +78,7 @@ impl EventClass {
             Self::Compression,
             Self::Identity,
             Self::Session,
+            Self::Judge,
         ]
     }
 }

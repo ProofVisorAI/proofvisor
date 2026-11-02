@@ -320,3 +320,65 @@ async fn noop_vector_sink_nearest_similarity_is_async_safe() {
         t.await.unwrap();
     }
 }
+
+// ---------------------------------------------------------------------------
+// 10. The audit records the caller's turn, not the corrective message the
+//     Inject action appends after it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_audit_records_the_callers_turn_when_the_breaker_injects() {
+    let state = app_with_breaker(BreakerConfig {
+        min_tokens: 0,
+        window: 2,
+        delta_epsilon: EPSILON,
+        action: pv_loopdetect::BreakerAction::Inject,
+    });
+    let h = common::headers("inject-audit", "unsigned");
+    drop(
+        state
+            .prepare_chat(&h, chat("same loop step again"), None)
+            .unwrap(),
+    );
+    let sess = state.sessions.get("inject-audit").unwrap();
+    let embedding = HashEmbedder::default().embed("same loop step again");
+    for _ in 0..3 {
+        sess.loop_state.observe_embedding(embedding.clone(), 0);
+    }
+    assert_eq!(sess.loop_state.state(), pv_loopdetect::BreakerState::Open);
+    let prepared = state
+        .prepare_chat(&h, chat("fresh request after correction"), None)
+        .unwrap();
+    let forwarded = prepared.payload["messages"].as_array().unwrap().clone();
+    assert!(
+        forwarded.last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("semantic loop"),
+        "the model still receives the corrective message"
+    );
+    drop(prepared);
+    let outcome = state
+        .finalizer
+        .close_session(sess, pv_events::StopReason::SessionClosed)
+        .await
+        .unwrap();
+    let pv_harness::reconciler::FinalizeOutcome::Atif { path } = outcome else {
+        panic!("expected an ATIF file")
+    };
+    let trajectory: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let steps = trajectory["steps"].as_array().unwrap();
+    assert!(
+        steps
+            .iter()
+            .any(|step| step["source"] == "user" && step["message"] == "fresh request after correction"),
+        "the caller's turn must be recorded: {steps:?}"
+    );
+    assert!(
+        !steps.iter().any(|step| step["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("semantic loop"))),
+        "the corrective message must not stand in for the caller's turn: {steps:?}"
+    );
+}

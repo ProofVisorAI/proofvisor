@@ -70,6 +70,10 @@ pub struct Session {
     journal_index: AtomicU64,
     /// Loop-breaker state.
     pub loop_state: pv_loopdetect::SessionLoopState,
+    /// The model's previous output (bounded), for the semantic judge's
+    /// second opinion on the loop breaker. Kept only while a judge is
+    /// attached.
+    last_model_output: parking_lot::Mutex<Option<String>>,
     /// Signed workflow: incremental event chain.
     pub chain: Mutex<EventChain>,
     /// Unsigned workflow: ATIF steps.
@@ -116,6 +120,12 @@ pub struct Session {
     pending_jobs: AtomicU64,
     /// Notification used by finalization to await a drained worker queue.
     jobs_drained: tokio::sync::Notify,
+    /// Background semantic-judge verdicts not yet recorded. Kept apart
+    /// from `pending_jobs` so that requests waiting for their own audit
+    /// record never wait for the judge; only finalization waits for both.
+    background_jobs: AtomicU64,
+    /// Notification used by finalization to await background verdicts.
+    background_drained: tokio::sync::Notify,
     /// Set when an upstream action could not be captured completely.
     capture_failed: AtomicU64,
     /// RAM-cliff guard: count of unsigned ATIF steps
@@ -239,6 +249,7 @@ impl Session {
             seq: AtomicU64::new(0),
             journal_index: AtomicU64::new(0),
             loop_state: pv_loopdetect::SessionLoopState::new(breaker),
+            last_model_output: parking_lot::Mutex::new(None),
             totals: Totals::default(),
             last_activity_ms: AtomicU64::new(pv_core::time::now_ms()),
             last_activity_instant: Mutex::new(Instant::now()),
@@ -253,6 +264,8 @@ impl Session {
             promoted: AtomicU64::new(0),
             pending_jobs: AtomicU64::new(0),
             jobs_drained: tokio::sync::Notify::new(),
+            background_jobs: AtomicU64::new(0),
+            background_drained: tokio::sync::Notify::new(),
             capture_failed: AtomicU64::new(0),
             atif_steps: AtomicU64::new(0),
             lifecycle: std::sync::atomic::AtomicU8::new(SessionState::Open as u8),
@@ -714,6 +727,20 @@ impl Session {
         *self.atif.lock() = pv_atif::TrajectoryBuilder::new(agent, Some(self.id.clone()));
     }
 
+    /// The model's previous output, when recorded.
+    pub(crate) fn last_model_output(&self) -> Option<String> {
+        self.last_model_output.lock().clone()
+    }
+
+    /// Record the model's latest output (cut to the judge's limit).
+    pub(crate) fn set_last_model_output(&self, text: &str) {
+        let bounded = match text.char_indices().nth(crate::judge::MAX_LOOP_TEXT_CHARS) {
+            Some((cut, _)) => text.get(..cut).unwrap_or(text),
+            None => text,
+        };
+        *self.last_model_output.lock() = Some(bounded.to_owned());
+    }
+
     pub(crate) fn worker_job_started(&self) {
         self.pending_jobs.fetch_add(1, Ordering::AcqRel);
     }
@@ -751,6 +778,37 @@ impl Session {
             }
             notified.await;
         }
+    }
+
+    pub(crate) fn background_job_started(&self) {
+        self.background_jobs.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn background_job_finished(&self) {
+        if self.background_jobs.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.background_drained.notify_waiters();
+        }
+    }
+
+    /// Wait until every background semantic-judge verdict for this
+    /// session has been handed to the audit worker. A verdict submits its
+    /// event before it stops counting here, so waiting for this and then
+    /// for [`Self::wait_for_worker_jobs`] covers the recorded verdict too.
+    pub async fn wait_for_background_jobs(&self) {
+        loop {
+            let notified = self.background_drained.notified();
+            let mut notified = std::pin::pin!(notified);
+            notified.as_mut().enable();
+            if self.background_jobs.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Number of background semantic-judge verdicts not yet recorded.
+    pub fn background_jobs_count(&self) -> u64 {
+        self.background_jobs.load(Ordering::Acquire)
     }
 
     /// Number of forwarded chat responses currently streaming.

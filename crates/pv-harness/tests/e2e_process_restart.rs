@@ -78,16 +78,32 @@ fn spawn_mock_upstream() -> u16 {
 }
 
 /// Kills the daemon on drop so a failed assertion cannot leak a process.
-struct Daemon(std::process::Child);
+/// A running daemon and the file its error output goes to. When a test
+/// fails while the daemon is alive, the file is printed so the failure
+/// shows why the daemon stopped or did not start.
+struct Daemon(std::process::Child, Option<std::path::PathBuf>);
 
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if std::thread::panicking() {
+            if let Some(log) = &self.1 {
+                let output = std::fs::read_to_string(log).unwrap_or_default();
+                eprintln!("---- proofvisord output ({}) ----\n{output}", log.display());
+            }
+        }
     }
 }
 
 fn start_daemon(config_path: &std::path::Path, seed_path: &std::path::Path) -> Daemon {
+    // One log per config file, appended across restarts.
+    let log_path = config_path.with_extension("daemon.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("open daemon log");
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_proofvisord"))
         .arg("--config")
         .arg(config_path)
@@ -96,13 +112,14 @@ fn start_daemon(config_path: &std::path::Path, seed_path: &std::path::Path) -> D
         // fallback, and any other relative path stays inside the temp.
         .current_dir(config_path.parent().unwrap())
         .env("PV_SIGNING_SEED_FILE", seed_path)
-        // Quiet child logs; the assertions are HTTP-level.
+        // Warnings and errors only; the assertions are HTTP-level, and
+        // the output is shown only when a test fails.
         .env("RUST_LOG", "warn")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log.try_clone().expect("clone daemon log")))
+        .stderr(std::process::Stdio::from(log))
         .spawn()
         .expect("spawn proofvisord");
-    Daemon(child)
+    Daemon(child, Some(log_path))
 }
 
 fn http_get(port: u16, path: &str) -> Option<(u16, String)> {
@@ -694,7 +711,7 @@ vector_backend = "memory"
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn proofvisord");
-        let mut daemon = Daemon(child);
+        let mut daemon = Daemon(child, None);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let contents = std::fs::read_to_string(log_path).unwrap_or_default();

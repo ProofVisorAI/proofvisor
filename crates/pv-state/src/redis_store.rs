@@ -111,6 +111,21 @@ return result
     )
 });
 
+/// Push to the front of a list, keep its newest `ARGV[2]` entries, and
+/// expire it like the counters. A script rather than MULTI/EXEC: a
+/// Redis Cluster connection does not run transactions, and one key
+/// keeps the script in one slot.
+static PUSH_RECENT_LUA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        r"
+redis.call('LPUSH', KEYS[1], ARGV[1])
+redis.call('LTRIM', KEYS[1], 0, tonumber(ARGV[2]) - 1)
+redis.call('EXPIRE', KEYS[1], {BUDGET_COUNTER_TTL_SECS})
+return 1
+"
+    )
+});
+
 static FETCH_MAX_LUA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         r"
@@ -765,6 +780,61 @@ impl StateStore for RedisStore {
             }
         }
     }
+
+    fn shares_recent_lists(&self) -> bool {
+        true
+    }
+
+    fn push_recent(&self, key: &str, value: &str, keep: usize) -> Result<(), StateError> {
+        let keep = isize::try_from(keep.max(1)).unwrap_or(isize::MAX);
+        match &self.backend {
+            RedisBackend::Single(pool) => push_recent_on(
+                &mut pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+                value,
+                keep,
+            ),
+            RedisBackend::Cluster(pool) => push_recent_on(
+                &mut *pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+                value,
+                keep,
+            ),
+        }
+    }
+
+    fn recent(&self, key: &str) -> Result<Vec<String>, StateError> {
+        match &self.backend {
+            RedisBackend::Single(pool) => recent_on(
+                &mut pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+            ),
+            RedisBackend::Cluster(pool) => recent_on(
+                &mut *pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
+                key,
+            ),
+        }
+    }
+}
+
+fn push_recent_on<C: redis::ConnectionLike>(
+    conn: &mut C,
+    key: &str,
+    value: &str,
+    keep: isize,
+) -> Result<(), StateError> {
+    let _: i64 = redis::Script::new(&PUSH_RECENT_LUA)
+        .key(key)
+        .arg(value)
+        .arg(keep)
+        .invoke(conn)
+        .map_err(|e| StateError::Backend(e.to_string()))?;
+    Ok(())
+}
+
+fn recent_on<C: redis::ConnectionLike>(conn: &mut C, key: &str) -> Result<Vec<String>, StateError> {
+    conn.lrange(key, 0, -1)
+        .map_err(|e| StateError::Backend(e.to_string()))
 }
 
 /// Bounded SCAN+DEL loop against a single-node connection. Each SCAN

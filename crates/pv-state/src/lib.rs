@@ -40,6 +40,21 @@ pub mod redis_store;
 pub fn state_store_contract(store: &dyn StateStore, hash_tag: &str) {
     let key = |name: &str| format!("contract:{{{hash_tag}}}:{name}");
 
+    // -- recent lists (shared backends only): newest first, capped.
+    if store.shares_recent_lists() {
+        let list = key("recent");
+        assert!(
+            store.recent(&list).unwrap().is_empty(),
+            "absent list must read empty"
+        );
+        for value in ["a", "b", "c", "d"] {
+            store.push_recent(&list, value, 3).unwrap();
+        }
+        assert_eq!(store.recent(&list).unwrap(), vec!["d", "c", "b"]);
+    } else {
+        assert!(store.push_recent(&key("recent"), "a", 3).is_err());
+    }
+
     // -- add / get roundtrip; absent key reads 0.
     let counter = key("counter");
     assert_eq!(store.get(&counter).unwrap(), 0, "absent key must read 0");
