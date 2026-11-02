@@ -27,7 +27,10 @@ Render keeps its original hostname `agentvisor-api.onrender.com`, and the
 region and is reachable at `https://api.proofvisor.com` (custom domain,
 CNAME to `agentvisor-api.onrender.com`, certificate issued by Render; the
 old `api.agentvisorai.me` and the Render hostname still answer). Auto-Deploy
-is off, so deploy with Manual Deploy in the Render dashboard. The database is Neon Postgres (us-east-2,
+is on and set to "After CI Checks Pass" (since 2026-11-01): a merge to
+`main` deploys once that commit's GitHub checks are green. Manual Deploy
+in the Render dashboard is still available, but note that it, and saving
+environment variables, deploy the latest commit without waiting for CI. The database is Neon Postgres (us-east-2,
 direct/unpooled URL so LISTEN/NOTIFY works) and the mailer is Resend. The
 static site and console are GitHub Pages from
 `ProofVisorAI/proofvisorai.github.io` with `proofvisor.com` as the custom

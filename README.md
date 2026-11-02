@@ -356,4 +356,23 @@ See [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md), [EVOLUTION.m
 
 ## Scope
 
-The MVP intentionally excludes a web analytics UI, multi-region consensus, base-model training, and a general-purpose SFT/RL consumer.
+ProofVisor is the daemon (`proofvisord`), its CLI (`pvctl`), and an
+optional hosted console at <https://proofvisor.com/app/> with its API.
+The console shows fleet activity over the last hour to 30 days
+(sessions, tool calls allowed and blocked, model spend, losses
+prevented), each session's events and signed receipt, the policies
+pushed to daemons, members, single sign-on and the audit log.
+
+Deliberately out of scope:
+
+- **Multi-region consensus.** Several daemon replicas can share budgets
+  and events through Redis and Kafka or NATS (see
+  [Running multiple instances](#running-multiple-instances)), but there
+  is no consensus protocol between regions, and each evidence spool
+  belongs to exactly one replica. The hosted API runs in one region.
+- **Training models.** ProofVisor never trains or fine-tunes a model.
+- **A training-data pipeline.** Trajectories are written in ATIF, which
+  carries the fields that supervised fine-tuning (SFT) and
+  reinforcement-learning (RL) pipelines use, such as tool definitions
+  and completion token ids, so you can feed them to your own pipeline.
+  ProofVisor does not ship one.
