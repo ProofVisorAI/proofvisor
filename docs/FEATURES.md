@@ -382,9 +382,14 @@ with demonstration data, which is what the public site shows by default.
     means compression cut it; the check relies on the application
     sending each rule with exactly the configured text.
   - The breaker's second opinion runs inside the audit worker, so a
-    slow judge call also delays the audit records of other sessions
-    that share that worker, by at most 500 ms per ambiguous step (the
-    limit on the breaker adapter's deadline).
+    slow judge call delays that session's later audit records by at most
+    500 ms per ambiguous step (the limit on the breaker adapter's
+    deadline). Other sessions keep being recorded: the worker records
+    up to eight sessions at once per shard, each in order, and only a
+    shard whose eight slots all wait on the judge would hold up a ninth
+    (`stalled_session_does_not_block_shard_neighbors` in
+    `crates/pv-harness/src/worker.rs` checks that a stalled session does
+    not block its neighbours).
   - Differences from the build specification, kept on purpose:
     - Prior refusals come from a refusal log kept by the harness (in
       the process, and in Redis when `state_backend = "redis"`), not
