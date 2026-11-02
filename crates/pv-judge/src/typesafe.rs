@@ -195,9 +195,6 @@ impl TypeSafeJudge {
 
     /// The System One request body for `request`.
     fn body(&self, request: &JudgeRequest, predicate: &PredicateDef) -> Result<Value, JudgeError> {
-        if let Some(error) = crate::render::arguments_too_long(request) {
-            return Err(error);
-        }
         let mut redacted = request.clone();
         if let Some(redact) = &self.redactor {
             redact(&mut redacted.validated_args, RedactionTarget::Arguments);
@@ -206,6 +203,11 @@ impl TypeSafeJudge {
             redact(&mut context, RedactionTarget::Context);
             redacted.context = serde_json::from_value::<SessionContext>(context)
                 .map_err(|_| JudgeError::Unavailable("redacted judge context is invalid".to_owned()))?;
+        }
+        // Measured on what is rendered and sent: redaction can lengthen
+        // the arguments (a short address becomes "[REDACTED]").
+        if let Some(error) = crate::render::arguments_too_long(&redacted) {
+            return Err(error);
         }
         let criteria: serde_json::Map<String, Value> = predicate
             .labels

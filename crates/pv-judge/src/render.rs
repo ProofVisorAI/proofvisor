@@ -118,8 +118,13 @@ fn one_line(value: &str) -> String {
 /// and the caller chooses which part: keys are sorted, so padding under
 /// an early key pushes a later one out of view. Such a call is not
 /// judged; it fails as malformed (by default, held for approval).
+///
+/// The length measured is that of the rendered text itself (sorted and
+/// escaped, as [`canonical_json`] writes it), so escaping cannot push a
+/// call that passed the check past the cut. Call it on the request as it
+/// will be rendered, after any redaction.
 pub fn arguments_too_long(request: &JudgeRequest) -> Option<crate::adapter::JudgeError> {
-    let length = sorted(&request.validated_args).to_string().chars().count();
+    let length = rendered_json(&request.validated_args).chars().count();
     (length > MAX_ARGUMENT_CHARS).then(|| {
         crate::adapter::JudgeError::Malformed(format!(
             "the arguments ({length} characters as rendered) are longer than this judge reads \
@@ -130,14 +135,18 @@ pub fn arguments_too_long(request: &JudgeRequest) -> Option<crate::adapter::Judg
 
 /// JSON with object keys sorted at every level, cut to `max_chars`.
 pub fn canonical_json(value: &Value, max_chars: usize) -> String {
-    // JSON escapes control characters inside strings but not U+2028 and
-    // U+2029; escape them too, so an argument cannot start what reads as
-    // a new line of the rendering. The JSON keeps its meaning.
-    let text = sorted(value)
+    truncate(&rendered_json(value), max_chars)
+}
+
+/// The JSON as rendered, before any cut: keys sorted, and U+2028 and
+/// U+2029 escaped. JSON escapes control characters inside strings but not
+/// those two, so an argument could otherwise start what reads as a new
+/// line of the rendering. The JSON keeps its meaning.
+fn rendered_json(value: &Value) -> String {
+    sorted(value)
         .to_string()
         .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029");
-    truncate(&text, max_chars)
+        .replace('\u{2029}', "\\u2029")
 }
 
 fn sorted(value: &Value) -> Value {
@@ -214,6 +223,14 @@ mod tests {
         };
         assert!(arguments_too_long(&request(MAX_ARGUMENT_CHARS - 8)).is_none());
         assert!(arguments_too_long(&request(MAX_ARGUMENT_CHARS - 7)).is_some());
+        // Escaping counts: 1,400 line separators are 1,400 characters in
+        // the JSON but 8,400 rendered, which would push a later key past
+        // the cut.
+        let padded = JudgeRequest {
+            validated_args: json!({"a_pad": "\u{2028}".repeat(1_400), "z_target": "DROP TABLE customers"}),
+            ..request(0)
+        };
+        assert!(arguments_too_long(&padded).is_some(), "measured before escaping");
     }
 
     #[test]

@@ -1334,6 +1334,39 @@ async fn a_typesafe_judge_decides_through_the_thresholds_and_is_recorded() {
     }
 }
 
+/// Redaction can lengthen the arguments ("a@b.co" becomes "[REDACTED]"):
+/// the length check measures what is sent, so a call that grows past the
+/// limit is held, not sent with its tail cut off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn arguments_that_redaction_lengthens_past_the_limit_are_not_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (endpoint, seen) = typesafe_stand_in(0.05, "jev-1.14.0").await;
+    let mock = Arc::new(MockJudge::new(pin(), mismatch(0.0)));
+    let h = build(
+        Setup {
+            judge: typesafe_judge(&endpoint, &key_file(dir.path())),
+            policies: Vec::new(),
+            real_adapters: true,
+        },
+        &mock,
+        |_| {},
+    );
+    // About 8,000 characters before redaction, about 13,000 after.
+    let note = "a@b.co ".repeat(1_140);
+    let reply = call(&h, "ts-grow", json!({"note": note, "n": 1})).await;
+    assert_eq!(reply.status, 403, "{}", reply.json);
+    assert_eq!(
+        reply.code(),
+        "APPROVAL_REQUIRED",
+        "held as malformed: {}",
+        reply.json
+    );
+    assert!(
+        seen.lock().is_empty(),
+        "nothing may be sent for a call the judge cannot read in full"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_answer_from_another_typesafe_release_fails_closed() {
     let dir = tempfile::tempdir().unwrap();
