@@ -34,6 +34,8 @@ Scenarios (each prints PASS or FAIL with what it measured):
  15. A standing rule cut by compression is pinned back.
  16. The judge's second opinion spares repetitive progress and trips
      the loop breaker on a real loop.
+ 17. Auditors replay the shadow day's recorded decisions with pvctl,
+     and operators try stricter thresholds on the same records.
 
 Exit 0 when every scenario passes.
 """
@@ -809,6 +811,28 @@ def scenario_shadow(args, provider, billing, judge):
                                and e["payload"].get("kind") == "shadow",
                                expected, topic="agent.judge")
         flagged = {t["session"] for t in truth if t["kind"] != "ok"}
+        # Replay the shadow day from the daemon's own Bridge records.
+        replayed = d.pvctl("judge-replay", "--data-dir", str(d.root / "bridge"),
+                           "--config", str(d.root / "proofvisor.toml"), check=False)
+        report = json.loads(replayed.stdout) if replayed.stdout.strip() else {}
+        stricter = d.root / "stricter.toml"
+        stricter.write_text((d.root / "proofvisor.toml").read_text().replace(
+            "deny_above = 0.7\nask_above = 0.3", "deny_above = 0.35\nask_above = 0.3"))
+        tried = d.pvctl("judge-replay", "--data-dir", str(d.root / "bridge"),
+                        "--config", str(d.root / "proofvisor.toml"), "--what-if", str(stricter),
+                        check=False)
+        what_if = json.loads(tried.stdout) if tried.stdout.strip() else {}
+        refunds = report.get("tools", {}).get("refund_order", {})
+        shadow_judged = refunds.get("judged", 0)
+        record("17. the shadow day's decisions replay with pvctl",
+               replayed.returncode == 0 and tried.returncode == 0
+               and report.get("consistency", {}).get("mismatches") == 0
+               and refunds.get("would_block") == sum(would.values())
+               and refunds.get("refused") == 0
+               and what_if.get("what_if", {}).get("changed") == counts["border"],
+               judged=shadow_judged, mismatches=report.get("consistency", {}).get("mismatches"),
+               would_block=refunds.get("would_block"), refused_in_shadow=refunds.get("refused"),
+               changed_by_stricter_thresholds=what_if.get("what_if", {}).get("changed"))
         record("14. each shadow would-block is its own event",
                len(shadow) == expected and {e["session_uid"] for e in shadow} == flagged
                and all(e["payload"]["record"]["would_block"] for e in shadow),

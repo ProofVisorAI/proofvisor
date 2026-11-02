@@ -231,3 +231,140 @@ async fn judge_calibrate_measures_a_live_judge_and_enforces_floors() {
         text(&unknown)
     );
 }
+
+/// A judged `agent.tool_call` record, as the harness writes it: the
+/// verdict, and what `policy` decided over it.
+fn judged_event(
+    policy: &pv_judge::ThresholdPolicy,
+    offset: u64,
+    outcome: pv_judge::JudgeOutcome,
+    edit: impl FnOnce(&mut pv_judge::JudgeRecord),
+) -> String {
+    let decision = policy.decide(std::slice::from_ref(&outcome), &|_| false);
+    let mut record = pv_judge::JudgeRecord::new(
+        pv_judge::JudgeMode::Shadow,
+        10,
+        vec![pv_judge::OutcomeRecord::from_outcome(
+            &outcome,
+            "vendor",
+            pv_judge::AdapterKind::Cloud,
+        )],
+        &decision,
+        false,
+    );
+    record.would_block = decision.action != pv_judge::JudgeAction::Allow;
+    edit(&mut record);
+    json!({
+        "partition": 0, "offset": offset, "key": "agent", "stored_at": 1_767_225_600_000u64,
+        "value": {
+            "class_name": "agent.tool_call",
+            "session_uid": format!("s-{offset}"),
+            "metadata": {"uid": format!("evt-{offset}")},
+            "payload": {"tool": "refund_order", "allowed": true, "judge": record}
+        }
+    })
+    .to_string()
+}
+
+fn mismatch_verdict(p: u32) -> pv_judge::JudgeOutcome {
+    pv_judge::JudgeOutcome::Scored(pv_judge::Verdict {
+        predicate_id: "arg_matches_task@1".into(),
+        probs: vec![
+            pv_judge::LabelProb {
+                label: "match".into(),
+                ppm: 1_000_000 - p,
+            },
+            pv_judge::LabelProb {
+                label: "mismatch".into(),
+                ppm: p,
+            },
+        ],
+        model: pv_judge::ModelPin::new("cli-judge", "1", PIN).unwrap(),
+        latency_us: 10,
+    })
+}
+
+#[test]
+fn judge_replay_checks_recorded_decisions_and_tries_other_thresholds() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(dir.path(), 9, TOOL_WITH_OPT_IN, "cloud");
+    let policy = pv_harness::HarnessConfig::from_toml(&std::fs::read_to_string(&config).unwrap())
+        .unwrap()
+        .judge
+        .unwrap()
+        .threshold_policy()
+        .unwrap();
+    let bridge = dir.path().join("replay-bridge");
+    std::fs::create_dir_all(bridge.join("topics/agent.tool_call")).unwrap();
+    std::fs::write(
+        bridge.join("manifest.yaml"),
+        "manifest_version: 1\nname: replay\ntopics:\n  - name: agent.tool_call\n    partitions: 1\n    retention: {hot_hours: 24}\n",
+    )
+    .unwrap();
+    let failure = pv_judge::JudgeOutcome::Failed(pv_judge::JudgeFailure {
+        predicate_id: "arg_matches_task@1".into(),
+        model: pv_judge::ModelPin::new("cli-judge", "1", PIN).unwrap(),
+        kind: pv_judge::FailureKind::Unavailable,
+        detail: "down".into(),
+        latency_us: 10,
+    });
+    let mut lines = vec![
+        judged_event(&policy, 0, mismatch_verdict(820_000), |_| {}),
+        judged_event(&policy, 1, mismatch_verdict(500_000), |_| {}),
+        judged_event(&policy, 2, mismatch_verdict(100_000), |_| {}),
+        judged_event(&policy, 3, failure, |_| {}),
+    ];
+    let segment = bridge.join("topics/agent.tool_call/p0.jsonl");
+    std::fs::write(&segment, lines.join("\n") + "\n").unwrap();
+    let data_dir = bridge.to_string_lossy().into_owned();
+
+    // Every recorded decision follows from its verdict.
+    let output = pvctl(&["judge-replay", "--data-dir", &data_dir, "--config", &config]);
+    assert!(output.status.success(), "{}", text(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["judged"], 4);
+    assert_eq!(report["consistency"]["mismatches"], 0);
+    let tool = &report["tools"]["refund_order"];
+    assert_eq!(tool["recorded"]["deny"], 2, "0.82 mismatch and the outage");
+    assert_eq!(tool["recorded"]["allow"], 2);
+    assert_eq!(tool["would_block"], 2);
+
+    // A stricter threshold (deny above 0.4) would also block the 0.5 call.
+    let stricter = dir.path().join("stricter.toml");
+    std::fs::write(
+        &stricter,
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .replace("deny_above = 0.7", "deny_above = 0.4"),
+    )
+    .unwrap();
+    let output = pvctl(&[
+        "judge-replay",
+        "--data-dir",
+        &data_dir,
+        "--config",
+        &config,
+        "--what-if",
+        &stricter.to_string_lossy(),
+    ]);
+    assert!(output.status.success(), "{}", text(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["what_if"]["changed"], 1);
+    assert_eq!(report["tools"]["refund_order"]["what_if"]["deny"], 3);
+
+    // A record whose probability was edited after the decision fails.
+    lines.push(judged_event(&policy, 4, mismatch_verdict(820_000), |record| {
+        record.verdicts[0].probs[0].ppm = 990_000;
+        record.verdicts[0].probs[1].ppm = 10_000;
+    }));
+    std::fs::write(&segment, lines.join("\n") + "\n").unwrap();
+    let output = pvctl(&["judge-replay", "--data-dir", &data_dir, "--config", &config]);
+    assert!(!output.status.success(), "an edited record must fail the replay");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["consistency"]["mismatches"], 1);
+    assert_eq!(
+        report["consistency"]["mismatch_examples"][0]["at"]["event_uid"],
+        "evt-4"
+    );
+    assert!(text(&output).contains("do not follow"), "{}", text(&output));
+}
