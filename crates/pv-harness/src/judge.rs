@@ -1241,3 +1241,116 @@ pub async fn calibrate_from_config(
     let runner = JudgeRunner::new(slots, Arc::new(judge.registry()?), judge.max_concurrency)?;
     pv_judge::calibration::calibrate(&runner, adapter, examples).await
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+    use pv_state::{Spend, StateError, StateStore, TrySpendOutcome};
+
+    /// A state store that is down.
+    struct DownStore;
+
+    impl StateStore for DownStore {
+        fn add(&self, _key: &str, _delta: u64) -> Result<u64, StateError> {
+            Err(StateError::Backend("down".into()))
+        }
+        fn get(&self, _key: &str) -> Result<u64, StateError> {
+            Err(StateError::Backend("down".into()))
+        }
+        fn try_spend_many(&self, _spends: &[Spend]) -> Result<TrySpendOutcome, StateError> {
+            Err(StateError::Backend("down".into()))
+        }
+        fn remove(&self, _key: &str) {}
+    }
+
+    fn service(cap: Option<u64>) -> JudgeService {
+        let pin = pv_judge::ModelPin::new("m", "1", "a".repeat(64)).unwrap();
+        let config: JudgeConfig = toml::from_str(&format!(
+            r#"
+            mode = "enforce"
+            [[adapters]]
+            name = "a"
+            kind = "cloud"
+            endpoint = "http://127.0.0.1:9/x"
+            model_name = "m"
+            model_version = "1"
+            weights_sha256 = "{hash}"
+            [[tools]]
+            tool = "t"
+            allow_cloud = true
+            predicates = [{{ id = "arg_matches_task@1", adapter = "a" }}]
+            [[thresholds]]
+            predicate = "arg_matches_task@1"
+            label = "mismatch"
+            deny_above = 0.7
+            {pilot}
+            "#,
+            hash = "a".repeat(64),
+            pilot = cap
+                .map(|cap| format!("[pilot]\ndaily_block_cap = {cap}"))
+                .unwrap_or_default(),
+        ))
+        .unwrap();
+        let mut adapters: BTreeMap<String, Arc<dyn pv_judge::JudgeAdapter>> = BTreeMap::new();
+        adapters.insert(
+            "a".into(),
+            Arc::new(pv_judge::mock::MockJudge::new(
+                pin,
+                pv_judge::mock::MockBehavior::scores(&[("match", 1.0), ("mismatch", 0.0)]),
+            )),
+        );
+        JudgeService::new(&config, adapters, Arc::new(pv_core::metrics::Registry::new())).unwrap()
+    }
+
+    #[test]
+    fn the_pilot_cap_keeps_the_block_when_the_store_is_down() {
+        assert!(service(Some(1)).pilot_admits_block(&DownStore, "t"));
+    }
+
+    #[test]
+    fn the_pilot_cap_counts_per_tool() {
+        let judge = service(Some(2));
+        let store = pv_state::InMemoryStore::new();
+        assert!(judge.pilot_admits_block(&store, "t"));
+        assert!(judge.pilot_admits_block(&store, "t"));
+        assert!(!judge.pilot_admits_block(&store, "t"));
+        assert!(
+            judge.pilot_admits_block(&store, "other"),
+            "another tool has its own cap"
+        );
+        assert!(
+            service(None).pilot_admits_block(&DownStore, "t"),
+            "no cap: always enforce"
+        );
+    }
+
+    #[test]
+    fn the_denial_log_is_bounded() {
+        let mut log = DenialLog::default();
+        let denial = |n: usize| PriorDenial {
+            tool: format!("t{n}"),
+            denial_code: "POLICY_DENIED".into(),
+            predicate_id: None,
+            at_ms: 0,
+            source: DenialSource::Session,
+            instance_uid: "i".into(),
+        };
+        for n in 0..(DENIALS_PER_KEY + 5) {
+            log.push("k".into(), denial(n));
+        }
+        let recent = log.recent("k");
+        assert_eq!(recent.len(), DENIALS_PER_KEY);
+        assert_eq!(
+            recent[0].tool,
+            format!("t{}", DENIALS_PER_KEY + 4),
+            "newest first"
+        );
+        for n in 0..(DENIAL_LOG_KEYS + 3) {
+            log.push(format!("key-{n}"), denial(n));
+        }
+        assert!(log.by_key.len() <= DENIAL_LOG_KEYS);
+        assert!(log.recent("k").is_empty(), "the oldest key was evicted");
+    }
+}

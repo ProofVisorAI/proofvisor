@@ -133,3 +133,37 @@ fn committed_fixtures_match_the_builder() {
         common::TOKENIZER
     );
 }
+
+/// Padded arguments cannot push the operator's context out of a local
+/// model's view: the context is rendered first and only the arguments'
+/// tail is cut at the token limit.
+#[tokio::test]
+async fn padded_arguments_cannot_hide_the_task_from_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path(), &model_bytes(false));
+    cfg.max_input_tokens = 64;
+    let runner = runner(Arc::new(LocalOnnxJudge::load(&cfg).unwrap()));
+    // The toy model scores `mismatch` near 1 whenever it reads "danger";
+    // here only the task statement contains it.
+    let context = SessionContext {
+        task: Some("danger".to_owned()),
+        charter: "billing-agent".to_owned(),
+        ..SessionContext::default()
+    };
+    let padded = json!({"note": "filler ".repeat(1_000)});
+    let outcomes = runner
+        .evaluate(
+            &[JudgeTask {
+                predicate_id: ARG_MATCHES_TASK.to_owned(),
+                adapter: "local".to_owned(),
+            }],
+            "db_write",
+            &padded,
+            &context,
+        )
+        .await;
+    let JudgeOutcome::Scored(verdict) = &outcomes[0] else {
+        panic!("{outcomes:?}")
+    };
+    assert!(verdict.ppm("mismatch").unwrap() > 999_000, "{verdict:?}");
+}

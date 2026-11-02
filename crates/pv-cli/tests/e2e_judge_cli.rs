@@ -218,6 +218,11 @@ async fn judge_calibrate_measures_a_live_judge_and_enforces_floors() {
         text(&failing)
     );
 
+    std::fs::write(&set_path, "\n").unwrap();
+    let empty = run("vendor", Vec::new()).await.unwrap();
+    assert!(!empty.status.success(), "an empty labelled set must not pass");
+    assert!(text(&empty).contains("no examples"), "{}", text(&empty));
+
     let unknown = run("nope", Vec::new()).await.unwrap();
     assert!(!unknown.status.success());
     assert!(

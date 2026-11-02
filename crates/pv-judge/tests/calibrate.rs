@@ -129,3 +129,14 @@ async fn unknown_labels_in_the_set_are_refused() {
             .unwrap();
     assert!(calibrate(&runner(Arc::new(judge)), "judge", &bad).await.is_err());
 }
+
+#[tokio::test]
+async fn an_empty_labelled_set_is_refused_rather_than_passed() {
+    let pin = ModelPin::new("m", "1", "9".repeat(64)).unwrap();
+    let judge = MockJudge::new(pin, MockBehavior::scores(&[("match", 0.5), ("mismatch", 0.5)]));
+    let empty = load_jsonl("\n\n").unwrap();
+    let error = calibrate(&runner(Arc::new(judge)), "judge", &empty)
+        .await
+        .unwrap_err();
+    assert!(error.contains("no examples"), "{error}");
+}

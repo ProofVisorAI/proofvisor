@@ -1188,3 +1188,59 @@ ask_above = 0.3
     assert!(verdict["probs"][1]["ppm"].as_u64().unwrap() > 999_000);
     daemon.stop();
 }
+
+/// SIGTERM while a judged call waits on a slow judge: the graceful drain
+/// lets the call finish with its real verdict, and the daemon then exits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_while_a_judged_call_waits_on_the_judge() {
+    let slow_judge = serve(Router::new().route(
+        "/score",
+        post(|Json(body): Json<Value>| async move {
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+            let labels: Vec<String> = serde_json::from_value(body["predicate"]["labels"].clone()).unwrap();
+            Json(json!({
+                "model": {"name": "full-judge", "version": "1", "weights_sha256": PIN_HASH},
+                "probs": [{"label": labels[0], "p": 1.0}, {"label": labels[1], "p": 0.0}]
+            }))
+        }),
+    ))
+    .await;
+    let backend_calls = Recorder::default();
+    let chat_port = chat_upstream().await;
+    let tool_port = tool_backend(backend_calls.clone()).await;
+    let (_scratch, stack) = build_stack("enforce", chat_port, tool_port, slow_judge);
+    let daemon = stack.start();
+    let client = reqwest::Client::new();
+    let agent = token("jti-shutdown", "agent-shutdown", None);
+    let in_flight = {
+        let client = client.clone();
+        let url = stack.url("/v1/mcp");
+        tokio::spawn(async move {
+            post_json(
+                &client,
+                &url,
+                &agent,
+                &[("x-pv-session", "s-shutdown"), ("x-pv-workflow", "unsigned")],
+                &json!({"jsonrpc": "2.0", "id": NEXT_ID.fetch_add(1, Ordering::SeqCst), "method": "tools/call",
+                        "params": {"name": "refund_order", "arguments": {"note": "refund order 1001"}}}),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let started = Instant::now();
+    let stopper = std::thread::spawn(move || daemon.stop());
+    let reply = in_flight.await.unwrap();
+    assert_eq!(
+        reply.status, 200,
+        "the in-flight call completes with its verdict: {}",
+        reply.json
+    );
+    assert_eq!(backend_calls.all().len(), 1);
+    stopper.join().unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+}

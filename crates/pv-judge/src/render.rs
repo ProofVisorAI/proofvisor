@@ -5,6 +5,12 @@
 //! layout is versioned. Keys are sorted so the same call always
 //! renders the same way, and long values are cut at a character
 //! boundary before tokenization.
+//!
+//! The arguments come last. A model reads at most its token limit, so
+//! whatever does not fit is cut from the end: with the operator's
+//! context (intent, task, mission, refusals) first, oversized or padded
+//! arguments can only push out the tail of the arguments, never the
+//! task the model needs to judge them against.
 
 use crate::model::{DenialSource, JudgeRequest};
 use serde_json::Value;
@@ -24,7 +30,6 @@ pub const MAX_RENDERED_DENIALS: usize = 16;
 /// ```text
 /// predicate: arg_matches_task@1
 /// tool: db_write
-/// arguments: {"rows":3,"table":"orders"}
 /// intent: billing.reconcile
 /// task: Reconcile March invoices
 /// missions: m-42
@@ -33,6 +38,7 @@ pub const MAX_RENDERED_DENIALS: usize = 16;
 /// delegation depth: 1
 /// denial: session tool=db_drop code=POLICY_DENIED
 /// denial: parent tool=refund code=JUDGE_DENIED predicate=arg_matches_task@1
+/// arguments: {"rows":3,"table":"orders"}
 /// ```
 ///
 /// Absent fields are rendered as `-`.
@@ -41,11 +47,6 @@ pub fn render_request(request: &JudgeRequest) -> String {
     let mut text = String::new();
     let _ = writeln!(text, "predicate: {}", one_line(&request.predicate_id));
     let _ = writeln!(text, "tool: {}", one_line(&request.tool));
-    let _ = writeln!(
-        text,
-        "arguments: {}",
-        canonical_json(&request.validated_args, MAX_ARGUMENT_CHARS)
-    );
     let _ = writeln!(
         text,
         "intent: {}",
@@ -76,6 +77,11 @@ pub fn render_request(request: &JudgeRequest) -> String {
         }
         text.push('\n');
     }
+    let _ = writeln!(
+        text,
+        "arguments: {}",
+        canonical_json(&request.validated_args, MAX_ARGUMENT_CHARS)
+    );
     text
 }
 
@@ -164,14 +170,14 @@ mod tests {
             text,
             "predicate: arg_matches_task@1\n\
              tool: db_write\n\
-             arguments: {\"nested\":{\"a\":2,\"b\":1},\"rows\":3,\"table\":\"orders\"}\n\
              intent: billing.reconcile\n\
              task: Reconcile March invoices\n\
              missions: m-42\n\
              allowed intents: billing.reconcile, billing.read\n\
              charter: billing-agent\n\
              delegation depth: 1\n\
-             denial: parent tool=refund code=JUDGE_DENIED predicate=arg_matches_task@1\n"
+             denial: parent tool=refund code=JUDGE_DENIED predicate=arg_matches_task@1\n\
+             arguments: {\"nested\":{\"a\":2,\"b\":1},\"rows\":3,\"table\":\"orders\"}\n"
         );
     }
 

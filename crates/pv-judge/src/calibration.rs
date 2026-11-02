@@ -170,6 +170,11 @@ pub async fn calibrate(
     adapter: &str,
     examples: &[LabelledExample],
 ) -> Result<CalibrationReport, String> {
+    // An empty set measures nothing, so no floor could fail: refuse it
+    // rather than report a pass.
+    if examples.is_empty() {
+        return Err("the labelled set has no examples".to_owned());
+    }
     let model = runner
         .adapter(adapter)
         .ok_or_else(|| format!("adapter {adapter:?} is not configured"))?

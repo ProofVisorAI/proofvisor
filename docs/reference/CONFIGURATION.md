@@ -564,7 +564,12 @@ Built-in predicates:
 
 A local model reads the request rendered as text in a fixed, versioned
 layout (template version 1, `pv_judge::render::render_request`), so it
-must be trained on that layout. The cloud contract is documented in
+must be trained on that layout. The operator's context (intent, task,
+missions, refusals) comes first and the arguments last, so when the
+text exceeds `max_input_tokens` only the end of the arguments is cut:
+padded arguments cannot push the task out of the model's view. Give
+judged tools a schema with `maxLength` limits if the end of long
+arguments matters. A cloud judge receives the full arguments. The cloud contract is documented in
 `crates/pv-judge/src/cloud.rs`; a vendor is integrated by a small
 translator in front of its API, or by speaking the contract directly.
 
