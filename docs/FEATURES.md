@@ -366,7 +366,11 @@ with demonstration data, which is what the public site shows by default.
     `console-sync` skips them.
   - Standing rules are put back by exact text, not by a judge
     predicate per rule as the build specification proposed, and not
-    through the loop breaker's inject path.
+    through the loop breaker's inject path (which adds its message at
+    the end, where the audit record would take it for the caller's
+    turn). Compression never rewrites text, so a missing rule text
+    means compression cut it; the check relies on the application
+    sending each rule with exactly the configured text.
   - The breaker's second opinion runs inside the audit worker, so a
     slow judge call also delays the audit records of other sessions
     that share that worker.
