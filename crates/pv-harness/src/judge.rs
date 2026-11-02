@@ -62,9 +62,10 @@ pub const DEFAULT_BACKGROUND_CONCURRENCY: usize = 8;
 /// the close, so it must finish well inside that.
 pub const MAX_BACKGROUND_DEADLINE_MS: u64 = 2_500;
 /// Largest deadline for the loop breaker's adapter. The second opinion
-/// runs inside the audit worker, which records steps for a fixed group
-/// of sessions one at a time, so this is the longest one ambiguous step
-/// can delay the audit records of the other sessions in its group.
+/// runs inside the audit worker while it records the step, so it delays
+/// that session's later records and holds one of the worker shard's
+/// concurrent session slots for as long as it waits. Other sessions keep
+/// being recorded unless every slot of the shard is waiting the same way.
 pub const MAX_BREAKER_DEADLINE_MS: u64 = 500;
 /// Failed second opinions in a row after which the breaker stops asking.
 pub const BREAKER_FAILURES_BEFORE_PAUSE: u32 = 3;
@@ -803,8 +804,8 @@ impl JudgeConfig {
                 if adapter.deadline() > Duration::from_millis(MAX_BREAKER_DEADLINE_MS) {
                     errors.push(format!(
                         "[judge.breaker] adapter {:?} has a deadline above {MAX_BREAKER_DEADLINE_MS} ms; \
-                         the second opinion runs inside the audit worker and delays other sessions' \
-                         audit records for as long as it waits (define a separate adapter with a \
+                         the second opinion runs inside the audit worker and holds the session's \
+                         later records for as long as it waits (define a separate adapter with a \
                          shorter deadline_ms for the breaker)",
                         breaker.adapter
                     ));
