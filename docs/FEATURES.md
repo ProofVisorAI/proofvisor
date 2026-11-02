@@ -289,13 +289,16 @@ with demonstration data, which is what the public site shows by default.
   pre-rename console stored budget policies as text only, so a daemon
   reports such a policy as unsupported ("budget policy has no JSON
   spec") until an administrator re-saves it from a template.
-- **Windows.** The daemon and CLI compile for Windows x64 and CI builds
-  them there, but nothing has run on Windows hardware, so it is listed
-  here rather than among the shipped platforms: a build is not a
-  working feature.
+- **Windows.** The daemon and CLI compile for Windows x64, and since
+  2026-11-01 CI also runs them on a Windows runner (`scripts/boot-smoke.py`:
+  boot, readiness, a proxied chat completion, a signed session with a
+  verified receipt, restart on the same spool). Nothing has run on
+  customer Windows hardware and the installer, service unit and
+  containers stay Unix-only, so Windows is still listed here rather than
+  among the shipped platforms.
 - **Release state.** The latest release is the pre-release
-  `v0.1.0-rc.5`; nothing is on crates.io yet. Publishing needs explicit
-  approval.
+  `v0.1.0-rc.8` (2026-11-01; the installer pins it); nothing is on
+  crates.io yet. Publishing needs explicit approval.
 - **Native Anthropic and Gemini have not reached the real APIs yet.**
   They were tested against local servers that speak each vendor's wire
   format as documented. A run against api.anthropic.com and the Gemini

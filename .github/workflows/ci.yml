@@ -125,6 +125,17 @@ jobs:
         run: cargo build --locked -p pv-harness -p pv-cli --bins
       - name: Unit tests
         run: cargo test --locked --workspace --lib
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Boot smoke (the built daemon runs on Windows, not just compiles)
+        # Boots proofvisord.exe from environment variables, proxies a
+        # streaming chat completion to a stand-in provider, closes a
+        # signed session, verifies the receipt with pvctl.exe (and
+        # refuses a modified copy), stops, and restarts on the same
+        # spool. Stop is forceful on Windows (no SIGTERM); the restart
+        # proves the receipt was durable before that.
+        run: python scripts/boot-smoke.py --daemon target/debug/proofvisord.exe --pvctl target/debug/pvctl.exe --work "${{ runner.temp }}\boot-smoke"
 
   check:
     runs-on: ubuntu-latest
