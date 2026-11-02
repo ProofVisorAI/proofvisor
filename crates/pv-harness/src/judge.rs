@@ -75,8 +75,18 @@ pub const BREAKER_FAILURES_BEFORE_PAUSE: u32 = 3;
 pub const BREAKER_PAUSE_MS: u64 = 30_000;
 /// Longest standing rule text.
 pub const MAX_RULE_CHARS: usize = 2_000;
-/// Longest model output kept for the loop breaker's second opinion.
-pub const MAX_LOOP_TEXT_CHARS: usize = 4_096;
+/// Longest model output kept for the loop breaker's second opinion. Two
+/// of them (previous and current), JSON-escaped (at most doubled once
+/// line breaks are spaces), stay within what every adapter reads.
+pub const MAX_LOOP_TEXT_CHARS: usize = 1_900;
+/// Trace judging judges an output in windows of this many characters:
+/// doubled by JSON escaping, plus the object around it, a window stays
+/// within what every adapter reads in full
+/// ([`pv_judge::render::MAX_ARGUMENT_CHARS`]).
+pub const TRACE_WINDOW_CHARS: usize = 3_900;
+/// Largest `[judge.trace] max_output_chars`: an output is judged in at
+/// most this many characters (about 17 windows).
+pub const MAX_TRACE_OUTPUT_CHARS: usize = 65_536;
 /// Largest drift state file read at startup.
 pub const MAX_DRIFT_STATE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -795,8 +805,10 @@ impl JudgeConfig {
             if pv_judge::threshold_to_ppm(trace.finding_above).is_err() {
                 errors.push("[judge.trace] finding_above must be a probability in [0, 1]".to_owned());
             }
-            if !(1..=1_000_000).contains(&trace.max_output_chars) {
-                errors.push("[judge.trace] max_output_chars must be between 1 and 1000000".to_owned());
+            if !(1..=MAX_TRACE_OUTPUT_CHARS).contains(&trace.max_output_chars) {
+                errors.push(format!(
+                    "[judge.trace] max_output_chars must be between 1 and {MAX_TRACE_OUTPUT_CHARS}"
+                ));
             }
         }
         if let Some(breaker) = &self.breaker {
@@ -1895,6 +1907,22 @@ pub async fn calibrate_from_config(
 // and `agent.judge` events.
 // ---------------------------------------------------------------------------
 
+/// Text for a judge to read: characters that break lines (controls and
+/// the Unicode line and paragraph separators) become spaces. They carry
+/// no meaning a judge needs, and JSON escapes them to six characters
+/// each, which could push a window past what the judge reads.
+fn judgeable_text(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// One of a caller's judge-call slots, released on drop.
 struct CallerSlot<'a> {
     service: &'a JudgeService,
@@ -2093,23 +2121,54 @@ impl JudgeHooks {
         let Some(trace) = self.service.trace() else {
             return;
         };
-        let text = truncate_chars(&output.text, trace.max_output_chars);
+        // Judged in windows small enough for every adapter to read in
+        // full: a judge that cannot read an output whole would otherwise
+        // fail it (no finding), and padding would hide an injection. Line
+        // breaking characters become spaces, so JSON escaping can at most
+        // double a window's length.
+        let text = judgeable_text(&output.text);
+        let output_chars = text.chars().count();
+        let judged: Vec<char> = text.chars().take(trace.max_output_chars).collect();
+        let windows: Vec<String> = judged
+            .chunks(TRACE_WINDOW_CHARS)
+            .map(|window| window.iter().collect())
+            .collect();
         let tool = output.tool.clone().unwrap_or_else(|| "model".to_owned());
         let intent = match &output.tool {
             Some(tool) => self.pdp.intent_for(tool),
             None => "model.output".to_owned(),
         };
         let context = self.context(session, &intent);
-        let arguments = serde_json::json!({"source": output.source.as_str(), "output": text});
-        let (outcome, judge_us) = self
-            .service
-            .score_background(&trace.adapter, &trace.predicate, &tool, &arguments, &context)
-            .await;
+        let started = std::time::Instant::now();
+        let outcomes = futures::future::join_all(windows.iter().map(|window| {
+            let arguments = serde_json::json!({"source": output.source.as_str(), "output": window});
+            let (tool, context) = (tool.clone(), context.clone());
+            async move {
+                self.service
+                    .score_background(&trace.adapter, &trace.predicate, &tool, &arguments, &context)
+                    .await
+                    .0
+            }
+        }))
+        .await;
+        let judge_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         let positive = self.positive_label(&trace.predicate);
-        let risk_ppm = match &outcome {
+        let risk = |outcome: &JudgeOutcome| match outcome {
             JudgeOutcome::Scored(verdict) => positive.as_deref().and_then(|label| verdict.ppm(label)),
             JudgeOutcome::Failed(_) => None,
         };
+        // The riskiest scored window speaks for the output; with none
+        // scored, the first failure does.
+        let deciding = outcomes
+            .iter()
+            .filter(|outcome| risk(outcome).is_some())
+            .max_by_key(|outcome| risk(outcome))
+            .or_else(|| outcomes.first());
+        let Some(deciding) = deciding else {
+            return;
+        };
+        let risk_ppm = risk(deciding);
+        let failed_windows = outcomes.iter().filter(|outcome| risk(outcome).is_none()).count();
         let finding_above_ppm = pv_judge::threshold_to_ppm(trace.finding_above).unwrap_or(pv_judge::PPM_ONE);
         let finding = risk_ppm.is_some_and(|ppm| ppm > finding_above_ppm);
         if finding {
@@ -2124,7 +2183,7 @@ impl JudgeHooks {
                 .inc();
         }
         let record = pv_judge::OutcomeRecord::from_outcome(
-            &outcome,
+            deciding,
             &trace.adapter,
             self.service.adapter_kind(&trace.adapter),
         );
@@ -2138,6 +2197,11 @@ impl JudgeHooks {
                 "risk_ppm": risk_ppm,
                 "finding_above_ppm": finding_above_ppm,
                 "output_sha256": pv_core::digest::sha256_hex(output.text.as_bytes()),
+                "output_chars": output_chars,
+                "judged_chars": judged.len(),
+                "complete": judged.len() == output_chars,
+                "windows": outcomes.len(),
+                "failed_windows": failed_windows,
                 "judge_us": judge_us,
                 "verdict": record,
             }),
@@ -2188,8 +2252,8 @@ impl JudgeHooks {
         }
         let context = self.context(session, "model.output");
         let arguments = serde_json::json!({
-            "previous": previous.map(|text| truncate_chars(text, MAX_LOOP_TEXT_CHARS)),
-            "current": truncate_chars(current, MAX_LOOP_TEXT_CHARS),
+            "previous": previous.map(|text| truncate_chars(&judgeable_text(text), MAX_LOOP_TEXT_CHARS)),
+            "current": truncate_chars(&judgeable_text(current), MAX_LOOP_TEXT_CHARS),
         });
         let (outcome, judge_us) = self
             .service
