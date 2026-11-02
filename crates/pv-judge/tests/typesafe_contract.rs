@@ -308,6 +308,18 @@ fn aliases_empty_keys_and_plain_http_are_refused() {
         assert!(error.contains("not a fixed release"), "{error}");
     }
     assert!(build(pv_judge::typesafe::DEFAULT_ENDPOINT, "  ", VERSION).is_err());
+    // A key file holding more than the key: a second line, a label, a
+    // pasted character outside ASCII.
+    for key in [
+        "ts_key\nsecond line",
+        "export TYPESAFE_API_KEY=ts_key",
+        "ts_\u{2026}",
+    ] {
+        let error = build(pv_judge::typesafe::DEFAULT_ENDPOINT, key, VERSION)
+            .err()
+            .unwrap();
+        assert!(error.contains("hold more than the key"), "{key:?}: {error}");
+    }
     assert!(build("http://api.typesafe.ai/v1/systemone", KEY, VERSION).is_err());
 }
 
@@ -320,7 +332,12 @@ async fn the_live_api_answers_a_pinned_choice() {
         eprintln!("SKIPPED (PV_TYPESAFE_API_KEY_FILE unset): needs a TypeSafe API key");
         return;
     };
-    let key = std::fs::read_to_string(path).unwrap();
+    let key = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("PV_TYPESAFE_API_KEY_FILE={path} cannot be read: {error}"));
+    assert!(
+        !key.trim().is_empty(),
+        "PV_TYPESAFE_API_KEY_FILE={path} is empty: put the API key in it"
+    );
     let runner = runner(
         pv_judge::typesafe::DEFAULT_ENDPOINT,
         key.trim(),

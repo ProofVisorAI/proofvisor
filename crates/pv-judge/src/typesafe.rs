@@ -125,6 +125,16 @@ impl TypeSafeJudge {
         if config.api_key.trim().is_empty() {
             return Err("TypeSafe API key is empty".to_owned());
         }
+        // An HTTP header cannot carry a line break, and a key never holds
+        // spaces: a key file with a second line or a label around the key
+        // otherwise failed every call with an unexplained request error.
+        if !config.api_key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(
+                "TypeSafe API key must be one token of printable characters with no spaces or line \
+                 breaks; the key file seems to hold more than the key"
+                    .to_owned(),
+            );
+        }
         if config.timeout.is_zero() {
             return Err("TypeSafe judge timeout must be above zero".to_owned());
         }
@@ -275,6 +285,8 @@ fn transport_error(error: reqwest::Error) -> JudgeError {
         JudgeError::Timeout
     } else if error.is_connect() {
         JudgeError::Unavailable("TypeSafe connection failed".to_owned())
+    } else if error.is_builder() {
+        JudgeError::Unavailable("TypeSafe request could not be built".to_owned())
     } else {
         JudgeError::Unavailable("TypeSafe request failed".to_owned())
     }
