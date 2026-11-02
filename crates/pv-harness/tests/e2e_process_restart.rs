@@ -966,13 +966,90 @@ shutdown_ready_drain_s = 2
     );
 }
 
+/// A graceful shutdown finalizes every open session itself, leaving
+/// none to restart-time recovery: each unsigned session's trajectory
+/// is sealed into the spool before the process exits 0.
+#[test]
+fn sigterm_finalizes_every_open_session() {
+    const SESSIONS: usize = 120;
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let upstream_port = spawn_mock_upstream();
+    let listen_port = free_port();
+    let spool = root.join("spool/atif");
+    let config_path = root.join("proofvisor.toml");
+    let seed_path = root.join("signing.seed");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"config_version = 1
+listen = "127.0.0.1:{listen_port}"
+upstream_url = "http://127.0.0.1:{upstream_port}"
+require_identity = false
+default_workflow = "unsigned"
+compression_enabled = false
+dashboard_enabled = false
+atif_spool_dir = "{spool}"
+bridge_data_dir = "{bridge}"
+tool_schema_dir = "{schemas}"
+state_backend = "memory"
+embedder_backend = "hash"
+vector_backend = "memory"
+"#,
+            spool = spool.display(),
+            bridge = root.join("data/bridge").display(),
+            schemas = root.join("tool-schemas").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("tool-schemas")).unwrap();
+    let mut daemon = start_daemon(&config_path, &seed_path);
+    wait_healthy(listen_port, &mut daemon);
+    for n in 0..SESSIONS {
+        let (status, body) = http_post_chat(listen_port, &format!("open-{n}")).unwrap();
+        assert_eq!(status, 200, "session {n}: {body}");
+    }
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &daemon.0.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    assert!(killed.success());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Ok(Some(status)) = daemon.0.try_wait() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "daemon did not exit after SIGTERM");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(status.success(), "graceful shutdown must exit 0, got {status}");
+    // Spool files are named by a digest of the session: a sealed
+    // trajectory is `<stem>.json` with its `<stem>.atif-auth`; a session
+    // left for recovery keeps its `<stem>.events.ndjson` journal.
+    let names: Vec<String> = std::fs::read_dir(&spool)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    let sealed = names.iter().filter(|name| name.ends_with(".atif-auth")).count();
+    let unsealed = names
+        .iter()
+        .filter(|name| name.ends_with(".events.ndjson"))
+        .count();
+    assert_eq!(
+        sealed, SESSIONS,
+        "every open session is sealed at shutdown: {names:?}"
+    );
+    assert_eq!(unsealed, 0, "no journal is left for recovery");
+}
+
+/// Set by the mock judge when a "hold" request reaches it.
+static JUDGE_HOLD_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A judge speaking `proofvisor.judge.v1` on a background thread. It
 /// scores `mismatch` 0.9 when the arguments mention "danger" and 0.05
 /// otherwise. Clearing `alive` makes it drop every connection without
 /// answering, the way a crashed judge looks from the harness.
-/// Set by the mock judge when a "hold" request reaches it.
-static JUDGE_HOLD_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 fn spawn_mock_judge(alive: std::sync::Arc<std::sync::atomic::AtomicBool>) -> u16 {
     use std::sync::atomic::Ordering;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
