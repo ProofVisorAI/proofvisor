@@ -270,9 +270,11 @@ pub trait StateStore: Send + Sync {
         ))
     }
 
-    /// The list at `key`, newest first (empty when absent).
-    fn recent(&self, key: &str) -> Result<Vec<String>, StateError> {
-        let _ = key;
+    /// The newest `max` entries of the list at `key`, newest first
+    /// (empty when absent). Reading a bounded range keeps a list that
+    /// another writer grew from costing every reader.
+    fn recent(&self, key: &str, max: usize) -> Result<Vec<String>, StateError> {
+        let _ = (key, max);
         Err(StateError::Backend(
             "this state backend does not keep shared lists".to_owned(),
         ))

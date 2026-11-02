@@ -3875,8 +3875,12 @@ impl AppState {
             // Parse and protocol refusals say nothing about intent, and a
             // tool name the operator never defined (no schema, no judge
             // tag) is caller-chosen text that must not reach the judge.
+            // Only policy refusals (thresholds, WASM policies, allow
+            // lists, the judge) say what an agent was refused. Schema and
+            // budget refusals are free for a caller to provoke, and would
+            // otherwise push a real refusal out of the judge's view.
             let known_tool = self.sandbox.has_schema(tool) || judge.tasks_for(tool).is_some();
-            if !matches!(*stage, "parse" | "passthrough") && known_tool {
+            if *stage == "policy" && known_tool {
                 let predicate = (policy.as_deref() == Some(pv_sandbox::JUDGE_POLICY_NAME))
                     .then(|| {
                         judge_record
@@ -4096,6 +4100,8 @@ impl AppState {
         let validated = caller.validated.as_ref();
         let context = judge.context(&crate::judge::ContextInputs {
             session_id,
+            instance_uid: &identity.instance_uid,
+            tool,
             intent: self.pdp.intent_for(tool),
             missions: self.pdp.applicable_missions(&facts),
             charter: &identity.charter.name,

@@ -519,10 +519,15 @@ intents, and `task` statements), the caller's charter and delegation
 depth, and refusals the harness recorded earlier in the session and
 for the agents above the caller in its delegation chain (the agents of
 its `parent_token` chain and the agents named in its nested `act`
-claims). Only refusals
-of tools the operator defined (a tool with a schema, or a judged tool)
-are recorded, so a caller cannot plant text through a made-up tool
-name. It never sees the prompt. A judged tool must have a schema in
+claims). Only policy refusals (thresholds, WASM policies, allow lists,
+the judge) of tools the operator defined (a tool with a schema, or a
+judged tool) are recorded: a caller cannot plant text through a made-up
+tool name, and cannot push a real refusal out of view with schema or
+budget refusals, which are free to provoke. Each log keeps one entry per
+kind of refusal (tool, code, predicate), and the judge sees the
+refusals of the tool it is judging first. A session's refusals are
+kept per agent instance, because the session id is chosen by the
+caller. It never sees the prompt. A judged tool must have a schema in
 `tool_schema_dir`, or the daemon refuses to start; `pvctl
 config-validate` checks the `[judge]` section's structure, while the
 schema and policy checks run when the daemon starts. The judge is

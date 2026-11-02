@@ -626,6 +626,77 @@ async fn a_child_on_another_instance_sees_its_parents_refusals() {
         .any(|denial| denial.instance_uid == parent_uid && denial.source == pv_judge::DenialSource::Parent));
 }
 
+/// A parent cannot hide its own refusal from a delegated child by
+/// provoking cheap refusals afterwards: schema refusals are not
+/// recorded, so they cannot push the judge's refusal out of view.
+#[tokio::test]
+async fn a_parent_cannot_flush_its_refusal_with_schema_errors() {
+    let mut judge = judge_config(JudgeModeConfig::Enforce);
+    judge.tools[0].predicates.push(JudgePredicateBinding {
+        id: CHILD_USES_PARENT_ENTITLEMENT.into(),
+        adapter: "scripted".into(),
+    });
+    let h = harness(judge, |config| config.require_identity = true);
+    let audience = h.state.config.audience.clone();
+    h.mock.set_for_predicate(ARG_MATCHES_TASK, mismatch(0.9));
+    h.mock.set_for_predicate(
+        CHILD_USES_PARENT_ENTITLEMENT,
+        MockBehavior::scores(&[("independent", 0.95), ("laundering", 0.05)]),
+    );
+    let parent_jwt = mint(&claims(&audience, "jti-flush-parent", "agent-flusher"));
+    let refused = call(
+        &h,
+        "s-flush",
+        "update_ticket",
+        json!({"table": "refunds"}),
+        Some(&parent_jwt),
+    )
+    .await;
+    assert_eq!(code(&refused), "JUDGE_DENIED", "{}", refused.json);
+    // Twenty malformed calls, each refused by the schema gate.
+    for n in 0..20 {
+        let reply = call(
+            &h,
+            "s-flush",
+            "update_ticket",
+            json!({"table": n}),
+            Some(&parent_jwt),
+        )
+        .await;
+        assert_eq!(code(&reply), "SCHEMA_VIOLATION", "{}", reply.json);
+    }
+    let mut child = claims(&audience, "jti-flush-child", "agent-flush-child");
+    child.parent_token = Some(parent_jwt);
+    h.mock.set_for_predicate(ARG_MATCHES_TASK, mismatch(0.1));
+    let _ = call(
+        &h,
+        "s-flush-child",
+        "update_ticket",
+        json!({"table": "refunds"}),
+        Some(&mint(&child)),
+    )
+    .await;
+    let seen = h.mock.last_request().unwrap();
+    assert!(
+        seen.context
+            .prior_denials
+            .iter()
+            .any(|denial| denial.instance_uid == "agent-flusher"
+                && denial.source == pv_judge::DenialSource::Parent
+                && denial.denial_code == "JUDGE_DENIED"
+                && denial.tool == "update_ticket"),
+        "the parent's refusal must still be visible: {:?}",
+        seen.context.prior_denials
+    );
+    assert!(
+        seen.context
+            .prior_denials
+            .iter()
+            .all(|denial| denial.denial_code != "SCHEMA_VIOLATION"),
+        "schema refusals are not recorded"
+    );
+}
+
 #[tokio::test]
 async fn reviews_trip_the_drift_gate_and_an_operator_resets_it() {
     let mut judge = judge_config(JudgeModeConfig::Enforce);

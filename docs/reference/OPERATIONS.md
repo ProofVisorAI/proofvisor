@@ -520,7 +520,12 @@ The prior-denial log holds the refusals the judge sees as context. With
 `state_backend = "redis"` it is kept in Redis as well as in each
 process, so a delegated agent served by another instance sees the
 refusals of the agents above it. Each list keeps the newest 16 refusals
-and expires 24 hours after its last refusal. If Redis cannot be read,
+and expires 24 hours after its last refusal. An entry read back from
+Redis is used only if it has the shape the harness writes: a known
+denial code and predicate, plain tool and agent names, and a time within
+the last 24 hours; at most 16 entries are read per list. In each
+process, the log evicts the least recently used session or agent first.
+If Redis cannot be read,
 the judge uses the instance's own entries and counts the failure in
 `pv_judge_shared_denials_errors_total`. With the in-memory backend the
 log lives only in the process. The sampled verdicts waiting for review
