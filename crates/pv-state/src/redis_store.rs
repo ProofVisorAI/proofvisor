@@ -111,6 +111,21 @@ return result
     )
 });
 
+/// Push to the front of a list, keep its newest `ARGV[2]` entries, and
+/// expire it like the counters. A script rather than MULTI/EXEC: a
+/// Redis Cluster connection does not run transactions, and one key
+/// keeps the script in one slot.
+static PUSH_RECENT_LUA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        r"
+redis.call('LPUSH', KEYS[1], ARGV[1])
+redis.call('LTRIM', KEYS[1], 0, tonumber(ARGV[2]) - 1)
+redis.call('EXPIRE', KEYS[1], {BUDGET_COUNTER_TTL_SECS})
+return 1
+"
+    )
+});
+
 static FETCH_MAX_LUA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         r"
@@ -802,23 +817,19 @@ impl StateStore for RedisStore {
     }
 }
 
-/// LPUSH, LTRIM and EXPIRE in one MULTI/EXEC: one key, so one slot.
 fn push_recent_on<C: redis::ConnectionLike>(
     conn: &mut C,
     key: &str,
     value: &str,
     keep: isize,
 ) -> Result<(), StateError> {
-    redis::pipe()
-        .atomic()
-        .lpush(key, value)
-        .ignore()
-        .ltrim(key, 0, keep - 1)
-        .ignore()
-        .expire(key, i64::try_from(BUDGET_COUNTER_TTL_SECS).unwrap_or(i64::MAX))
-        .ignore()
-        .query::<()>(conn)
-        .map_err(|e| StateError::Backend(e.to_string()))
+    let _: i64 = redis::Script::new(&PUSH_RECENT_LUA)
+        .key(key)
+        .arg(value)
+        .arg(keep)
+        .invoke(conn)
+        .map_err(|e| StateError::Backend(e.to_string()))?;
+    Ok(())
 }
 
 fn recent_on<C: redis::ConnectionLike>(conn: &mut C, key: &str) -> Result<Vec<String>, StateError> {
