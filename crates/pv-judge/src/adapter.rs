@@ -110,6 +110,20 @@ pub enum FailureKind {
 }
 
 impl FailureKind {
+    /// Every failure class.
+    pub const ALL: [Self; 5] = [
+        Self::Timeout,
+        Self::Saturated,
+        Self::Unavailable,
+        Self::Malformed,
+        Self::ModelMismatch,
+    ];
+
+    /// The class a wire string names, if any.
+    pub fn from_wire(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == text)
+    }
+
     /// Stable wire string.
     pub fn as_str(self) -> &'static str {
         match self {

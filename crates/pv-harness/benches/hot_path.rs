@@ -163,6 +163,16 @@ fn benchmark(c: &mut Criterion) {
         });
     });
 
+    // An allowed call to a tool the semantic judge does not review: the
+    // path the judge must leave untouched.
+    c.bench_function("mcp_allow_untagged", |bench| {
+        let store = InMemoryStore::new();
+        let call = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lookup_order","arguments":{"order_id":"A-1"}}}"#;
+        assert!(sandbox.check(&store, "bench", call).is_allowed(), "the benchmarked call must be allowed");
+        bench.iter(|| black_box(sandbox.check(&store, "bench", call).elapsed_us()));
+        assert!(sandbox.check(&store, "bench", call).is_allowed(), "the benchmark measured refusals");
+    });
+
     c.bench_function("mcp_block", |bench| {
         let store = InMemoryStore::new();
         bench.iter(|| black_box(sandbox.check(&store, "bench", b"not-json").elapsed_us()));

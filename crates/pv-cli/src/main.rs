@@ -219,6 +219,24 @@ enum Command {
         #[arg(long)]
         structural_only: bool,
     },
+    /// Replay the semantic judge's recorded decisions from an embedded
+    /// Bridge: check that each follows from its verdicts under the
+    /// configured thresholds, and optionally try other thresholds.
+    /// Replays thresholds only (not WASM policies that read verdicts) and
+    /// does not detect tampering: verify the receipts first.
+    JudgeReplay {
+        /// Embedded Bridge data directory.
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// Harness configuration whose `[judge]` thresholds were in force
+        /// when the records were written.
+        #[arg(long)]
+        config: PathBuf,
+        /// Another configuration whose `[judge]` thresholds to try on the
+        /// same records.
+        #[arg(long)]
+        what_if: Option<PathBuf>,
+    },
     /// Measure a configured semantic-judge adapter against a labelled set
     /// (JSON Lines) and fail when it falls below the given floors.
     JudgeCalibrate {
@@ -466,6 +484,11 @@ async fn run(cli: Cli) -> Result<()> {
             path,
             structural_only,
         } => config_validate(&path, structural_only),
+        Command::JudgeReplay {
+            data_dir,
+            config,
+            what_if,
+        } => judge_replay(&data_dir, &config, what_if.as_deref()),
         Command::JudgeCalibrate {
             config,
             adapter,
@@ -1069,6 +1092,192 @@ async fn read_capped_response(response: reqwest::Response, max_bytes: u64) -> Re
         buf.extend_from_slice(&chunk);
     }
     String::from_utf8(buf).context("response body was not valid UTF-8")
+}
+
+/// Records listed by `judge-replay` in each detail list; counts are
+/// always complete.
+const MAX_REPLAY_LISTED: usize = 100;
+
+fn judge_thresholds(path: &Path) -> Result<pv_judge::ThresholdPolicy> {
+    let text = read_capped_str(path, MAX_CONFIG_BYTES, "config")?;
+    let config = pv_harness::HarnessConfig::from_toml(&text).map_err(anyhow::Error::msg)?;
+    let judge = config
+        .judge
+        .as_ref()
+        .with_context(|| format!("{} has no [judge] section", path.display()))?;
+    judge.threshold_policy().map_err(anyhow::Error::msg)
+}
+
+#[derive(Default, serde::Serialize)]
+struct ActionCounts {
+    allow: u64,
+    ask: u64,
+    deny: u64,
+}
+
+impl ActionCounts {
+    fn add(&mut self, action: pv_judge::JudgeAction) {
+        match action {
+            pv_judge::JudgeAction::Allow => self.allow += 1,
+            pv_judge::JudgeAction::Ask => self.ask += 1,
+            pv_judge::JudgeAction::Deny => self.deny += 1,
+        }
+    }
+}
+
+#[derive(Default, serde::Serialize)]
+struct ToolReplay {
+    judged: u64,
+    /// What the thresholds decided when the call was made.
+    recorded: ActionCounts,
+    /// Calls judge-aware policy would have blocked (shadow mode) or did
+    /// block (enforce mode), as recorded.
+    would_block: u64,
+    /// Calls the harness actually refused.
+    refused: u64,
+    /// What the `--what-if` thresholds decide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    what_if: Option<ActionCounts>,
+}
+
+/// Replay every judged `agent.tool_call` record in an embedded Bridge.
+fn judge_replay(data_dir: &Path, config: &Path, what_if: Option<&Path>) -> Result<()> {
+    use pv_judge::replay::{replay, DecisionSummary};
+    const TOPIC: &str = "agent.tool_call";
+    const PAGE: usize = 10_000;
+    let policy = judge_thresholds(config)?;
+    let other = what_if.map(judge_thresholds).transpose()?;
+    let manifest_text = read_capped_str(
+        &data_dir.join("manifest.yaml"),
+        MAX_CONFIG_BYTES,
+        "bridge manifest",
+    )?;
+    let manifest = BridgeManifest::from_yaml(&manifest_text).map_err(anyhow::Error::new)?;
+    let partitions = manifest
+        .topics
+        .iter()
+        .find(|topic| topic.name == TOPIC)
+        .map(|topic| topic.partitions)
+        .with_context(|| format!("the Bridge has no {TOPIC} topic"))?;
+
+    let mut read = 0u64;
+    let mut judged = 0u64;
+    let mut mismatches = 0u64;
+    let mut unreadable = 0u64;
+    let mut changed = 0u64;
+    let mut mismatch_list = Vec::new();
+    let mut unreadable_list = Vec::new();
+    let mut changed_list = Vec::new();
+    let mut tools: std::collections::BTreeMap<String, ToolReplay> = std::collections::BTreeMap::new();
+    for partition in 0..partitions {
+        let mut offset = 0u64;
+        loop {
+            let page = EmbeddedBroker::fetch_read_only(data_dir, TOPIC, partition, offset, PAGE)
+                .context("read the Bridge")?;
+            let Some(last) = page.last() else { break };
+            offset = last.offset.saturating_add(1);
+            for stored in &page {
+                read += 1;
+                let event = &stored.value;
+                let Some(raw) = event.pointer("/payload/judge") else {
+                    continue;
+                };
+                judged += 1;
+                let at = serde_json::json!({
+                    "session_uid": event.get("session_uid"),
+                    "event_uid": event.pointer("/metadata/uid"),
+                    "partition": partition,
+                    "offset": stored.offset,
+                });
+                let record = match serde_json::from_value::<pv_judge::JudgeRecord>(raw.clone())
+                    .map_err(|error| error.to_string())
+                    .and_then(|record| replay(&record, &policy).map(|decision| (record, decision)))
+                {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        unreadable += 1;
+                        if unreadable_list.len() < MAX_REPLAY_LISTED {
+                            unreadable_list.push(serde_json::json!({"at": at, "error": error}));
+                        }
+                        continue;
+                    }
+                };
+                let (record, decision) = record;
+                let tool = event
+                    .pointer("/payload/tool")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let entry = tools.entry(tool.clone()).or_default();
+                entry.judged += 1;
+                entry.recorded.add(record.decision);
+                entry.would_block += u64::from(record.would_block);
+                entry.refused += u64::from(
+                    event
+                        .pointer("/payload/allowed")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(false),
+                );
+                let recorded = DecisionSummary::recorded(&record);
+                let replayed = DecisionSummary::of(&decision);
+                if recorded != replayed {
+                    mismatches += 1;
+                    if mismatch_list.len() < MAX_REPLAY_LISTED {
+                        mismatch_list.push(serde_json::json!({
+                            "at": at, "tool": tool, "recorded": recorded, "replayed": replayed,
+                        }));
+                    }
+                }
+                if let Some(other) = &other {
+                    let tried = replay(&record, other).map_err(anyhow::Error::msg)?;
+                    entry
+                        .what_if
+                        .get_or_insert_with(ActionCounts::default)
+                        .add(tried.action);
+                    if tried.action != record.decision {
+                        changed += 1;
+                        if changed_list.len() < MAX_REPLAY_LISTED {
+                            changed_list.push(serde_json::json!({
+                                "at": at, "tool": tool, "recorded": recorded,
+                                "what_if": DecisionSummary::of(&tried),
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut report = serde_json::json!({
+        "records_read": read,
+        "judged": judged,
+        "consistency": {
+            "config": config.display().to_string(),
+            "mismatches": mismatches,
+            "unreadable": unreadable,
+            "mismatch_examples": mismatch_list,
+            "unreadable_examples": unreadable_list,
+        },
+        "tools": tools,
+    });
+    if let (Some(path), Some(object)) = (what_if, report.as_object_mut()) {
+        object.insert(
+            "what_if".to_owned(),
+            serde_json::json!({
+                "config": path.display().to_string(),
+                "changed": changed,
+                "changed_examples": changed_list,
+            }),
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if mismatches > 0 || unreadable > 0 {
+        anyhow::bail!(
+            "{mismatches} recorded decision(s) do not follow from their verdicts under {} and {unreadable} \
+             record(s) could not be replayed; check the receipts and the configuration in force at the time",
+            config.display()
+        );
+    }
+    Ok(())
 }
 
 /// Largest labelled set read by `judge-calibrate` (64 MiB).

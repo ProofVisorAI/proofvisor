@@ -109,14 +109,16 @@ chat-completions format.
 
 ## 4. The CLI (`pvctl`)
 
-Twenty-two subcommands, none of them stubs: guided `setup`, `init` with
+Twenty-three subcommands, none of them stubs: guided `setup`, `init` with
 presets, `doctor`, `health`, `start`, `sidecar`, `keygen`, `pubkey`,
 `receipt-locate`, `spool-prune`, `receipt-verify`, `atif-validate`,
 `manifest-validate`, `bridge-provision`, `event-tail`,
 `session-promote`, `token-revoke`, `instance-revoke`, `config-validate`,
 `console-sync` (uploads evidence to the hosted console, with a watch
-mode), `loadgen` and `judge-calibrate` (measures a semantic-judge model
-on a labelled set and fails below set floors; see section 11).
+mode), `loadgen`, `judge-calibrate` (measures a semantic-judge model on
+a labelled set and fails below set floors) and `judge-replay` (replays
+recorded judge decisions against the configured or other thresholds;
+see section 11).
 
 ## 5. The hosted console (proofvisor.com/app and api.proofvisor.com)
 
@@ -374,7 +376,23 @@ with demonstration data, which is what the public site shows by default.
     sending each rule with exactly the configured text.
   - The breaker's second opinion runs inside the audit worker, so a
     slow judge call also delays the audit records of other sessions
-    that share that worker.
+    that share that worker, by at most 500 ms per ambiguous step (the
+    limit on the breaker adapter's deadline).
+  - Differences from the build specification, kept on purpose:
+    - Prior refusals come from a refusal log kept by the harness (in
+      the process, and in Redis when `state_backend = "redis"`), not
+      read back from the session's event chain. With the in-memory
+      backend, a restart empties it.
+    - Probabilities are recorded as integer parts per million, not
+      32-bit floats, so the hashed event chain is the same on every
+      machine.
+    - The receipt's field whitelist was not extended: the receipt
+      format did not change, and the verdicts are covered through the
+      event chain and the trajectory it signs.
+    - Labelled examples are not exported automatically from shadow
+      traces: the record keeps the arguments but not the full context
+      the judge saw, so an exported example would be scored on a
+      different input. Building the labelled set is data work.
   - Tools are tagged for review in `[[judge.tools]]`, not inside their
     schema files.
   - The review queue and the drift state are kept per instance. The
@@ -539,7 +557,7 @@ for each label. Policy turns the probabilities into allow, ask or deny,
 and the signed audit trail records every verdict. The configuration is
 in `docs/reference/CONFIGURATION.md` (section "Semantic judge") and the
 runbook in `docs/reference/OPERATIONS.md`. `scripts/judge-scenarios.py`
-runs 17 scenarios against the release binaries, with a stand-in model
+runs 18 scenarios against the release binaries, with a stand-in model
 provider, billing backend and judge service. The numbers in the table
 refer to those scenarios.
 
@@ -557,6 +575,8 @@ refer to those scenarios.
 | Recorded tool outputs and model answers are judged in the background, and findings are published as `agent.judge` events (OCSF class 9907) that the receipt covers. A slow verdict does not delay the reply, and a session close waits for it. | `e2e_judge_background.rs`; scenario 13 |
 | The loop breaker asks the judge when a step's change is ambiguous: repetition that is progress is spared, and a real loop trips the breaker. | `e2e_judge_background.rs`, `crates/pv-loopdetect` unit tests; scenario 16 |
 | A standing rule that compression cut is put back after the leading system messages, and the token count is recomputed. | `e2e_judge_background.rs`; scenario 15 |
+| `pvctl judge-replay` replays recorded decisions from the Bridge: each must follow from its verdicts under the configured thresholds, and other thresholds can be tried on the same records. | `crates/pv-judge/src/replay.rs` unit tests, `e2e_judge_cli.rs` (an edited probability is caught); scenario 17 (the shadow day replays with no mismatch, and stricter thresholds change exactly the borderline calls) |
+| Every failure mode of the specification's table (timeout, malformed answer, saturation, dead judge, model-hash mismatch) is driven against the real binary after a SIGKILL and restart. | `e2e_process_restart.rs` |
 | An embedded Bridge created before the `agent.judge` topic existed gains it at start when `[judge]` is set. | `crates/pv-bridge/tests/embedded_contract.rs` (`missing_topics_are_added_to_an_existing_bridge`) |
 
 What is not proven or not built is listed in section 7.

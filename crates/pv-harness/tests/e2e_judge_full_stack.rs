@@ -180,12 +180,18 @@ async fn judge_service(seen: Recorder, alive: Arc<AtomicBool>) -> u16 {
 
 // ── The daemon ──────────────────────────────────────────────────────
 
-struct Daemon(std::process::Child);
+/// A running daemon and the file its output goes to, printed when a
+/// test fails while the daemon is alive.
+struct Daemon(std::process::Child, PathBuf);
 
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        if std::thread::panicking() {
+            let output = std::fs::read_to_string(&self.1).unwrap_or_default();
+            eprintln!("---- proofvisord output ({}) ----\n{output}", self.1.display());
+        }
     }
 }
 
@@ -241,17 +247,26 @@ impl Stack {
     }
 
     fn start(&self) -> Daemon {
+        // One log for every start of this stack, appended.
+        let log_path = self.root.join("daemon.log");
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .expect("open daemon log");
         let child = std::process::Command::new(env!("CARGO_BIN_EXE_proofvisord"))
             .arg("--config")
             .arg(&self.config)
             .current_dir(&self.root)
             .env("PV_SIGNING_SEED_FILE", self.root.join("signing.seed"))
             .env("RUST_LOG", "warn")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(
+                log.try_clone().expect("clone daemon log"),
+            ))
+            .stderr(std::process::Stdio::from(log))
             .spawn()
             .expect("spawn proofvisord");
-        let mut daemon = Daemon(child);
+        let mut daemon = Daemon(child, log_path);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
@@ -387,7 +402,11 @@ tolerance = 0.0
 }
 
 fn token(jti: &str, instance_uid: &str, parent: Option<String>) -> String {
-    let now = pv_core::time::now_ms() / 1000;
+    // One issue time for every token of the process: a delegated child
+    // must not expire after its parent, which a per-token "now" broke
+    // when the two were minted in different seconds.
+    static START: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let now = *START.get_or_init(|| pv_core::time::now_ms() / 1000);
     let claims = pv_identity::NhiClaims {
         sub: "user:dana@acme.io".into(),
         iss: "full-issuer".into(),

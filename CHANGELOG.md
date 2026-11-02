@@ -304,6 +304,13 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- **`pvctl judge-replay`.** Replays the semantic judge's recorded
+  decisions from an embedded Bridge through the same threshold function
+  the daemon uses: with `--config` it fails when a recorded decision
+  does not follow from its verdicts; with `--what-if` it reports what
+  other thresholds would have decided, per tool. Thresholds only (not
+  WASM policies that read verdicts); verify receipts first, since it
+  does not detect tampering.
 - **Semantic judge: trace judging, the loop breaker's second opinion,
   standing-rule re-pinning, and `agent.judge` events.** `[judge.trace]`
   judges recorded tool and model outputs after the fact, off the request

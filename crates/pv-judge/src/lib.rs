@@ -26,6 +26,7 @@ pub mod model;
 pub mod predicate;
 pub mod record;
 pub mod render;
+pub mod replay;
 pub mod thresholds;
 
 #[cfg(feature = "runner")]

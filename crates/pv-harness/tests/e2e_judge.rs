@@ -125,6 +125,15 @@ fn sandbox(config: &HarnessConfig, judge: &JudgeConfig) -> Sandbox {
 }
 
 fn harness(judge: JudgeConfig, tweak: impl FnOnce(&mut HarnessConfig)) -> Harness {
+    harness_with(judge, tweak, |mock| mock as _)
+}
+
+/// [`harness`] with the scripted judge wrapped by `adapter`.
+fn harness_with(
+    judge: JudgeConfig,
+    tweak: impl FnOnce(&mut HarnessConfig),
+    adapter: impl FnOnce(Arc<MockJudge>) -> Arc<dyn pv_judge::JudgeAdapter>,
+) -> Harness {
     let mut config = common::leaked_test_config();
     tweak(&mut config);
     config.judge = Some(judge.clone());
@@ -137,7 +146,7 @@ fn harness(judge: JudgeConfig, tweak: impl FnOnce(&mut HarnessConfig)) -> Harnes
     };
     let mock = Arc::new(MockJudge::new(pin(), mismatch(0.05)));
     let mut adapters: BTreeMap<String, Arc<dyn pv_judge::JudgeAdapter>> = BTreeMap::new();
-    adapters.insert("scripted".into(), Arc::clone(&mock) as _);
+    adapters.insert("scripted".into(), adapter(Arc::clone(&mock)));
     let service = JudgeService::new(&judge, adapters, Arc::clone(&state.metrics)).unwrap();
     let state = Arc::new((*state).clone().with_judge(Arc::new(service)));
     Harness { state, bus, mock }
@@ -175,8 +184,10 @@ async fn request_json(h: &Harness, request: axum::http::Request<axum::body::Body
 }
 
 /// The tool-call events for `session`, once `count` have reached the bus.
+/// The limit is generous: on a loaded machine the audit worker's writes
+/// can lag by seconds, and the delay is not what these tests check.
 async fn tool_events(bus: &common::RecordingBus, session: &str, count: usize) -> Vec<Value> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let events: Vec<Value> = bus
             .payloads
@@ -430,7 +441,7 @@ fn mint(claims: &pv_identity::NhiClaims) -> String {
 }
 
 fn claims(audience: &str, jti: &str, instance_uid: &str) -> pv_identity::NhiClaims {
-    let now = pv_core::time::now_ms() / 1000;
+    let now = common::token_epoch();
     pv_identity::NhiClaims {
         sub: "user:bob@acme.io".into(),
         iss: "test-issuer".into(),
@@ -979,12 +990,25 @@ async fn a_configured_judge_that_is_not_attached_fails_closed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slow_judge_does_not_hold_up_a_session_close() {
     let mut judge = judge_config(JudgeModeConfig::Enforce);
-    judge.adapters[0].deadline_ms = Some(3_000);
-    let h = harness(judge, |_| {});
+    judge.adapters[0].deadline_ms = Some(30_000);
+    // The judge answers only after the close returns. A close that
+    // waited for it would wait out the 30 s deadline.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let entered: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
+    let (held, counted) = (Arc::clone(&gate), Arc::clone(&entered));
+    let h = harness_with(
+        judge,
+        |_| {},
+        move |mock| {
+            Arc::new(common::GatedJudge {
+                inner: mock,
+                gate: held,
+                entered: counted,
+            })
+        },
+    );
     // Open the session with an untagged call.
     assert_eq!(call(&h, "s-close", "search", json!({}), None).await.status, 200);
-    h.mock
-        .set_default(MockBehavior::delayed(Duration::from_millis(1_500), mismatch(0.0)));
     let slow = {
         let inner = Harness {
             state: Arc::clone(&h.state),
@@ -997,20 +1021,33 @@ async fn a_slow_judge_does_not_hold_up_a_session_close() {
                 .status
         })
     };
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Close once the judged call is waiting on the judge.
+    let waiting = Instant::now();
+    while entered.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(10),
+            "the judged call never reached the judge"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     let session = h.state.sessions.get("s-close").unwrap();
     let started = Instant::now();
-    h.state
-        .finalizer
-        .close_session(session, pv_events::StopReason::SessionClosed)
-        .await
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        h.state
+            .finalizer
+            .close_session(session, pv_events::StopReason::SessionClosed),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the close waited for the judge"))
+    .unwrap();
     assert!(
-        started.elapsed() < Duration::from_millis(1_000),
-        "the close waited {:?} for the judge",
-        started.elapsed()
+        !slow.is_finished(),
+        "the judged call is still waiting on the judge"
     );
+    eprintln!("closed in {:?} while the judge was held", started.elapsed());
     // The judged call then finds its session closed.
+    gate.add_permits(1);
     assert_eq!(slow.await.unwrap(), 400);
 }
 

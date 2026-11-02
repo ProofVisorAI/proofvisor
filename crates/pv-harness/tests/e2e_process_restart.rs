@@ -970,6 +970,9 @@ shutdown_ready_drain_s = 2
 /// scores `mismatch` 0.9 when the arguments mention "danger" and 0.05
 /// otherwise. Clearing `alive` makes it drop every connection without
 /// answering, the way a crashed judge looks from the harness.
+/// Set by the mock judge when a "hold" request reaches it.
+static JUDGE_HOLD_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn spawn_mock_judge(alive: std::sync::Arc<std::sync::atomic::AtomicBool>) -> u16 {
     use std::sync::atomic::Ordering;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1012,9 +1015,24 @@ fn spawn_mock_judge(alive: std::sync::Arc<std::sync::atomic::AtomicBool>) -> u16
                 }
                 let request =
                     String::from_utf8_lossy(buffer.get(header_end..).unwrap_or_default()).to_string();
+                // Markers in the arguments choose a failure mode: "slow"
+                // answers after the 2 s deadline, "hold" answers after
+                // 1.5 s (to keep the only slot busy), "garbled" answers
+                // with labels the predicate does not have.
+                if request.contains("slow") {
+                    std::thread::sleep(Duration::from_millis(2_600));
+                } else if request.contains("hold") {
+                    JUDGE_HOLD_SEEN.store(true, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(1_500));
+                }
+                let (first, second) = if request.contains("garbled") {
+                    ("yes", "no")
+                } else {
+                    ("match", "mismatch")
+                };
                 let p = if request.contains("danger") { 0.9 } else { 0.05 };
                 let body = format!(
-                    r#"{{"model":{{"name":"proc-judge","version":"1","weights_sha256":"{hash}"}},"probs":[{{"label":"match","p":{m}}},{{"label":"mismatch","p":{p}}}]}}"#,
+                    r#"{{"model":{{"name":"proc-judge","version":"1","weights_sha256":"{hash}"}},"probs":[{{"label":"{first}","p":{m}}},{{"label":"{second}","p":{p}}}]}}"#,
                     hash = "cd".repeat(32),
                     m = 1.0 - p,
                 );
@@ -1108,6 +1126,8 @@ fn judge_enforces_across_kill_and_restart_and_fails_closed_when_it_dies() {
         r#"
 [judge]
 mode = "enforce"
+# One slot, so a second call while one is in flight is saturation.
+max_concurrency = 1
 
 [[judge.adapters]]
 name = "proc"
@@ -1157,6 +1177,41 @@ ask_above = 0.3
             daemon.0.kill().unwrap();
             daemon.0.wait().unwrap();
         } else {
+            // After the restart, each failure mode of the spec's table.
+            // Timeout: deny (the default for `timeout`).
+            let (status, body) =
+                http_post_tool(listen_port, "judge-slow", r#"{"note":"slow update"}"#).unwrap();
+            assert_eq!(status, 403, "{body}");
+            assert!(body.contains("JUDGE_UNAVAILABLE"), "timeout: {body}");
+            // Malformed answer: the uncertain band, ask (the default).
+            let (status, body) =
+                http_post_tool(listen_port, "judge-garbled", r#"{"note":"garbled update"}"#).unwrap();
+            assert_eq!(status, 403, "{body}");
+            assert!(body.contains("APPROVAL_REQUIRED"), "malformed: {body}");
+            // Saturation: the only slot is busy, so the second call is
+            // refused at once, never let through.
+            let holder = std::thread::spawn(move || {
+                http_post_tool(listen_port, "judge-hold", r#"{"note":"hold update"}"#).unwrap()
+            });
+            let waiting = Instant::now();
+            while !JUDGE_HOLD_SEEN.load(Ordering::SeqCst) {
+                assert!(
+                    waiting.elapsed() < Duration::from_secs(10),
+                    "the held call never reached the judge"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let started = Instant::now();
+            let (status, body) =
+                http_post_tool(listen_port, "judge-saturated", r#"{"note":"routine update"}"#).unwrap();
+            assert_eq!(status, 403, "{body}");
+            assert!(body.contains("JUDGE_UNAVAILABLE"), "saturated: {body}");
+            assert!(
+                started.elapsed() < Duration::from_millis(1_000),
+                "a saturated judge must refuse at once, not queue"
+            );
+            let (status, body) = holder.join().unwrap();
+            assert_eq!(status, 200, "the call holding the slot completes: {body}");
             // The judge dies: judged calls fail closed.
             alive.store(false, Ordering::SeqCst);
             let (status, body) =

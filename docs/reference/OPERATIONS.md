@@ -435,8 +435,37 @@ covers running it.
 Shadow mode never blocks, whatever fails; the failure is recorded in
 the verdict's `status`. The process-level test
 `judge_enforces_across_kill_and_restart_and_fails_closed_when_it_dies`
-in `crates/pv-harness/tests/e2e_process_restart.rs` runs these paths
-against the real binary across a SIGKILL and restart.
+in `crates/pv-harness/tests/e2e_process_restart.rs` runs the real
+binary across a SIGKILL and restart, then drives a timeout, a malformed
+answer, saturation and a dead judge; `a_local_judge_with_the_wrong_model_refuses_to_boot`
+covers the hash mismatch.
+
+### Replaying recorded decisions
+
+`pvctl judge-replay` reads every judged `agent.tool_call` record from an
+embedded Bridge and replays its decision: it rebuilds the judge's
+outcomes from the recorded verdicts and runs them through the same
+threshold function the daemon uses, with the predicates that were in
+ask-by-default mode at the time.
+
+```bash
+pvctl judge-replay --data-dir data/bridge --config proofvisor.toml
+pvctl judge-replay --data-dir data/bridge --config proofvisor.toml --what-if stricter.toml
+```
+
+With `--config` alone it checks that each recorded decision follows
+from its verdicts under that configuration's thresholds and exits with
+an error if any does not. Use the configuration that was in force when
+the records were written. With `--what-if` it also reports, per tool,
+what another configuration's thresholds would have decided, and which
+calls change. Use this on shadow-mode or pilot traffic before changing
+thresholds. The report also counts, per tool, the calls judge-aware
+policy would have blocked and the calls the harness actually refused.
+
+It replays the thresholds only. A WASM policy (interface version 2)
+that reads verdicts is not replayed. It does not detect tampering
+either: verify the receipts that cover the records first
+(`pvctl receipt-verify`).
 
 ### Calibration
 
