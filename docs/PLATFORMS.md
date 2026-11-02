@@ -55,9 +55,16 @@ the `windows` job in `.github/workflows/ci.yml` builds `proofvisord`
 and `pvctl` with MSVC on `windows-latest` and runs the workspace unit
 tests (`cargo test --workspace --lib`) there. Each release tag also
 builds `proofvisor-<version>-x86_64-pc-windows-msvc.zip`
-(`proofvisord.exe`, `pvctl.exe`) in `release.yml`. The binaries have
-not been run through the install-and-boot battery on Windows hardware
-that the Tier-1 targets went through, so Windows is a Tier-2 target.
+(`proofvisord.exe`, `pvctl.exe`) in `release.yml`. Since 2026-11-01 the
+same `windows` job also runs the built binaries (`scripts/boot-smoke.py`):
+`proofvisord.exe` boots from environment variables alone, answers
+`/readyz`, proxies a streaming chat completion to a stand-in provider,
+closes a signed session, `pvctl.exe` verifies the receipt and refuses a
+modified copy, the receipt is on the spool, and a restart on the same
+spool keeps the signing key. That is a hosted runner, not customer
+hardware, and the installer, service unit and container images stay
+Unix-only, so Windows remains a Tier-2 target; it is now an exercised
+one rather than a compiled one.
 
 Works natively:
 
