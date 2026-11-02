@@ -104,6 +104,23 @@ fn one_line(value: &str) -> String {
     truncate(&flat, 1_024)
 }
 
+/// When the arguments are longer than the rendering keeps
+/// ([`MAX_ARGUMENT_CHARS`]), a failure to report instead of a verdict.
+///
+/// A judge that reads a cut-off rendering scores only part of the call,
+/// and the caller chooses which part: keys are sorted, so padding under
+/// an early key pushes a later one out of view. Such a call is not
+/// judged; it fails as malformed (by default, held for approval).
+pub fn arguments_too_long(request: &JudgeRequest) -> Option<crate::adapter::JudgeError> {
+    let length = sorted(&request.validated_args).to_string().chars().count();
+    (length > MAX_ARGUMENT_CHARS).then(|| {
+        crate::adapter::JudgeError::Malformed(format!(
+            "the arguments ({length} characters as rendered) are longer than this judge reads \
+             ({MAX_ARGUMENT_CHARS}); the call cannot be judged in full"
+        ))
+    })
+}
+
 /// JSON with object keys sorted at every level, cut to `max_chars`.
 pub fn canonical_json(value: &Value, max_chars: usize) -> String {
     truncate(&sorted(value).to_string(), max_chars)
@@ -141,6 +158,19 @@ mod tests {
     use super::*;
     use crate::model::{PriorDenial, SessionContext};
     use serde_json::json;
+
+    #[test]
+    fn arguments_at_the_limit_fit_and_one_more_character_does_not() {
+        let request = |note_chars: usize| JudgeRequest {
+            predicate_id: "p@1".into(),
+            tool: "t".into(),
+            // `{"n":"..."}` adds 8 characters around the note.
+            validated_args: json!({"n": "é".repeat(note_chars)}),
+            context: SessionContext::default(),
+        };
+        assert!(arguments_too_long(&request(MAX_ARGUMENT_CHARS - 8)).is_none());
+        assert!(arguments_too_long(&request(MAX_ARGUMENT_CHARS - 7)).is_some());
+    }
 
     #[test]
     fn rendering_is_canonical_and_complete() {

@@ -210,21 +210,24 @@ async fn a_round_trip_sends_the_documented_request_and_reads_the_choice() {
 }
 
 #[tokio::test]
-async fn padded_arguments_are_cut_and_cannot_push_out_the_task() {
+async fn arguments_longer_than_the_judge_reads_are_not_sent() {
     let seen = Seen::default();
     let endpoint = serve(
-        Answer::Choice(VERSION, json!({"match": 0.5, "mismatch": 0.5})),
+        Answer::Choice(VERSION, json!({"match": 0.9, "mismatch": 0.1})),
         seen.clone(),
     )
     .await;
     let runner = runner(&endpoint, KEY, Duration::from_secs(5));
-    let _ = evaluate(&runner, json!({"note": "pad ".repeat(100_000)})).await;
-    let state = seen.bodies.lock()[0]["state"].as_str().unwrap().to_owned();
-    assert!(state.contains("task: Refund order 1001"));
+    // Sorted keys: padding under "a_note" would push "z_table" out of
+    // the rendered state. The call fails instead of being judged on its
+    // harmless start, and nothing is sent.
+    let padded = json!({"a_note": "pad ".repeat(100_000), "z_table": "secrets"});
+    let (kind, detail) = failure(&evaluate(&runner, padded).await);
+    assert_eq!(kind, FailureKind::Malformed, "{detail}");
+    assert!(detail.contains("cannot be judged in full"), "{detail}");
     assert!(
-        state.len() < 12_000,
-        "arguments are capped: {} bytes",
-        state.len()
+        seen.bodies.lock().is_empty(),
+        "nothing may be sent for a call it cannot judge"
     );
 }
 

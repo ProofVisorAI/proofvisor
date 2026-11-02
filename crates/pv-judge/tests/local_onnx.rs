@@ -138,32 +138,46 @@ fn committed_fixtures_match_the_builder() {
 /// model's view: the context is rendered first and only the arguments'
 /// tail is cut at the token limit.
 #[tokio::test]
-async fn padded_arguments_cannot_hide_the_task_from_the_model() {
+async fn a_request_longer_than_the_model_reads_is_not_judged() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = config(dir.path(), &model_bytes(false));
     cfg.max_input_tokens = 64;
     let runner = runner(Arc::new(LocalOnnxJudge::load(&cfg).unwrap()));
-    // The toy model scores `mismatch` near 1 whenever it reads "danger";
-    // here only the task statement contains it.
     let context = SessionContext {
-        task: Some("danger".to_owned()),
+        task: Some("refund order 1001".to_owned()),
         charter: "billing-agent".to_owned(),
         ..SessionContext::default()
     };
-    let padded = json!({"note": "filler ".repeat(1_000)});
-    let outcomes = runner
-        .evaluate(
-            &[JudgeTask {
-                predicate_id: ARG_MATCHES_TASK.to_owned(),
-                adapter: "local".to_owned(),
-            }],
-            "db_write",
-            &padded,
-            &context,
-        )
-        .await;
-    let JudgeOutcome::Scored(verdict) = &outcomes[0] else {
-        panic!("{outcomes:?}")
+    let evaluate = |args: serde_json::Value| {
+        let runner = &runner;
+        let context = &context;
+        async move {
+            runner
+                .evaluate(
+                    &[JudgeTask {
+                        predicate_id: ARG_MATCHES_TASK.to_owned(),
+                        adapter: "local".to_owned(),
+                    }],
+                    "db_write",
+                    &args,
+                    context,
+                )
+                .await
+                .remove(0)
+        }
     };
-    assert!(verdict.ppm("mismatch").unwrap() > 999_000, "{verdict:?}");
+    // Padding under an early key would push "danger" (the toy model's
+    // trigger) past the token limit: the call fails instead of being
+    // scored on its harmless start.
+    let padded = json!({"a_note": "filler ".repeat(1_000), "z_table": "danger"});
+    let JudgeOutcome::Failed(failure) = evaluate(padded).await else {
+        panic!("a cut-off request must not be scored")
+    };
+    assert_eq!(failure.kind, FailureKind::Malformed, "{failure:?}");
+    assert!(failure.detail.contains("cannot be judged in full"), "{failure:?}");
+    // A request that fits is scored.
+    assert!(matches!(
+        evaluate(json!({"z_table": "danger"})).await,
+        JudgeOutcome::Scored(_)
+    ));
 }

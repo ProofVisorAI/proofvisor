@@ -580,11 +580,14 @@ Built-in predicates:
 A local model reads the request rendered as text in a fixed, versioned
 layout (template version 1, `pv_judge::render::render_request`), so it
 must be trained on that layout. The operator's context (intent, task,
-missions, refusals) comes first and the arguments last, so when the
-text exceeds `max_input_tokens` only the end of the arguments is cut:
-padded arguments cannot push the task out of the model's view. Give
-judged tools a schema with `maxLength` limits if the end of long
-arguments matters. A cloud judge receives the full arguments.
+missions, refusals) comes first and the arguments last. A request the
+model cannot read in full is not judged: when the rendered arguments
+exceed 8192 characters, or the whole text exceeds `max_input_tokens`,
+the call fails as `malformed` (by default, held for approval). Scoring
+only the beginning would let a caller hide the risky part of a call
+behind padding, because the argument keys are sorted. Give judged tools
+a schema with `maxLength` limits so legitimate calls fit. A cloud judge
+receives the full arguments.
 
 A cloud judge is a second path by which data leaves the harness: without
 the judge, the harness sends data out only to the upstream model
@@ -605,7 +608,8 @@ API when `PV_TYPESAFE_API_KEY_FILE` names a file holding a key.
 
 - What is sent: the request rendered with the local classifier's
   template (version 1) after redaction, so the operator's context comes
-  first and the arguments last, cut at 8192 characters. One `choice`
+  first and the arguments last. A call whose rendered arguments exceed
+  8192 characters is not sent; it fails as `malformed`. One `choice`
   question asks the predicate's question, with its labels as the
   options. The prompt is never sent, and no header that widens what
   TypeSafe accepts (images, long context) is set.

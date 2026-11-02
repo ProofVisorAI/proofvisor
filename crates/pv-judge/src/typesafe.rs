@@ -168,6 +168,9 @@ impl TypeSafeJudge {
 
     /// The System One request body for `request`.
     fn body(&self, request: &JudgeRequest, predicate: &PredicateDef) -> Result<Value, JudgeError> {
+        if let Some(error) = crate::render::arguments_too_long(request) {
+            return Err(error);
+        }
         let mut redacted = request.clone();
         if let Some(redact) = &self.redactor {
             redact(&mut redacted.validated_args);

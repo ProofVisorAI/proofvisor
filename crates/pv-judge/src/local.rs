@@ -51,6 +51,7 @@ pub struct LocalOnnxJudge {
     pin: ModelPin,
     input_order: Vec<usize>,
     output_labels: Vec<String>,
+    max_input_tokens: usize,
 }
 
 impl LocalOnnxJudge {
@@ -104,13 +105,12 @@ impl LocalOnnxJudge {
             .map_err(|error| format!("judge model does not optimize: {error}"))?
             .into_runnable()
             .map_err(|error| format!("judge model does not load: {error}"))?;
+        // No truncation: a request longer than the model reads is refused
+        // (see `infer`), never scored on its first part.
         let mut tokenizer = tokenizers::Tokenizer::from_bytes(tokenizer_bytes)
             .map_err(|error| format!("judge tokenizer does not parse: {error}"))?;
         tokenizer
-            .with_truncation(Some(tokenizers::TruncationParams {
-                max_length: config.max_input_tokens,
-                ..tokenizers::TruncationParams::default()
-            }))
+            .with_truncation(None)
             .map_err(|error| format!("judge tokenizer truncation: {error}"))?;
         Ok(Self {
             model,
@@ -118,6 +118,7 @@ impl LocalOnnxJudge {
             pin: config.pin.clone(),
             input_order,
             output_labels: config.output_labels.clone(),
+            max_input_tokens: config.max_input_tokens,
         })
     }
 
@@ -128,6 +129,7 @@ impl LocalOnnxJudge {
             &self.tokenizer,
             &self.input_order,
             &self.output_labels,
+            self.max_input_tokens,
             text,
         )
     }
@@ -147,15 +149,20 @@ impl JudgeAdapter for LocalOnnxJudge {
         request: &'a JudgeRequest,
         predicate: &'a PredicateDef,
     ) -> BoxFuture<'a, Result<RawScores, JudgeError>> {
+        let too_long = crate::render::arguments_too_long(request);
         let text = render_request(request);
         let model = Arc::clone(&self.model);
         let tokenizer = Arc::clone(&self.tokenizer);
         let order = self.input_order.clone();
         let labels = self.output_labels.clone();
         let pin = self.pin.clone();
+        let max_tokens = self.max_input_tokens;
         let mismatch =
             labels.len() != predicate.labels.len() || labels.iter().any(|l| !predicate.has_label(l));
         Box::pin(async move {
+            if let Some(error) = too_long {
+                return Err(error);
+            }
             if mismatch {
                 return Err(JudgeError::Malformed(format!(
                     "local model labels {labels:?} do not match predicate {}",
@@ -163,10 +170,11 @@ impl JudgeAdapter for LocalOnnxJudge {
                 )));
             }
             // CPU-bound: keep it off the async workers.
-            let probs =
-                tokio::task::spawn_blocking(move || infer(&model, &tokenizer, &order, &labels, &text))
-                    .await
-                    .map_err(|_| JudgeError::Unavailable("local judge inference task failed".to_owned()))??;
+            let probs = tokio::task::spawn_blocking(move || {
+                infer(&model, &tokenizer, &order, &labels, max_tokens, &text)
+            })
+            .await
+            .map_err(|_| JudgeError::Unavailable("local judge inference task failed".to_owned()))??;
             Ok(RawScores { probs, model: pin })
         })
     }
@@ -177,11 +185,21 @@ fn infer(
     tokenizer: &tokenizers::Tokenizer,
     input_order: &[usize],
     labels: &[String],
+    max_tokens: usize,
     text: &str,
 ) -> Result<Vec<(String, f64)>, JudgeError> {
     let encoding = tokenizer
         .encode(text, true)
         .map_err(|error| JudgeError::Unavailable(format!("tokenization failed: {error}")))?;
+    // A request longer than the model reads would be scored on its first
+    // part only, which the caller can shape: it is not judged at all.
+    if encoding.get_ids().len() > max_tokens {
+        return Err(JudgeError::Malformed(format!(
+            "the request is {} tokens, longer than the model reads ({max_tokens}); the call cannot \
+             be judged in full",
+            encoding.get_ids().len()
+        )));
+    }
     let ids: Vec<i64> = encoding.get_ids().iter().map(|id| i64::from(*id)).collect();
     if ids.is_empty() {
         return Err(JudgeError::Unavailable("tokenizer produced no tokens".to_owned()));
