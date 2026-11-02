@@ -53,6 +53,17 @@ pub const DEFAULT_BACKGROUND_CONCURRENCY: usize = 8;
 /// close at shutdown allows 3 s, and a pending background verdict holds
 /// the close, so it must finish well inside that.
 pub const MAX_BACKGROUND_DEADLINE_MS: u64 = 2_500;
+/// Largest deadline for the loop breaker's adapter. The second opinion
+/// runs inside the audit worker, which records steps for a fixed group
+/// of sessions one at a time, so this is the longest one ambiguous step
+/// can delay the audit records of the other sessions in its group.
+pub const MAX_BREAKER_DEADLINE_MS: u64 = 500;
+/// Failed second opinions in a row after which the breaker stops asking.
+pub const BREAKER_FAILURES_BEFORE_PAUSE: u32 = 3;
+/// How long the breaker stops asking after that, milliseconds. During
+/// the pause it decides alone, so a judge outage does not cost every
+/// ambiguous step a full deadline.
+pub const BREAKER_PAUSE_MS: u64 = 30_000;
 /// Longest standing rule text.
 pub const MAX_RULE_CHARS: usize = 2_000;
 /// Longest model output kept for the loop breaker's second opinion.
@@ -736,6 +747,17 @@ impl JudgeConfig {
             }
         }
         if let Some(breaker) = &self.breaker {
+            if let Some(adapter) = adapters.get(breaker.adapter.as_str()) {
+                if adapter.deadline() > Duration::from_millis(MAX_BREAKER_DEADLINE_MS) {
+                    errors.push(format!(
+                        "[judge.breaker] adapter {:?} has a deadline above {MAX_BREAKER_DEADLINE_MS} ms; \
+                         the second opinion runs inside the audit worker and delays other sessions' \
+                         audit records for as long as it waits (define a separate adapter with a \
+                         shorter deadline_ms for the breaker)",
+                        breaker.adapter
+                    ));
+                }
+            }
             let low = pv_judge::threshold_to_ppm(breaker.ambiguous_low);
             let high = pv_judge::threshold_to_ppm(breaker.ambiguous_high);
             match (low, high) {
@@ -1594,6 +1616,10 @@ pub struct JudgeHooks {
     worker: crate::worker::WorkerHandle,
     pdp: Arc<crate::authz::PolicyDecisionPoint>,
     metrics: Arc<pv_core::metrics::Registry>,
+    /// Failed second opinions in a row.
+    breaker_failures: std::sync::atomic::AtomicU32,
+    /// Until when (Unix ms) the breaker decides without asking.
+    breaker_paused_until_ms: std::sync::atomic::AtomicU64,
 }
 
 /// The hooks slot shared by the application state and the audit worker,
@@ -1612,6 +1638,8 @@ impl JudgeHooks {
             worker,
             pdp,
             metrics,
+            breaker_failures: std::sync::atomic::AtomicU32::new(0),
+            breaker_paused_until_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1791,6 +1819,16 @@ impl JudgeHooks {
         if !(low..=high).contains(&delta_ppm) {
             return None;
         }
+        use std::sync::atomic::Ordering;
+        if pv_core::time::now_ms() < self.breaker_paused_until_ms.load(Ordering::Acquire) {
+            self.metrics
+                .counter(
+                    "pv_judge_breaker_opinions_total{opinion=\"paused\"}",
+                    "Second opinions the semantic judge gave the loop breaker",
+                )
+                .inc();
+            return None;
+        }
         let context = self.context(session, "model.output");
         let arguments = serde_json::json!({
             "previous": previous.map(|text| truncate_chars(text, MAX_LOOP_TEXT_CHARS)),
@@ -1815,6 +1853,20 @@ impl JudgeHooks {
                 .map(|ppm| ppm > looping_above),
             JudgeOutcome::Failed(_) => None,
         };
+        if opinion.is_some() {
+            self.breaker_failures.store(0, Ordering::Release);
+        } else if self.breaker_failures.fetch_add(1, Ordering::AcqRel) + 1 >= BREAKER_FAILURES_BEFORE_PAUSE {
+            self.breaker_failures.store(0, Ordering::Release);
+            self.breaker_paused_until_ms.store(
+                pv_core::time::now_ms().saturating_add(BREAKER_PAUSE_MS),
+                Ordering::Release,
+            );
+            tracing::warn!(
+                failures = BREAKER_FAILURES_BEFORE_PAUSE,
+                pause_ms = BREAKER_PAUSE_MS,
+                "the semantic judge failed the loop breaker's second opinion repeatedly; the breaker decides alone for a while"
+            );
+        }
         self.metrics
             .counter(
                 &format!(

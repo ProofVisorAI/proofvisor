@@ -169,6 +169,9 @@ fn build(judge: JudgeConfig, mock: &Arc<MockJudge>, tweak: impl FnOnce(&mut Harn
     let state = common::app_state(config, sandbox, Arc::clone(&bus) as _, 11);
     let mut adapters: BTreeMap<String, Arc<dyn pv_judge::JudgeAdapter>> = BTreeMap::new();
     adapters.insert("bg".into(), Arc::clone(mock) as _);
+    if judge.adapters.iter().any(|adapter| adapter.name == "bg-breaker") {
+        adapters.insert("bg-breaker".into(), Arc::clone(mock) as _);
+    }
     let service = JudgeService::new(&judge, adapters, Arc::clone(&state.metrics)).unwrap();
     Harness {
         state: Arc::new((*state).clone().with_judge(Arc::new(service))),
@@ -513,8 +516,13 @@ async fn background_judging_never_starves_admission() {
 
 fn breaker_judge() -> JudgeConfig {
     let mut judge = base_judge();
+    // The breaker's adapter must answer within 500 ms.
+    let mut fast = judge.adapters[0].clone();
+    fast.name = "bg-breaker".into();
+    fast.deadline_ms = Some(400);
+    judge.adapters.push(fast);
     judge.breaker = Some(JudgeBreakerConfig {
-        adapter: "bg".into(),
+        adapter: "bg-breaker".into(),
         predicate: LOOP_PROGRESS.into(),
         ambiguous_low: 0.0,
         ambiguous_high: 0.5,
@@ -560,6 +568,42 @@ async fn the_judge_can_spare_repetition_that_is_progress() {
     assert!(
         !serde_json::to_string(&seen).unwrap().contains(CANARY),
         "the judge saw request text"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_judge_stops_being_asked_for_a_while() {
+    let (url, _seen) = upstream("Checking the inventory service for SKU 12345 again.").await;
+    let mock = Arc::new(MockJudge::new(
+        pin(),
+        MockBehavior::Fail(pv_judge::JudgeError::Unavailable("down".into())),
+    ));
+    let h = build(breaker_judge(), &mock, |config| {
+        config.upstream_url = url;
+        tight_breaker(config);
+        // Long enough that the breaker, deciding alone, does not trip.
+        config.breaker.window = 50;
+    });
+    for turn in 0..8 {
+        let reply = chat(
+            &h,
+            "b-down",
+            json!([{"role": "user", "content": format!("turn {turn}")}]),
+        )
+        .await;
+        assert_eq!(reply.status, 200, "turn {turn}: {}", reply.json);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Three failures in a row, then no more calls during the pause.
+    assert_eq!(
+        mock.calls(),
+        u64::from(pv_harness::judge::BREAKER_FAILURES_BEFORE_PAUSE),
+        "the breaker kept asking a failing judge"
+    );
+    let metrics = h.state.metrics.render();
+    assert!(
+        metrics.contains("pv_judge_breaker_opinions_total{opinion=\"paused\"}"),
+        "{metrics}"
     );
 }
 
@@ -804,6 +848,12 @@ fn background_settings_are_validated() {
     judge.breaker.as_mut().unwrap().ambiguous_high = 0.6;
     config.judge = Some(judge);
     assert!(config.validate().unwrap_err().contains("delta_epsilon"));
+    // The breaker's adapter must answer within 500 ms.
+    let mut judge = breaker_judge();
+    judge.breaker.as_mut().unwrap().adapter = "bg".into();
+    let mut config = common::leaked_test_config();
+    config.judge = Some(judge);
+    assert!(config.validate().unwrap_err().contains("above 500 ms"));
     // A range that ends exactly at the threshold contains it.
     let mut config = common::leaked_test_config();
     config.breaker.delta_epsilon = 0.05;

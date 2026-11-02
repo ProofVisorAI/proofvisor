@@ -546,6 +546,7 @@ state store and are shared.
 | `pv_judge_drift_tripped` (gauge) | > 0 | A predicate is in ask-by-default mode after the calibration drift check. Recalibrate, then reset it. |
 | `pv_judge_trace_findings_total{source="…"}` | Sudden increase | Recorded tool or model outputs the judge flagged (for example instructions planted in a tool response). Read the `agent.judge` events for the sessions involved. |
 | `pv_judge_breaker_opinions_total{opinion="unavailable"}` | Sustained rate > 0 | The judge could not give the loop breaker its second opinion; the breaker is deciding alone. |
+| `pv_judge_breaker_opinions_total{opinion="paused"}` | Any increase | The breaker's judge failed 3 times in a row, so the breaker stopped asking for 30 seconds. Check the judge before the pause ends. |
 | `pv_judge_events_dropped_total{kind="…"}` | Any increase | An `agent.judge` event was dropped because the audit queue was full. The decision it described still applied. |
 | `pv_judge_rules_repinned_total` | Sudden increase | Compression is cutting standing rules from long conversations and the harness is adding them back. |
 | `pv_judge_drift_persist_failures_total` | Any increase | A drift switch or reset could not be saved to `[judge.drift] state_file`; it applies now but may not survive a restart. Check the file's directory and disk. |

@@ -308,7 +308,8 @@ exercised against release binaries in CI on every push
   standing-rule re-pinning, and `agent.judge` events.** `[judge.trace]`
   judges recorded tool and model outputs after the fact, off the request
   path; `[judge.breaker]` asks the judge whether an ambiguous step is a
-  loop; `[[judge.standing_rules]]` adds a rule back, after the leading
+  loop (its adapter's deadline is at most 500 ms, and after 3 failures in
+  a row it stops asking for 30 seconds); `[[judge.standing_rules]]` adds a rule back, after the leading
   system messages, when compression cut its text. Findings, second opinions, and shadow-mode would-be
   blocks are published on a new OCSF class, `agent.judge` (class_uid
   9907), and recorded as ATIF steps, so receipts cover them. Background
