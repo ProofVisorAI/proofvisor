@@ -527,3 +527,47 @@ pub fn verify_with_jwks<T: serde::de::DeserializeOwned>(
     validation.required_spec_claims.clear();
     jsonwebtoken::decode::<T>(token, &key, &validation).unwrap()
 }
+
+/// A judge that answers only after the test lets it (one permit per
+/// call): the order of a reply, a close and a verdict is then fixed by
+/// the test, not by how busy the machine is.
+#[allow(dead_code)]
+pub struct GatedJudge {
+    pub inner: Arc<pv_judge::mock::MockJudge>,
+    pub gate: Arc<tokio::sync::Semaphore>,
+    /// Calls that reached the gate (waiting or let through).
+    pub entered: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl pv_judge::JudgeAdapter for GatedJudge {
+    fn id(&self) -> &pv_judge::ModelPin {
+        pv_judge::JudgeAdapter::id(self.inner.as_ref())
+    }
+
+    fn kind(&self) -> pv_judge::AdapterKind {
+        pv_judge::JudgeAdapter::kind(self.inner.as_ref())
+    }
+
+    fn score<'a>(
+        &'a self,
+        request: &'a pv_judge::JudgeRequest,
+        predicate: &'a pv_judge::PredicateDef,
+    ) -> pv_judge::BoxFuture<'a, Result<pv_judge::RawScores, pv_judge::JudgeError>> {
+        self.entered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            let _permit = self.gate.acquire().await.expect("gate open");
+            pv_judge::JudgeAdapter::score(self.inner.as_ref(), request, predicate).await
+        })
+    }
+}
+
+/// One issue time (Unix seconds) for every token a test process mints.
+/// A delegated child must not expire after its parent, and the
+/// validator refuses one that does; with "now" read per token, a parent
+/// and child minted in different seconds (a loaded machine) failed that
+/// check.
+#[allow(dead_code)]
+pub fn token_epoch() -> u64 {
+    static START: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *START.get_or_init(|| pv_core::time::now_ms() / 1000)
+}

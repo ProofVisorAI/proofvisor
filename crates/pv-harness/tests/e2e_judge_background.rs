@@ -150,34 +150,6 @@ fn build(judge: JudgeConfig, mock: &Arc<MockJudge>, tweak: impl FnOnce(&mut Harn
     build_with(judge, Arc::clone(mock) as _, tweak)
 }
 
-/// A judge that answers only after the test lets it: the order of the
-/// reply and the verdict is then fixed by the test, not by timing.
-struct GatedJudge {
-    inner: Arc<MockJudge>,
-    gate: Arc<tokio::sync::Semaphore>,
-}
-
-impl pv_judge::JudgeAdapter for GatedJudge {
-    fn id(&self) -> &ModelPin {
-        self.inner.id()
-    }
-
-    fn kind(&self) -> pv_judge::AdapterKind {
-        self.inner.kind()
-    }
-
-    fn score<'a>(
-        &'a self,
-        request: &'a pv_judge::JudgeRequest,
-        predicate: &'a pv_judge::PredicateDef,
-    ) -> pv_judge::adapter::BoxFuture<'a, Result<pv_judge::RawScores, pv_judge::JudgeError>> {
-        Box::pin(async move {
-            let _permit = self.gate.acquire().await.expect("gate open");
-            self.inner.score(request, predicate).await
-        })
-    }
-}
-
 fn build_with(
     judge: JudgeConfig,
     adapter: Arc<dyn pv_judge::JudgeAdapter>,
@@ -281,7 +253,7 @@ fn judge_events(bus: &common::RecordingBus, session: &str) -> Vec<Value> {
 /// records an answer in the audit worker after the reply is sent; a
 /// fixed pause raced that under load.
 async fn settle(h: &Harness, session: &str, turns: usize) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let recorded = h
             .bus
@@ -302,7 +274,7 @@ async fn settle(h: &Harness, session: &str, turns: usize) {
 }
 
 async fn wait_judge_events(bus: &common::RecordingBus, session: &str, count: usize) -> Vec<Value> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let events = judge_events(bus, session);
         if events.len() >= count {
@@ -365,9 +337,10 @@ async fn a_slow_trace_verdict_does_not_delay_the_tool_reply() {
     // for the verdict would wait until the deadline, and the verdict would
     // then be recorded as a timeout instead of a score.
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    let adapter = Arc::new(GatedJudge {
+    let adapter = Arc::new(common::GatedJudge {
         inner: scripted(Arc::default(), Duration::ZERO),
         gate: Arc::clone(&gate),
+        entered: Arc::default(),
     });
     let h = build_with(judge, adapter, |config| {
         config.tool_upstream_url = Some(url);
@@ -716,7 +689,7 @@ fn long_conversation(rule_message: String) -> Value {
 }
 
 async fn compression_record(h: &Harness, session: &str) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let found = h
             .bus

@@ -216,7 +216,7 @@ async fn call(h: &Harness, session: &str, arguments: Value) -> Reply {
 }
 
 async fn tool_events(bus: &common::RecordingBus, session: &str, count: usize) -> Vec<Value> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let events: Vec<Value> = bus
             .payloads
@@ -243,7 +243,7 @@ fn token(
     parent: Option<String>,
     act: Option<pv_identity::ActorClaim>,
 ) -> String {
-    let now = pv_core::time::now_ms() / 1000;
+    let now = common::token_epoch();
     let claims = pv_identity::NhiClaims {
         sub: "user:edge@acme.io".into(),
         iss: "edge-issuer".into(),

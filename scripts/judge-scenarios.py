@@ -254,11 +254,21 @@ def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+def token_claims(token):
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
 def mint(instance_uid, jti, parent=None, act=None):
     now = int(time.time())
+    exp = now + 900
+    if parent:
+        # A delegated token must not outlive its parent; the validator
+        # refuses one that does.
+        exp = min(exp, token_claims(parent)["exp"])
     claims = {
         "sub": "user:ops@acme.example", "iss": "scenario-idp", "aud": AUDIENCE,
-        "iat": now, "exp": now + 900, "jti": jti, "azp": "billing-app",
+        "iat": now, "exp": exp, "jti": jti, "azp": "billing-app",
         "instance_uid": instance_uid, "charter": "billing-agent", "version": "3.2",
         "scopes": ["tool:*", "chat:write", "session:close"],
     }
