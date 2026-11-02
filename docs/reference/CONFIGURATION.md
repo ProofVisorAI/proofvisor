@@ -567,14 +567,14 @@ Built-in predicates:
 | `[[judge.adapters]]` key | Default | Notes |
 | --- | --- | --- |
 | `name` | required | Referenced by `[[judge.tools]]` bindings. |
-| `kind` | required | `local` (an ONNX sequence classifier run in-process; needs the `onnx` cargo feature) or `cloud` (an HTTP endpoint speaking the `proofvisor.judge.v1` contract). |
+| `kind` | required | `local` (an ONNX sequence classifier run in-process; needs the `onnx` cargo feature), `cloud` (an HTTP endpoint speaking the `proofvisor.judge.v1` contract), or `typesafe` (TypeSafe's Jev model through its System One API; see below). |
 | `deadline_ms` | `200` local, `1000` cloud | Hard per-call deadline, 1 to 30 000 ms. Past it the call is a *timeout*. Judge time is recorded as `judge_us`, separate from the sandbox's `decision_us`. |
-| `model_name`, `model_version`, `weights_sha256` | required | The model pin. For `local`, `weights_sha256` must be the SHA-256 of the `.onnx` file: the daemon hashes the bytes it loads and refuses to start on a mismatch. For `cloud`, the endpoint must report exactly this pin in every answer. |
+| `model_name`, `model_version`, `weights_sha256` | required | The model pin. For `local`, `weights_sha256` must be the SHA-256 of the `.onnx` file: the daemon hashes the bytes it loads and refuses to start on a mismatch. For `cloud`, the endpoint must report exactly this pin in every answer. For `typesafe`, `model_version` must be a fixed release such as `jev-1.14.0` (the aliases `jev-latest` and `jev-preview` are refused), and `weights_sha256` may be left out: it is derived from the version name, because TypeSafe publishes no weight hash. |
 | `model_path`, `tokenizer_path`, `tokenizer_sha256` | local only | The model, its Hugging Face `tokenizer.json`, and the tokenizer's SHA-256 (checked the same way). |
 | `output_labels` | local only | The label of each output logit, in output order; must be exactly the labels of every predicate bound to the adapter. |
 | `max_input_tokens` | `512` (local) | Longer inputs are truncated by the tokenizer. |
-| `endpoint` | cloud only | `https://…`, or `http://` to a loopback address only. Redirects are not followed. |
-| `bearer_file` | none (cloud) | Owner-only file holding a bearer token for the endpoint. |
+| `endpoint` | cloud: required; typesafe: `https://api.typesafe.ai/v1/systemone` | `https://…`, or `http://` to a loopback address only. Redirects are not followed. |
+| `bearer_file` | none (cloud); required (typesafe) | Owner-only file holding a bearer token for the endpoint (for `typesafe`, the API key). |
 | `redact` | `true` (cloud) | Run the harness redaction engine (`redaction_patterns`, `redaction_paths`, and the built-in patterns) over the arguments and context before they are sent. When the harness has no redaction configured, the built-in patterns alone are applied. |
 
 A local model reads the request rendered as text in a fixed, versioned
@@ -596,6 +596,47 @@ default) runs before each request is sent. List these settings for
 enterprise buyers when describing where their data goes. The cloud contract is documented in
 `crates/pv-judge/src/cloud.rs`; a vendor is integrated by a small
 translator in front of its API, or by speaking the contract directly.
+
+**TypeSafe (Jev).** `kind = "typesafe"` calls TypeSafe's System One API
+directly, one request per predicate. It was built from TypeSafe's
+published reference and tested against a local stand-in that speaks
+that format, not against the live service; a test runs against the live
+API when `PV_TYPESAFE_API_KEY_FILE` names a file holding a key.
+
+- What is sent: the request rendered with the local classifier's
+  template (version 1) after redaction, so the operator's context comes
+  first and the arguments last, cut at 8192 characters. One `choice`
+  question asks the predicate's question, with its labels as the
+  options. The prompt is never sent, and no header that widens what
+  TypeSafe accepts (images, long context) is set.
+- What is accepted: the answer's probabilities over exactly the
+  predicate's labels, from exactly the pinned release. Any other release
+  is a model mismatch, and missing or extra labels are a malformed
+  answer.
+- The pin covers the version name only. TypeSafe reports in each answer
+  the release that produced it, but publishes no weight hash; a change
+  of weights under the same version name cannot be detected.
+- Errors (401 key, 429 rate limit, 529 overload, any other non-200) make
+  the judge unavailable for that call, and policy fails closed. Nothing
+  is retried; the adapter's deadline bounds each call.
+- TypeSafe offers no service-level agreement. Measure its latency and
+  accuracy on your own labelled set with `pvctl judge-calibrate` before
+  enforcing, and set `deadline_ms` from that.
+- Data: TypeSafe's legal page refers to a data processing agreement and
+  a stated commitment not to train on customer data, and offers zero
+  data retention to enterprise customers only. The same per-tool
+  `allow_cloud` opt-in applies, and verdicts record the adapter as
+  `cloud`.
+
+```toml
+[[judge.adapters]]
+name = "jev"
+kind = "typesafe"
+model_name = "jev"
+model_version = "jev-1.14.0"
+bearer_file = "/etc/proofvisor/typesafe.key"
+deadline_ms = 1000
+```
 
 Refusals use the JSON-RPC error shape of every other policy refusal
 (HTTP 403, `error.code` -32001), with `error.data.code`:

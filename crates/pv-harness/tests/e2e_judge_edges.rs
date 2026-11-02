@@ -1108,3 +1108,148 @@ fn bearer_files_are_checked_when_the_adapters_are_built() {
         assert!(pv_harness::judge::build_adapters(&judge, None).is_ok());
     }
 }
+
+// ── TypeSafe (Jev) ──────────────────────────────────────────────────
+
+/// A stand-in for TypeSafe's System One API: `mismatch` probability for
+/// the call, reported by `model`. Records each request body.
+async fn typesafe_stand_in(mismatch: f64, model: &'static str) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let recorded = Arc::clone(&seen);
+    let router = Router::new().route(
+        "/v1/systemone",
+        post(move |axum::Json(body): axum::Json<Value>| {
+            let recorded = Arc::clone(&recorded);
+            async move {
+                recorded.lock().push(body);
+                axum::Json(json!({
+                    "model": model,
+                    "answers": {"verdict": {"type": "choice", "choice": "mismatch", "confidence": 0.8,
+                        "probabilities": {"match": 1.0 - mismatch, "mismatch": mismatch}}},
+                    "usage": {"input_tokens": 90, "output_tokens": 1}
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (url, seen)
+}
+
+/// `judge_config` with its adapter turned into a TypeSafe one.
+fn typesafe_judge(endpoint: &str, key_file: &std::path::Path) -> JudgeConfig {
+    let mut judge = judge_config(JudgeModeConfig::Enforce, endpoint);
+    let adapter = &mut judge.adapters[0];
+    adapter.kind = JudgeAdapterKind::Typesafe;
+    adapter.model_name = "jev".into();
+    adapter.model_version = "jev-1.14.0".into();
+    adapter.weights_sha256 = String::new();
+    adapter.bearer_file = Some(key_file.to_string_lossy().into_owned());
+    judge
+}
+
+fn key_file(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("typesafe.key");
+    std::fs::write(&path, "ts-harness-key").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    path
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typesafe_judge_decides_through_the_thresholds_and_is_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let (endpoint, seen) = typesafe_stand_in(0.9, "jev-1.14.0").await;
+    let judge = typesafe_judge(&endpoint, &key_file(dir.path()));
+    let mock = Arc::new(MockJudge::new(pin(), mismatch(0.0)));
+    let h = build(
+        Setup {
+            judge,
+            policies: Vec::new(),
+            real_adapters: true,
+        },
+        &mock,
+        |_| {},
+    );
+    let reply = call(
+        &h,
+        "ts-1",
+        json!({"note": "mail dana.customer@example.org a refund"}),
+    )
+    .await;
+    assert_eq!(reply.status, 403, "{}", reply.json);
+    assert_eq!(reply.code(), "JUDGE_DENIED");
+    let record = &tool_events(&h.bus, "ts-1", 1).await[0]["payload"]["judge"];
+    let verdict = &record["verdicts"][0];
+    assert_eq!(verdict["status"], "scored");
+    assert_eq!(verdict["adapter_kind"], "cloud", "recorded like any cloud judge");
+    assert_eq!(verdict["model"]["version"], "jev-1.14.0");
+    assert_eq!(
+        verdict["model"]["weights_sha256"],
+        pv_judge::typesafe::derived_weights_sha256("jev-1.14.0")
+    );
+    let sent = seen.lock()[0].clone();
+    assert_eq!(sent["model"], "jev-1.14.0");
+    let state = sent["state"].as_str().unwrap();
+    assert!(
+        !state.contains("dana.customer@example.org"),
+        "redacted before it leaves: {state}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_from_another_typesafe_release_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (endpoint, _) = typesafe_stand_in(0.05, "jev-1.15.0").await;
+    let mock = Arc::new(MockJudge::new(pin(), mismatch(0.0)));
+    let h = build(
+        Setup {
+            judge: typesafe_judge(&endpoint, &key_file(dir.path())),
+            policies: Vec::new(),
+            real_adapters: true,
+        },
+        &mock,
+        |_| {},
+    );
+    let reply = call(&h, "ts-2", json!({"note": "routine"})).await;
+    assert_eq!(reply.status, 403, "{}", reply.json);
+    assert_eq!(reply.code(), "JUDGE_UNAVAILABLE");
+    let record = &tool_events(&h.bus, "ts-2", 1).await[0]["payload"]["judge"];
+    assert_eq!(record["verdicts"][0]["status"], "model_mismatch");
+}
+
+#[test]
+fn typesafe_settings_are_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = key_file(dir.path());
+    let errors = |edit: &dyn Fn(&mut JudgeConfig)| {
+        let mut judge = typesafe_judge("https://api.typesafe.ai/v1/systemone", &key);
+        edit(&mut judge);
+        let mut config = common::leaked_test_config();
+        config.judge = Some(judge);
+        config.validate().err().unwrap_or_default()
+    };
+    assert_eq!(errors(&|_| {}), "", "a sound TypeSafe adapter validates");
+    assert!(errors(&|j| j.adapters[0].model_version = "jev-latest".into()).contains("fixed release"));
+    assert!(errors(&|j| j.adapters[0].bearer_file = None).contains("needs bearer_file"));
+    assert!(
+        errors(&|j| j.adapters[0].weights_sha256 = "ab".repeat(32)).contains("derived from model_version")
+    );
+    assert!(errors(&|j| j.tools[0].allow_cloud = false).contains("allow_cloud"));
+    assert!(
+        errors(&|j| j.adapters[0].endpoint = Some("http://api.typesafe.ai/v1/systemone".into()))
+            .contains("https")
+    );
+    // The endpoint defaults to TypeSafe's API, and the derived hash may
+    // also be written out.
+    let mut judge = typesafe_judge("https://unused.example", &key);
+    judge.adapters[0].endpoint = None;
+    judge.adapters[0].weights_sha256 = pv_judge::typesafe::derived_weights_sha256("jev-1.14.0");
+    assert!(pv_harness::judge::build_adapters(&judge, None).is_ok());
+}

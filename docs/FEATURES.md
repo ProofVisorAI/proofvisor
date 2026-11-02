@@ -351,9 +351,16 @@ with demonstration data, which is what the public site shows by default.
 
 - **Semantic judge: what is not proven or not built.** These items
   belong to section 11.
-  - No trained judge model and no labelled data set exist yet. The
-    tests use a small toy ONNX classifier, and the scenario script uses
-    a stand-in judge service that speaks the cloud contract.
+  - No trained local judge model and no labelled data set exist yet.
+    The tests use a small toy ONNX classifier, and the scenario script
+    uses stand-in judge services. TypeSafe's Jev can serve as a cloud
+    judge (below), but its accuracy on these predicates has not been
+    measured: that needs a labelled set and `pvctl judge-calibrate`.
+  - The TypeSafe adapter was built from TypeSafe's published API
+    reference and tested against a local stand-in speaking that format.
+    A run against the live API is still owed; it needs an API key
+    (`PV_TYPESAFE_API_KEY_FILE`). Its pin covers the version name only,
+    because TypeSafe publishes no weight hash.
   - No real-binary test covers three situations:
     - after a restart, outputs that were already judged are not judged
       again;
@@ -557,7 +564,7 @@ for each label. Policy turns the probabilities into allow, ask or deny,
 and the signed audit trail records every verdict. The configuration is
 in `docs/reference/CONFIGURATION.md` (section "Semantic judge") and the
 runbook in `docs/reference/OPERATIONS.md`. `scripts/judge-scenarios.py`
-runs 18 scenarios against the release binaries, with a stand-in model
+runs 19 scenarios against the release binaries, with a stand-in model
 provider, billing backend and judge service. The numbers in the table
 refer to those scenarios.
 
@@ -575,6 +582,7 @@ refer to those scenarios.
 | Recorded tool outputs and model answers are judged in the background, and findings are published as `agent.judge` events (OCSF class 9907) that the receipt covers. A slow verdict does not delay the reply, and a session close waits for it. | `e2e_judge_background.rs`; scenario 13 |
 | The loop breaker asks the judge when a step's change is ambiguous: repetition that is progress is spared, and a real loop trips the breaker. | `e2e_judge_background.rs`, `crates/pv-loopdetect` unit tests; scenario 16 |
 | A standing rule that compression cut is put back after the leading system messages, and the token count is recomputed. | `e2e_judge_background.rs`; scenario 15 |
+| TypeSafe's Jev can be the judge (`kind = "typesafe"`): one choice question per predicate, the redacted request as state, a fixed release pinned and checked on every answer. | `crates/pv-judge/tests/typesafe_contract.rs` (the documented request; missing or extra labels, another release, 401, 429, 529, timeouts and oversized answers all fail closed; nothing secret in failure details), `e2e_judge_edges.rs`; scenario 18 (the release binary against a stand-in of TypeSafe's API) |
 | `pvctl judge-replay` replays recorded decisions from the Bridge: each must follow from its verdicts under the configured thresholds, and other thresholds can be tried on the same records. | `crates/pv-judge/src/replay.rs` unit tests, `e2e_judge_cli.rs` (an edited probability is caught); scenario 17 (the shadow day replays with no mismatch, and stricter thresholds change exactly the borderline calls) |
 | Every failure mode of the specification's table (timeout, malformed answer, saturation, dead judge, model-hash mismatch) is driven against the real binary after a SIGKILL and restart. | `e2e_process_restart.rs` |
 | An embedded Bridge created before the `agent.judge` topic existed gains it at start when `[judge]` is set. | `crates/pv-bridge/tests/embedded_contract.rs` (`missing_topics_are_added_to_an_existing_bridge`) |

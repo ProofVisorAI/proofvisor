@@ -304,6 +304,14 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- **TypeSafe (Jev) as a semantic-judge backend.** `kind = "typesafe"`
+  in `[[judge.adapters]]` calls TypeSafe's System One API with one
+  `choice` question per predicate, the redacted request rendered with
+  context first and arguments last as its state, and a fixed release
+  (`jev-1.14.0`; aliases are refused). The pin covers the version name
+  only, because TypeSafe publishes no weight hash. Built from TypeSafe's
+  published reference and tested against a local stand-in, not the live
+  service.
 - **`pvctl judge-replay`.** Replays the semantic judge's recorded
   decisions from an embedded Bridge through the same threshold function
   the daemon uses: with `--config` it fails when a recorded decision
@@ -657,6 +665,11 @@ exercised against release binaries in CI on every push
 
 ### Fixed
 
+- **Graceful shutdown left sessions to recovery when many were open.**
+  Open sessions were closed one at a time inside the 30-second shutdown
+  phase, so a few hundred of them outlasted it; the daemon exited with
+  an error and the next start recovered the rest. Shutdown now closes
+  eight at a time.
 - **The audit trail recorded the loop breaker's corrective
   message as the caller's turn.** With `[breaker] action = "inject"`,
   the corrective system message is appended after the caller's last
