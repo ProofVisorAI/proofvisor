@@ -2773,6 +2773,46 @@ mod tests {
     use pv_receipts::Signer as _;
     use serde_json::{json, Value};
     use std::sync::{Arc, Mutex};
+
+    /// Semantic-judge tool events as the harness writes them: an enforced
+    /// judge refusal and an "ask" count as blocks attributed to
+    /// `judge.thresholds`; a shadow-mode record (allowed, with a nested
+    /// would-be `deny`) is neither a block nor an attribution, on both
+    /// the Bridge and the ATIF paths.
+    #[test]
+    fn judge_records_are_classified_like_other_policy_decisions() {
+        let judge_record = json!({"mode": "shadow", "decision": "deny", "would_block": true,
+                                  "policy_decision": "deny", "verdicts": []});
+        let enforced = json!({"tool": "refund_order", "allowed": false, "stage": "policy",
+                              "policy": "judge.thresholds", "denial_code": "JUDGE_DENIED",
+                              "reason": "r", "decision_us": 3, "judge": judge_record});
+        let asked = json!({"tool": "refund_order", "allowed": false, "stage": "policy",
+                           "policy": "judge.thresholds", "denial_code": "APPROVAL_REQUIRED",
+                           "reason": "r", "decision_us": 3, "judge": judge_record});
+        let shadow = json!({"tool": "refund_order", "allowed": true, "budget_remaining": 5,
+                            "budget_unlimited": false, "decision_us": 3, "judge": judge_record});
+        for (payload, blocked) in [(&enforced, true), (&asked, true), (&shadow, false)] {
+            let event = json!({"class_name": "agent.tool_call",
+                               "status_id": if blocked { 2 } else { 1 }, "payload": payload});
+            assert_eq!(bridge_tool_blocked(&event), blocked, "{payload}");
+            assert_eq!(
+                bridge_policy_attribution(payload).as_deref(),
+                blocked.then_some("judge.thresholds"),
+                "{payload}"
+            );
+            let step: pv_atif::Step = serde_json::from_value(json!({
+                "step_id": 1, "source": "agent", "message": "MCP tool authorization decision",
+                "observation": {"results": [{"content": payload.to_string()}]}
+            }))
+            .unwrap();
+            assert_eq!(contains_block_signal(&step), blocked, "{payload}");
+            assert_eq!(
+                policy_from_step(&step).as_deref(),
+                blocked.then_some("judge.thresholds"),
+                "{payload}"
+            );
+        }
+    }
     use tokio::sync::oneshot;
 
     #[test]

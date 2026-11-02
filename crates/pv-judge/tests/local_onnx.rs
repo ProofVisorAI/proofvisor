@@ -115,3 +115,21 @@ async fn labels_that_do_not_fit_the_predicate_fail_as_malformed() {
         .await;
     assert!(matches!(&outcomes[0], JudgeOutcome::Failed(f) if f.kind == FailureKind::Malformed));
 }
+
+/// The committed model and tokenizer fixtures (used by the harness's
+/// real-binary test) are exactly what the builder above produces. Run
+/// with `PV_JUDGE_WRITE_FIXTURES=1` to regenerate them.
+#[test]
+fn committed_fixtures_match_the_builder() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let model = model_bytes(false);
+    if std::env::var_os("PV_JUDGE_WRITE_FIXTURES").is_some() {
+        std::fs::write(fixtures.join("toy_judge.onnx"), &model).unwrap();
+        std::fs::write(fixtures.join("toy_tokenizer.json"), common::TOKENIZER).unwrap();
+    }
+    assert_eq!(std::fs::read(fixtures.join("toy_judge.onnx")).unwrap(), model);
+    assert_eq!(
+        std::fs::read_to_string(fixtures.join("toy_tokenizer.json")).unwrap(),
+        common::TOKENIZER
+    );
+}

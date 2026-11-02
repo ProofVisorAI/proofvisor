@@ -913,3 +913,79 @@ async fn a_slow_judge_does_not_hold_up_a_session_close() {
     // The judged call then finds its session closed.
     assert_eq!(slow.await.unwrap(), 400);
 }
+
+#[tokio::test]
+async fn agents_named_in_act_claims_count_as_parents() {
+    let mut judge = judge_config(JudgeModeConfig::Enforce);
+    judge.tools[0].predicates.push(JudgePredicateBinding {
+        id: CHILD_USES_PARENT_ENTITLEMENT.into(),
+        adapter: "scripted".into(),
+    });
+    let h = harness(judge, |config| config.require_identity = true);
+    let audience = h.state.config.audience.clone();
+    h.mock.set_for_predicate(ARG_MATCHES_TASK, mismatch(0.9));
+    let parent = mint(&claims(&audience, "jti-act-parent", "agent-delegator"));
+    let refused = call(
+        &h,
+        "s-act-parent",
+        "update_ticket",
+        json!({"table": "x"}),
+        Some(&parent),
+    )
+    .await;
+    assert_eq!(code(&refused), "JUDGE_DENIED", "{}", refused.json);
+    // The delegate names the delegator in `act`, without a parent_token.
+    let mut delegate = claims(&audience, "jti-act-child", "agent-delegate");
+    delegate.act = Some(pv_identity::ActorClaim {
+        sub: "agent-delegator".into(),
+        act: None,
+    });
+    h.mock.set_for_predicate(ARG_MATCHES_TASK, mismatch(0.1));
+    call(
+        &h,
+        "s-act-child",
+        "update_ticket",
+        json!({"table": "x"}),
+        Some(&mint(&delegate)),
+    )
+    .await;
+    let seen = h.mock.last_request().unwrap();
+    assert!(
+        seen.context
+            .prior_denials
+            .iter()
+            .any(|denial| denial.instance_uid == "agent-delegator"
+                && denial.source == pv_judge::DenialSource::Parent),
+        "{:?}",
+        seen.context.prior_denials
+    );
+}
+
+#[tokio::test]
+async fn the_judge_sees_arguments_after_console_pushed_rewrites() {
+    let h = harness(judge_config(JudgeModeConfig::Enforce), |_| {});
+    let mut rules = pv_sandbox::PushedRules::default();
+    rules.transforms.push(
+        pv_sandbox::PushedTransform::compile(
+            "console.mask_accounts",
+            pv_sandbox::TransformTarget::ToolArgs,
+            Some(pv_sandbox::ToolPattern::from_scope("tool.update_ticket").unwrap()),
+            &["ACCT-[0-9]+".to_owned()],
+            Some("[MASKED]"),
+        )
+        .unwrap(),
+    );
+    h.state.sandbox.set_pushed(rules);
+    h.mock.set_default(mismatch(0.1));
+    let reply = call(
+        &h,
+        "s-pushed",
+        "update_ticket",
+        json!({"note": "close ACCT-998877"}),
+        None,
+    )
+    .await;
+    assert_eq!(reply.status, 200, "{}", reply.json);
+    let seen = h.mock.last_request().unwrap();
+    assert_eq!(seen.validated_args, json!({"note": "close [MASKED]"}));
+}

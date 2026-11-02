@@ -4009,16 +4009,7 @@ impl AppState {
             missions: self.pdp.applicable_missions(&facts),
             charter: &identity.charter.name,
             delegation_depth: validated.map_or(0, |validated| validated.total_delegation_depth),
-            parents: validated
-                .map(|validated| {
-                    validated
-                        .chain_tokens
-                        .iter()
-                        .skip(1)
-                        .map(|token| token.instance_uid.clone())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            parents: validated.map(delegation_parents).unwrap_or_default(),
         });
         judge.evaluate_blocking(tasks, tool, &call.request.arguments, context)
     }
@@ -4858,6 +4849,29 @@ fn pdp_policy_name(code: pv_sandbox::DenialCode) -> &'static str {
         pv_sandbox::DenialCode::PdpDenied => "pdp.authzen",
         _ => "pdp",
     }
+}
+
+/// The agents above the caller in its delegation chain, nearest first:
+/// the `parent_token` chain, then the agents named in nested `act`
+/// claims. An `act` entry that is a client id rather than an agent
+/// instance simply matches no recorded refusal.
+fn delegation_parents(validated: &pv_identity::ValidatedIdentity) -> Vec<String> {
+    let caller = &validated.claims.instance_uid;
+    let mut parents: Vec<String> = Vec::new();
+    let mut push = |uid: &str| {
+        if uid != caller && !parents.iter().any(|known| known == uid) {
+            parents.push(uid.to_owned());
+        }
+    };
+    for token in validated.chain_tokens.iter().skip(1) {
+        push(&token.instance_uid);
+    }
+    let mut actor = validated.claims.act.as_ref();
+    while let Some(claim) = actor {
+        push(&claim.sub);
+        actor = claim.act.as_deref();
+    }
+    parents
 }
 
 /// A tagged call scored before the session admission lock.

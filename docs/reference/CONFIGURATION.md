@@ -517,7 +517,9 @@ The judge sees the schema-validated arguments and context the operator
 controls: the tool's intent, the applicable missions (ids, allowed
 intents, and `task` statements), the caller's charter and delegation
 depth, and refusals the harness recorded earlier in the session and
-for the agents above the caller in its delegation chain. Only refusals
+for the agents above the caller in its delegation chain (the agents of
+its `parent_token` chain and the agents named in its nested `act`
+claims). Only refusals
 of tools the operator defined (a tool with a schema, or a judged tool)
 are recorded, so a caller cannot plant text through a made-up tool
 name. It never sees the prompt. A judged tool must have a schema in
