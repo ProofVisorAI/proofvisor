@@ -505,6 +505,28 @@ async fn calls_the_session_checks_refuse_are_not_judged() {
     assert_eq!(mock.calls(), judged, "a call on a closed session was judged");
 }
 
+/// Without identities there is no caller to tell apart: anonymous
+/// calls share only the overall limit, not one caller's share.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn anonymous_calls_are_not_squeezed_into_one_callers_share() {
+    let mut judge = judge_config(JudgeModeConfig::Enforce, "http://127.0.0.1:9/x");
+    judge.max_concurrency = 4;
+    judge.max_concurrency_per_caller = Some(1);
+    let (h, mock) = scripted(judge, |_| {});
+    mock.set_scorer(|_| MockBehavior::delayed(Duration::from_millis(400), mismatch(0.05)));
+    let mut handles = Vec::new();
+    for n in 0..3 {
+        let h = h.clone();
+        handles.push(tokio::spawn(async move {
+            call(&h, &format!("anon-{n}"), json!({"n": n})).await
+        }));
+    }
+    for handle in handles {
+        let reply = handle.await.unwrap();
+        assert_eq!(reply.status, 200, "{}", reply.json);
+    }
+}
+
 /// One agent cannot fill the judge: past its share, its own calls fail
 /// as saturated while another agent's calls are still judged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -4129,7 +4129,13 @@ impl AppState {
             tool,
             &call.request.arguments,
             context,
-            &principal_id_for_budget(identity),
+            // Only a validated identity tells callers apart; anonymous
+            // callers share just the overall limit.
+            if validated.is_some() {
+                &identity.instance_uid
+            } else {
+                ""
+            },
         )
     }
 

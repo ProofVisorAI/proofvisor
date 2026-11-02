@@ -1902,7 +1902,16 @@ struct CallerSlot<'a> {
 }
 
 impl<'a> CallerSlot<'a> {
+    /// `caller` empty: no identity to tell callers apart (identity is not
+    /// required), so only the overall limit applies; otherwise every
+    /// anonymous caller would share one caller's slots.
     fn take(service: &'a JudgeService, caller: &str) -> Option<Self> {
+        if caller.is_empty() {
+            return Some(Self {
+                service,
+                caller: String::new(),
+            });
+        }
         let mut in_flight = service.caller_in_flight.lock();
         let count = in_flight.entry(caller.to_owned()).or_insert(0);
         if *count >= service.caller_share {
