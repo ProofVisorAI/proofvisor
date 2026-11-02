@@ -703,8 +703,14 @@
   // to the legacy hidden-textarea + execCommand path there.
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text);
+      // The async API also rejects when the page lacks clipboard
+      // permission (an embedded or automated browser, some privacy
+      // settings); try the legacy path before giving up.
+      return navigator.clipboard.writeText(text).catch(function () { return copyTextLegacy(text); });
     }
+    return copyTextLegacy(text);
+  }
+  function copyTextLegacy(text) {
     return new Promise(function (resolve, reject) {
       var ta = document.createElement("textarea");
       ta.value = text;
@@ -6040,7 +6046,12 @@
       var id = tr.getAttribute("data-dom");
       var row = rows.find(function (d) { return d.id === id; }) || {};
       var act = btn.getAttribute("data-dom-act");
-      if (act === "copy") { copyText(row.txtRecord ? row.txtRecord.value : ""); toast("Record value copied"); return; }
+      if (act === "copy") {
+        copyText(row.txtRecord ? row.txtRecord.value : "").then(
+          function () { toast("Record value copied"); },
+          function () { toast("Could not copy — select the value and copy it by hand", true); });
+        return;
+      }
       if (act === "verify") {
         btn.disabled = true;
         state.ds.verifyDomain(id).then(function () {
@@ -6113,7 +6124,11 @@
     $("#scimEnabled", host).addEventListener("change", function (e) { save({ enabled: e.target.checked }); });
     $("#scimRole", host).addEventListener("change", function (e) { save({ defaultRole: e.target.value }); });
     $("#scimDeprov", host).addEventListener("change", function (e) { save({ deprovisionAction: e.target.value }); });
-    $("#scimCopyUrl", host).addEventListener("click", function () { copyText(settings.baseUrl); });
+    $("#scimCopyUrl", host).addEventListener("click", function () {
+      copyText(settings.baseUrl).then(
+        function () { toast("SCIM base URL copied"); },
+        function () { toast("Could not copy — select the URL and copy it by hand", true); });
+    });
     $("#scimNewToken", host).addEventListener("click", function () {
       var name = window.prompt("Name this token (for example the identity provider it is for):", "Okta");
       if (!name || !name.trim()) return;
