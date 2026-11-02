@@ -11,6 +11,7 @@
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse as _;
 use axum::routing::post;
 use axum::{Json, Router};
 use parking_lot::Mutex;
@@ -48,6 +49,9 @@ enum Answer {
     Huge,
     /// No answer before the deadline.
     Slow,
+    /// This status and raw body (for bodies JSON values cannot express,
+    /// such as repeated keys).
+    Raw(u16, &'static str),
 }
 
 async fn serve(answer: Answer, seen: Seen) -> String {
@@ -60,7 +64,7 @@ async fn serve(answer: Answer, seen: Seen) -> String {
                  Json(body): Json<Value>| async move {
                     seen.bodies.lock().push(body.clone());
                     seen.headers.lock().push(headers);
-                    match answer {
+                    let (status, body) = match answer {
                         Answer::Choice(model, probabilities) => {
                             let choice = probabilities
                                 .as_object()
@@ -92,7 +96,16 @@ async fn serve(answer: Answer, seen: Seen) -> String {
                             tokio::time::sleep(Duration::from_secs(3)).await;
                             (StatusCode::OK, Json(json!({})))
                         }
-                    }
+                        Answer::Raw(code, body) => {
+                            return (
+                                StatusCode::from_u16(code).unwrap(),
+                                [("content-type", "application/json")],
+                                body,
+                            )
+                                .into_response();
+                        }
+                    };
+                    (status, body).into_response()
                 },
             ),
         )
@@ -270,6 +283,37 @@ async fn every_bad_answer_is_a_failure_never_a_partial_verdict() {
         (Answer::Status(422), FailureKind::Unavailable),
         (Answer::Status(500), FailureKind::Unavailable),
         (Answer::Slow, FailureKind::Timeout),
+        // A repeated label would otherwise let its last value win.
+        (
+            Answer::Raw(
+                200,
+                r#"{"model":"jev-1.14.0","usage":{"input_tokens":1,"output_tokens":1},
+                    "answers":{"verdict":{"type":"choice","choice":"match","confidence":0.9,
+                    "probabilities":{"mismatch":0.95,"match":0.05,"mismatch":0.05,"match":0.95}}}}"#,
+            ),
+            FailureKind::Malformed,
+        ),
+        // A repeated answer id likewise.
+        (
+            Answer::Raw(
+                200,
+                r#"{"model":"jev-1.14.0","usage":{"input_tokens":1,"output_tokens":1},"answers":{
+                    "verdict":{"type":"choice","choice":"mismatch","confidence":0.9,"probabilities":{"match":0.05,"mismatch":0.95}},
+                    "verdict":{"type":"choice","choice":"match","confidence":0.9,"probabilities":{"match":0.95,"mismatch":0.05}}}}"#,
+            ),
+            FailureKind::Malformed,
+        ),
+        // Only 200 carries an answer.
+        (
+            Answer::Raw(
+                201,
+                r#"{"model":"jev-1.14.0","usage":{"input_tokens":1,"output_tokens":1},
+                    "answers":{"verdict":{"type":"choice","choice":"match","confidence":0.9,
+                    "probabilities":{"match":0.95,"mismatch":0.05}}}}"#,
+            ),
+            FailureKind::Unavailable,
+        ),
+        (Answer::Raw(204, ""), FailureKind::Unavailable),
     ];
     for (answer, expected) in cases {
         let label = match &answer {
@@ -278,6 +322,7 @@ async fn every_bad_answer_is_a_failure_never_a_partial_verdict() {
             Answer::Shape(value) => value.to_string(),
             Answer::Huge => "huge".into(),
             Answer::Slow => "slow".into(),
+            Answer::Raw(code, body) => format!("HTTP {code} {body}"),
         };
         let endpoint = serve(answer, Seen::default()).await;
         let runner = runner(&endpoint, KEY, Duration::from_millis(1_000));
