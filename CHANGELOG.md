@@ -304,6 +304,28 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- **Semantic judge (`[judge]`, new crate `pv-judge`).** Tools listed
+  under `[[judge.tools]]` are scored on named, versioned predicates
+  (`arg_matches_task@1`, `child_uses_parent_entitlement@1`,
+  `memory_write_safe@1`, or operator-defined ones) between the schema
+  gate and the policy gate. The judge returns probabilities; policy
+  thresholds (`[[judge.thresholds]]`) or a WASM policy using the new
+  interface version 2 (`evaluate_v2`) turn them into allow, ask, or
+  deny. New denial codes: `JUDGE_DENIED`, `APPROVAL_REQUIRED`,
+  `JUDGE_UNAVAILABLE`. Backends: a local ONNX classifier pinned by the
+  SHA-256 of the loaded bytes (`onnx` feature), and a generic HTTP
+  contract (`proofvisor.judge.v1`) that each tool must opt into.
+  Failures deny or ask, never allow. Every verdict, with its full
+  distribution in integer parts per million and the pinned model, is
+  written into the `agent.tool_call` event and the ATIF tool call, so
+  the existing receipts sign it. Shadow mode, a capped-pilot daily
+  block cap, a runtime calibration drift gate with operator review
+  endpoints (`/admin/v1/judge/*`), and `pvctl judge-calibrate` support
+  the rollout. Untagged tools are unaffected. See
+  `docs/reference/CONFIGURATION.md#semantic-judge-judge` and
+  `docs/reference/OPERATIONS.md#semantic-judge`.
+- Missions accept an optional `task` statement, which the semantic judge
+  reads instead of the agent's prompt.
 - Windows: the CI `windows` job now starts the built daemon on the Windows
   runner and runs one signed session through it
   (`scripts/boot-smoke.py`: boot, readiness, a streaming request, close,

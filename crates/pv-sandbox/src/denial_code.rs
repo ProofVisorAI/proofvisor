@@ -61,6 +61,17 @@ pub enum DenialCode {
     /// The external AuthZEN policy decision point denied the call.
     #[serde(rename = "PDP_DENIED")]
     PdpDenied,
+    /// Policy holds the call for human approval ("ask"). Nothing ran;
+    /// the agent may surface the request to a person.
+    #[serde(rename = "APPROVAL_REQUIRED")]
+    ApprovalRequired,
+    /// A semantic-judge verdict crossed a policy deny threshold.
+    #[serde(rename = "JUDGE_DENIED")]
+    JudgeDenied,
+    /// The semantic judge produced no usable verdict (timeout, crash,
+    /// saturation, unpinned model) and policy failed closed.
+    #[serde(rename = "JUDGE_UNAVAILABLE")]
+    JudgeUnavailable,
 }
 
 impl DenialCode {
@@ -83,6 +94,9 @@ impl DenialCode {
             Self::IntentTokenError => "INTENT_TOKEN_ERROR",
             Self::PayoutInvalid => "PAYOUT_INVALID",
             Self::PdpDenied => "PDP_DENIED",
+            Self::ApprovalRequired => "APPROVAL_REQUIRED",
+            Self::JudgeDenied => "JUDGE_DENIED",
+            Self::JudgeUnavailable => "JUDGE_UNAVAILABLE",
         }
     }
 }
@@ -118,6 +132,9 @@ mod tests {
             DenialCode::IntentTokenError,
             DenialCode::PayoutInvalid,
             DenialCode::PdpDenied,
+            DenialCode::ApprovalRequired,
+            DenialCode::JudgeDenied,
+            DenialCode::JudgeUnavailable,
         ];
         for code in codes {
             let json = serde_json::to_string(&code).unwrap();

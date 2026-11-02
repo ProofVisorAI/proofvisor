@@ -3,7 +3,8 @@
 use crate::denial_code::DenialCode;
 use crate::policy::{PolicyDecision, PolicyEngine};
 use crate::pushed::PushedRules;
-use crate::rpc::{denial_error, parse_tool_call, RpcError};
+use crate::rpc::{denial_error, judge_denial_error, parse_tool_call, RpcError, ToolCallRequest};
+use pv_judge::{DecisionCause, JudgeAction, JudgeDecision, JudgeOutcome, ThresholdPolicy};
 use pv_state::{ActionBudget, BudgetDecision, BudgetSpec, StateStore};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -98,11 +99,37 @@ impl ToolVerdict {
     }
 }
 
+/// Policy name reported for refusals made by the semantic-judge
+/// thresholds (console attribution needs a stable handle).
+pub const JUDGE_POLICY_NAME: &str = "judge.thresholds";
+
+/// A call that passed the parse and schema gates, with the
+/// console-pushed rule snapshot those gates used.
+#[derive(Debug, Clone)]
+pub struct ValidatedCall {
+    /// The parsed, schema-valid request.
+    pub request: ToolCallRequest,
+    pushed: Arc<PushedRules>,
+    sandbox_us: u64,
+}
+
+/// What the semantic judge said about a call, for the policy gate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JudgeEvidence {
+    /// One outcome per evaluated predicate.
+    pub outcomes: Vec<JudgeOutcome>,
+    /// Predicates the runtime calibration check flipped to ask-by-default.
+    pub drift_tripped: Vec<String>,
+}
+
 /// The sandbox: compiled schemas + policy chain + budget spec.
 pub struct Sandbox {
     validators: HashMap<String, jsonschema::Validator>,
     policies: Vec<Box<dyn PolicyEngine>>,
     config: SandboxConfig,
+    /// Thresholds and failure behaviour for judge outcomes. The default
+    /// has no thresholds and the fail-closed failure behaviour.
+    judge_policy: ThresholdPolicy,
     /// Console-pushed rules, swapped in whole when a new bundle is
     /// applied. Every check reads one snapshot, so a call never sees half
     /// of an old bundle and half of a new one.
@@ -132,7 +159,34 @@ impl Sandbox {
             policies,
             config,
             pushed: parking_lot::RwLock::new(Arc::new(PushedRules::default())),
+            judge_policy: ThresholdPolicy::default(),
         })
+    }
+
+    /// Set the semantic-judge thresholds and failure behaviour.
+    #[must_use]
+    pub fn with_judge_policy(mut self, policy: ThresholdPolicy) -> Self {
+        self.judge_policy = policy;
+        self
+    }
+
+    /// The semantic-judge thresholds in force.
+    pub fn judge_policy(&self) -> &ThresholdPolicy {
+        &self.judge_policy
+    }
+
+    /// True when `tool` has a local argument schema.
+    pub fn has_schema(&self, tool: &str) -> bool {
+        self.validators.contains_key(tool)
+    }
+
+    /// Names of policy engines that read judge outcomes (WASM ABI v2).
+    pub fn judge_aware_policies(&self) -> Vec<String> {
+        self.policies
+            .iter()
+            .filter(|policy| policy.sees_judge())
+            .map(|policy| policy.name().to_owned())
+            .collect()
     }
 
     /// Replace the console-pushed rules. They only ever add restrictions
@@ -176,6 +230,27 @@ impl Sandbox {
         principal: Option<(&str, &BudgetSpec)>,
         raw: &[u8],
     ) -> ToolVerdict {
+        let call = match self.precheck(raw) {
+            Ok(call) => call,
+            Err(verdict) => return verdict,
+        };
+        self.admit(store, session, principal, call, None)
+    }
+
+    /// Gates 1 and 2: parse the JSON-RPC envelope and validate the
+    /// arguments against the local and console-pushed schemas. Returns
+    /// the validated call, or the blocking verdict.
+    ///
+    /// Together with [`Self::admit`] this is [`Self::check_with_principal`]
+    /// split at the point where the semantic judge runs: the judge only
+    /// ever sees arguments that passed the schema gate. The validated call
+    /// carries the console-pushed rule snapshot this precheck used, so
+    /// both halves of one call see the same bundle.
+    // `ToolVerdict` is the sandbox's ordinary by-value return type
+    // (`check` returns it directly); boxing it here only for the refusal
+    // path would make the two halves of `check` disagree in shape.
+    #[allow(clippy::result_large_err)]
+    pub fn precheck(&self, raw: &[u8]) -> Result<ValidatedCall, ToolVerdict> {
         let started = std::time::Instant::now();
         let elapsed = |s: std::time::Instant| u64::try_from(s.elapsed().as_micros()).unwrap_or(u64::MAX);
         let pushed = self.pushed();
@@ -202,7 +277,7 @@ impl Sandbox {
                 // echoed whenever the envelope made it detectable
                 // (JSON-RPC 2.0 §5; see `detectable_error_id`).
                 let id = crate::rpc::detectable_error_id(raw, &e);
-                return ToolVerdict::Blocked {
+                return Err(ToolVerdict::Blocked {
                     tool: "<unparsed>".into(),
                     stage,
                     policy: None,
@@ -210,7 +285,7 @@ impl Sandbox {
                     reason,
                     response: crate::rpc::protocol_error(id.as_ref(), &e),
                     elapsed_us: elapsed(started),
-                };
+                });
             }
         };
 
@@ -225,7 +300,7 @@ impl Sandbox {
                 .collect();
             if !errors.is_empty() {
                 let reason = format!("schema validation failed: {}", errors.join("; "));
-                return ToolVerdict::Blocked {
+                return Err(ToolVerdict::Blocked {
                     tool: req.tool.clone(),
                     stage: "schema",
                     policy: None,
@@ -233,11 +308,11 @@ impl Sandbox {
                     reason: reason.clone(),
                     response: denial_error(req.id.as_ref(), DenialCode::SchemaViolation, &reason),
                     elapsed_us: elapsed(started),
-                };
+                });
             }
         } else if self.config.require_schema {
             let reason = format!("no argument schema configured for tool {:?}", req.tool);
-            return ToolVerdict::Blocked {
+            return Err(ToolVerdict::Blocked {
                 tool: req.tool.clone(),
                 stage: "schema",
                 policy: None,
@@ -245,7 +320,7 @@ impl Sandbox {
                 reason: reason.clone(),
                 response: denial_error(req.id.as_ref(), DenialCode::SchemaMissing, &reason),
                 elapsed_us: elapsed(started),
-            };
+            });
         }
 
         // Gate 2b: console-pushed schemas, on top of the local one.
@@ -257,7 +332,7 @@ impl Sandbox {
                     schema.policy,
                     errors.join("; ")
                 );
-                return ToolVerdict::Blocked {
+                return Err(ToolVerdict::Blocked {
                     tool: req.tool.clone(),
                     stage: "schema",
                     policy: Some(schema.policy.clone()),
@@ -265,57 +340,74 @@ impl Sandbox {
                     reason: reason.clone(),
                     response: denial_error(req.id.as_ref(), DenialCode::SchemaViolation, &reason),
                     elapsed_us: elapsed(started),
-                };
+                });
             }
         }
 
-        // Gate 3: policy chain (first deny wins).
-        for policy in &self.policies {
-            if let PolicyDecision::Deny { reason } = policy.evaluate(&req.tool, &req.arguments) {
-                let reason = format!("policy {:?}: {reason}", policy.name());
-                return ToolVerdict::Blocked {
-                    tool: req.tool.clone(),
-                    stage: "policy",
-                    policy: Some(policy.name().to_owned()),
-                    denial_code: DenialCode::PolicyDenied,
-                    reason: reason.clone(),
-                    response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
-                    elapsed_us: elapsed(started),
-                };
-            }
-        }
+        Ok(ValidatedCall {
+            request: req,
+            pushed,
+            sandbox_us: elapsed(started),
+        })
+    }
 
-        // Gate 3b: console-pushed allowlists, after the local chain.
-        for rule in &pushed.allowlists {
-            if let Some(reason) = rule.refuses(&req.tool) {
-                let reason = format!("policy {:?}: {reason}", rule.policy);
-                return ToolVerdict::Blocked {
-                    tool: req.tool.clone(),
-                    stage: "policy",
-                    policy: Some(rule.policy.clone()),
-                    denial_code: DenialCode::PolicyDenied,
-                    reason: reason.clone(),
-                    response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
-                    elapsed_us: elapsed(started),
-                };
-            }
-        }
+    /// Gates 3 and 4 for a call that passed [`Self::precheck`]: the
+    /// policy chain (which sees `judge`'s outcomes), the judge
+    /// thresholds, the console-pushed rules, and the budget. The
+    /// verdict's `elapsed_us` is sandbox time only (precheck plus this);
+    /// time spent waiting for the judge is recorded separately.
+    pub fn admit(
+        &self,
+        store: &dyn StateStore,
+        session: &str,
+        principal: Option<(&str, &BudgetSpec)>,
+        call: ValidatedCall,
+        judge: Option<&JudgeEvidence>,
+    ) -> ToolVerdict {
+        let started = std::time::Instant::now();
+        let ValidatedCall {
+            request,
+            pushed,
+            sandbox_us,
+        } = call;
+        self.admit_inner(
+            store, session, principal, request, &pushed, judge, sandbox_us, started,
+        )
+    }
 
-        // Gate 3c: console-pushed guardrails over the arguments, after
-        // every local gate, so they can only add a refusal.
-        for rule in &pushed.guardrails {
-            if let Some(reason) = rule.refuses_tool_call(&req.tool, &req.arguments) {
-                let reason = format!("policy {:?}: {reason}", rule.policy);
-                return ToolVerdict::Blocked {
-                    tool: req.tool.clone(),
-                    stage: "policy",
-                    policy: Some(rule.policy.clone()),
-                    denial_code: DenialCode::PolicyDenied,
-                    reason: reason.clone(),
-                    response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
-                    elapsed_us: elapsed(started),
-                };
-            }
+    /// The policy gates alone, without spending budget: the verdict
+    /// [`Self::admit`] would return before the budget gate, or `None`
+    /// when every policy gate passes. Shadow mode uses it to compute what
+    /// the judge WOULD have done.
+    pub fn policy_verdict(&self, call: &ValidatedCall, judge: Option<&JudgeEvidence>) -> Option<ToolVerdict> {
+        let started = std::time::Instant::now();
+        self.policy_stage(&call.request, &call.pushed, judge, &|| micros_since(started))
+    }
+
+    /// The native threshold decision over `judge`'s outcomes (the same
+    /// decision [`Self::admit`] applies).
+    pub fn judge_decision(&self, judge: &JudgeEvidence) -> JudgeDecision {
+        self.judge_policy.decide(&judge.outcomes, &|id| {
+            judge.drift_tripped.iter().any(|tripped| tripped == id)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_inner(
+        &self,
+        store: &dyn StateStore,
+        session: &str,
+        principal: Option<(&str, &BudgetSpec)>,
+        req: ToolCallRequest,
+        pushed: &PushedRules,
+        judge: Option<&JudgeEvidence>,
+        prior_us: u64,
+        started: std::time::Instant,
+    ) -> ToolVerdict {
+        let elapsed = |s: std::time::Instant| prior_us.saturating_add(micros_since(s));
+
+        if let Some(blocked) = self.policy_stage(&req, pushed, judge, &|| elapsed(started)) {
+            return blocked;
         }
 
         // Gate 4: budget (atomic check-and-spend).
@@ -457,11 +549,133 @@ impl Sandbox {
         }
     }
 
+    /// Gate 3: the local policy chain, the judge thresholds, then the
+    /// console-pushed allowlists and guardrails. A deny anywhere wins
+    /// over an ask, so an earlier ask never hides a later refusal; the
+    /// first ask is returned only when nothing denies.
+    fn policy_stage(
+        &self,
+        req: &ToolCallRequest,
+        pushed: &PushedRules,
+        judge: Option<&JudgeEvidence>,
+        elapsed_us: &dyn Fn() -> u64,
+    ) -> Option<ToolVerdict> {
+        let outcomes: &[JudgeOutcome] = judge.map_or(&[], |evidence| evidence.outcomes.as_slice());
+        let mut held: Option<ToolVerdict> = None;
+
+        // Gate 3: policy chain (first deny wins).
+        for policy in &self.policies {
+            match policy.evaluate_with_judge(&req.tool, &req.arguments, outcomes) {
+                PolicyDecision::Allow => {}
+                PolicyDecision::Deny { reason } => {
+                    let reason = format!("policy {:?}: {reason}", policy.name());
+                    return Some(ToolVerdict::Blocked {
+                        tool: req.tool.clone(),
+                        stage: "policy",
+                        policy: Some(policy.name().to_owned()),
+                        denial_code: DenialCode::PolicyDenied,
+                        reason: reason.clone(),
+                        response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
+                        elapsed_us: elapsed_us(),
+                    });
+                }
+                PolicyDecision::Ask { reason } => {
+                    if held.is_none() {
+                        let reason = format!("policy {:?}: {reason}", policy.name());
+                        held = Some(ToolVerdict::Blocked {
+                            tool: req.tool.clone(),
+                            stage: "policy",
+                            policy: Some(policy.name().to_owned()),
+                            denial_code: DenialCode::ApprovalRequired,
+                            reason: reason.clone(),
+                            response: denial_error(req.id.as_ref(), DenialCode::ApprovalRequired, &reason),
+                            elapsed_us: elapsed_us(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Gate 3a: semantic-judge thresholds. Applied whenever the judge
+        // ran, even without configured rules: the failure behaviour
+        // (deny or ask, never allow) must hold whatever policy reads the
+        // verdicts.
+        if let Some(evidence) = judge {
+            let decision = self.judge_decision(evidence);
+            let code = match (&decision.action, &decision.cause) {
+                (JudgeAction::Allow, _) => None,
+                (JudgeAction::Ask, _) => Some(DenialCode::ApprovalRequired),
+                (JudgeAction::Deny, DecisionCause::Failure { .. }) => Some(DenialCode::JudgeUnavailable),
+                (JudgeAction::Deny, _) => Some(DenialCode::JudgeDenied),
+            };
+            if let Some(code) = code {
+                let verdict = ToolVerdict::Blocked {
+                    tool: req.tool.clone(),
+                    stage: "policy",
+                    policy: Some(JUDGE_POLICY_NAME.to_owned()),
+                    denial_code: code,
+                    reason: decision.reason.clone(),
+                    response: judge_denial_error(
+                        req.id.as_ref(),
+                        code,
+                        &decision.reason,
+                        decision.predicate_id.as_deref(),
+                    ),
+                    elapsed_us: elapsed_us(),
+                };
+                if decision.action == JudgeAction::Deny {
+                    return Some(verdict);
+                }
+                if held.is_none() {
+                    held = Some(verdict);
+                }
+            }
+        }
+
+        // Gate 3b: console-pushed allowlists, after the local chain.
+        for rule in &pushed.allowlists {
+            if let Some(reason) = rule.refuses(&req.tool) {
+                let reason = format!("policy {:?}: {reason}", rule.policy);
+                return Some(ToolVerdict::Blocked {
+                    tool: req.tool.clone(),
+                    stage: "policy",
+                    policy: Some(rule.policy.clone()),
+                    denial_code: DenialCode::PolicyDenied,
+                    reason: reason.clone(),
+                    response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
+                    elapsed_us: elapsed_us(),
+                });
+            }
+        }
+
+        // Gate 3c: console-pushed guardrails over the arguments, after
+        // every local gate, so they can only add a refusal.
+        for rule in &pushed.guardrails {
+            if let Some(reason) = rule.refuses_tool_call(&req.tool, &req.arguments) {
+                let reason = format!("policy {:?}: {reason}", rule.policy);
+                return Some(ToolVerdict::Blocked {
+                    tool: req.tool.clone(),
+                    stage: "policy",
+                    policy: Some(rule.policy.clone()),
+                    denial_code: DenialCode::PolicyDenied,
+                    reason: reason.clone(),
+                    response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
+                    elapsed_us: elapsed_us(),
+                });
+            }
+        }
+
+        held
+    }
+
     /// Evaluate an arbitrary operation payload against the configured native
     /// and WASM policy chain. Used for chat sanitization before compression.
     pub fn sanitize(&self, operation: &str, payload: &Value) -> Result<(), SanitizeDenial> {
         for policy in &self.policies {
-            if let PolicyDecision::Deny { reason } = policy.evaluate(operation, payload) {
+            // Chat has no approval step: an ask refuses like a deny.
+            if let PolicyDecision::Deny { reason } | PolicyDecision::Ask { reason } =
+                policy.evaluate(operation, payload)
+            {
                 return Err(SanitizeDenial {
                     policy: None,
                     reason: format!("policy {:?}: {reason}", policy.name()),
@@ -584,6 +798,10 @@ fn extract_payout_micros(arguments: &Value, field: &str) -> Result<u64, String> 
     Ok((usd * pv_core::units::USD_MICROS_PER_DOLLAR as f64).ceil() as u64)
 }
 
+fn micros_since(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -636,6 +854,255 @@ mod tests {
             vec![Box::new(NativePolicy::deny_tools(&["rm_rf"]))],
         )
         .unwrap()
+    }
+
+    fn pin() -> pv_judge::ModelPin {
+        pv_judge::ModelPin::new("judge", "1", "a".repeat(64)).unwrap()
+    }
+
+    fn scored(mismatch_ppm: u32) -> JudgeEvidence {
+        JudgeEvidence {
+            outcomes: vec![JudgeOutcome::Scored(pv_judge::Verdict {
+                predicate_id: "arg_matches_task@1".into(),
+                probs: vec![
+                    pv_judge::LabelProb {
+                        label: "match".into(),
+                        ppm: 1_000_000 - mismatch_ppm,
+                    },
+                    pv_judge::LabelProb {
+                        label: "mismatch".into(),
+                        ppm: mismatch_ppm,
+                    },
+                ],
+                model: pin(),
+                latency_us: 5,
+            })],
+            drift_tripped: Vec::new(),
+        }
+    }
+
+    fn failed(kind: pv_judge::FailureKind) -> JudgeEvidence {
+        JudgeEvidence {
+            outcomes: vec![JudgeOutcome::Failed(pv_judge::JudgeFailure {
+                predicate_id: "arg_matches_task@1".into(),
+                model: pin(),
+                kind,
+                detail: "detail".into(),
+                latency_us: 5,
+            })],
+            drift_tripped: Vec::new(),
+        }
+    }
+
+    fn judged_sandbox() -> Sandbox {
+        sandbox().with_judge_policy(
+            ThresholdPolicy::new(
+                vec![pv_judge::ThresholdRule {
+                    predicate_id: "arg_matches_task@1".into(),
+                    label: "mismatch".into(),
+                    deny_above_ppm: Some(700_000),
+                    ask_above_ppm: Some(300_000),
+                    min_confidence_ppm: None,
+                }],
+                pv_judge::FailurePolicy::default(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn admit(
+        s: &Sandbox,
+        store: &InMemoryStore,
+        tool: &str,
+        args: Value,
+        judge: Option<&JudgeEvidence>,
+    ) -> ToolVerdict {
+        let call = s.precheck(&raw_call(tool, args)).unwrap();
+        s.admit(store, "sess-j", None, call, judge)
+    }
+
+    fn code(verdict: &ToolVerdict) -> DenialCode {
+        match verdict {
+            ToolVerdict::Blocked { denial_code, .. } => *denial_code,
+            other => panic!("expected a block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn precheck_then_admit_without_judge_matches_check() {
+        let s = sandbox();
+        let store = InMemoryStore::new();
+        let args = json!({"table": "t", "row": {}});
+        assert!(admit(&s, &store, "db_write", args.clone(), None).is_allowed());
+        assert!(s
+            .check(&store, "sess-j", &raw_call("db_write", args))
+            .is_allowed());
+        let refused = s
+            .precheck(&raw_call("db_write", json!({"table": ""})))
+            .unwrap_err();
+        assert_eq!(code(&refused), DenialCode::SchemaViolation);
+        assert_eq!(
+            code(&admit(&s, &store, "rm_rf", json!({}), None)),
+            DenialCode::PolicyDenied
+        );
+    }
+
+    #[test]
+    fn judge_thresholds_deny_ask_and_allow_without_spending_on_refusals() {
+        let s = judged_sandbox();
+        let store = InMemoryStore::new();
+        let args = json!({"table": "t", "row": {}});
+        let denied = admit(&s, &store, "db_write", args.clone(), Some(&scored(820_000)));
+        assert_eq!(code(&denied), DenialCode::JudgeDenied);
+        let ToolVerdict::Blocked {
+            response,
+            policy,
+            stage,
+            ..
+        } = &denied
+        else {
+            unreachable!()
+        };
+        assert_eq!(*stage, "policy");
+        assert_eq!(policy.as_deref(), Some(JUDGE_POLICY_NAME));
+        assert_eq!(response["error"]["data"]["predicate_id"], "arg_matches_task@1");
+        assert_eq!(response["error"]["data"]["code"], "JUDGE_DENIED");
+        let held = admit(&s, &store, "db_write", args.clone(), Some(&scored(500_000)));
+        assert_eq!(code(&held), DenialCode::ApprovalRequired);
+        // Three db_write calls fit the budget: the two refusals spent nothing.
+        for _ in 0..3 {
+            assert!(admit(&s, &store, "db_write", args.clone(), Some(&scored(100_000))).is_allowed());
+        }
+        assert_eq!(
+            code(&admit(&s, &store, "db_write", args, Some(&scored(100_000)))),
+            DenialCode::BudgetExceeded
+        );
+    }
+
+    #[test]
+    fn judge_failures_fail_closed_even_without_rules() {
+        let s = sandbox();
+        let store = InMemoryStore::new();
+        let args = json!({"table": "t", "row": {}});
+        for kind in [
+            pv_judge::FailureKind::Timeout,
+            pv_judge::FailureKind::Unavailable,
+            pv_judge::FailureKind::Saturated,
+            pv_judge::FailureKind::ModelMismatch,
+        ] {
+            let verdict = admit(&s, &store, "db_write", args.clone(), Some(&failed(kind)));
+            assert_eq!(code(&verdict), DenialCode::JudgeUnavailable, "{kind:?}");
+        }
+        let malformed = admit(
+            &s,
+            &store,
+            "db_write",
+            args.clone(),
+            Some(&failed(pv_judge::FailureKind::Malformed)),
+        );
+        assert_eq!(code(&malformed), DenialCode::ApprovalRequired);
+        // No rules and a clean verdict: nothing to apply.
+        assert!(admit(&s, &store, "db_write", args, Some(&scored(990_000))).is_allowed());
+    }
+
+    #[test]
+    fn a_later_deny_wins_over_an_earlier_ask() {
+        let s = judged_sandbox();
+        let mut rules = PushedRules::default();
+        rules.allowlists.push(crate::pushed::PushedAllowlist {
+            policy: "runtime.no_db".into(),
+            scope: crate::pushed::ToolPattern::from_scope("tool.*").unwrap(),
+            allow_only: None,
+            deny: ["db_write".to_owned()].into_iter().collect(),
+        });
+        s.set_pushed(rules);
+        let store = InMemoryStore::new();
+        let verdict = admit(
+            &s,
+            &store,
+            "db_write",
+            json!({"table": "t", "row": {}}),
+            Some(&scored(500_000)),
+        );
+        assert_eq!(code(&verdict), DenialCode::PolicyDenied);
+        assert_eq!(blocked_policy(&verdict).0.as_deref(), Some("runtime.no_db"));
+    }
+
+    #[test]
+    fn a_validated_call_keeps_its_rule_snapshot() {
+        let s = sandbox();
+        let store = InMemoryStore::new();
+        let call = s.precheck(&raw_call("send_wire", json!({}))).unwrap();
+        let mut rules = PushedRules::default();
+        rules.allowlists.push(crate::pushed::PushedAllowlist {
+            policy: "runtime.no_wires".into(),
+            scope: crate::pushed::ToolPattern::from_scope("tool.*").unwrap(),
+            allow_only: None,
+            deny: ["send_wire".to_owned()].into_iter().collect(),
+        });
+        s.set_pushed(rules);
+        // Prechecked under the old bundle: decided under the old bundle.
+        assert!(s.admit(&store, "sess-s", None, call, None).is_allowed());
+        let fresh = s.precheck(&raw_call("send_wire", json!({}))).unwrap();
+        assert!(!s.admit(&store, "sess-s", None, fresh, None).is_allowed());
+    }
+
+    #[test]
+    fn drift_gate_holds_calls_policy_would_allow() {
+        let s = judged_sandbox();
+        let store = InMemoryStore::new();
+        let mut evidence = scored(100_000);
+        evidence.drift_tripped = vec!["arg_matches_task@1".into()];
+        let verdict = admit(
+            &s,
+            &store,
+            "db_write",
+            json!({"table": "t", "row": {}}),
+            Some(&evidence),
+        );
+        assert_eq!(code(&verdict), DenialCode::ApprovalRequired);
+    }
+
+    #[test]
+    fn policy_verdict_reports_without_spending() {
+        let s = judged_sandbox();
+        let store = InMemoryStore::new();
+        let call = s
+            .precheck(&raw_call("db_write", json!({"table": "t", "row": {}})))
+            .unwrap();
+        assert_eq!(
+            code(&s.policy_verdict(&call, Some(&scored(820_000))).unwrap()),
+            DenialCode::JudgeDenied
+        );
+        assert!(s.policy_verdict(&call, Some(&scored(100_000))).is_none());
+        for _ in 0..3 {
+            let call = s
+                .precheck(&raw_call("db_write", json!({"table": "t", "row": {}})))
+                .unwrap();
+            assert!(s.admit(&store, "sess-v", None, call, None).is_allowed());
+        }
+    }
+
+    #[test]
+    fn asks_refuse_chat_sanitization() {
+        struct Asker;
+        impl PolicyEngine for Asker {
+            fn name(&self) -> &str {
+                "asker"
+            }
+            fn evaluate(&self, _: &str, _: &Value) -> PolicyDecision {
+                PolicyDecision::Ask {
+                    reason: "approve".into(),
+                }
+            }
+        }
+        let s = Sandbox::new(SandboxConfig::default(), vec![Box::new(Asker)]).unwrap();
+        assert!(s.sanitize("chat/completions", &json!({})).is_err());
+        let store = InMemoryStore::new();
+        assert_eq!(
+            code(&s.check(&store, "sess-a", &raw_call("t", json!({})))),
+            DenialCode::ApprovalRequired
+        );
     }
 
     fn blocked_policy(verdict: &ToolVerdict) -> (Option<String>, &'static str) {

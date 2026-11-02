@@ -30,8 +30,11 @@ pub use pushed::{
     GuardrailHit, GuardrailTarget, PushedAllowlist, PushedGuardrail, PushedRules, PushedSchema,
     PushedTransform, ToolPattern, TransformTarget,
 };
-pub use rpc::{parse_tool_call, refuse_duplicate_json_keys, RpcError, ToolCallRequest};
-pub use sandbox::{Sandbox, SandboxConfig, SanitizeDenial, ToolVerdict, TransformApplied};
+pub use rpc::{judge_denial_error, parse_tool_call, refuse_duplicate_json_keys, RpcError, ToolCallRequest};
+pub use sandbox::{
+    JudgeEvidence, Sandbox, SandboxConfig, SanitizeDenial, ToolVerdict, TransformApplied, ValidatedCall,
+    JUDGE_POLICY_NAME,
+};
 
 #[cfg(feature = "wasm")]
 pub mod wasm_policy;

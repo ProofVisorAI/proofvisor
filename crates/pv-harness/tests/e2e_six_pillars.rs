@@ -110,6 +110,7 @@ fn pdp_unmapped_tool_denied_when_required() {
 #[test]
 fn pdp_expired_mission_denied() {
     let mission = MissionConfig {
+        task: None,
         id: "m-expired".into(),
         allowed_intents: vec!["data.mutate".into()],
         expires_at: 500,
@@ -133,6 +134,7 @@ fn pdp_expired_mission_denied() {
 #[test]
 fn pdp_mission_denies_unlisted_intent() {
     let mission = MissionConfig {
+        task: None,
         id: "m-narrow".into(),
         allowed_intents: vec!["data.read".into()],
         expires_at: 9999,
@@ -462,6 +464,7 @@ fn config_backward_compat_no_backends() {
 #[test]
 fn mission_narrowing_never_widens_static_policy() {
     let mission = MissionConfig {
+        task: None,
         id: "narrow".into(),
         allowed_intents: vec!["data.read".into()],
         expires_at: 9999,
@@ -1880,6 +1883,7 @@ async fn expired_mission_blocks_a_forwarded_call_before_any_backend_contact() {
         |config| {
             config.intent_map.insert("deploy_check".into(), "ops.read".into());
             config.mission = Some(MissionConfig {
+                task: None,
                 id: "m-over".into(),
                 allowed_intents: vec!["ops.read".into()],
                 expires_at: 1,

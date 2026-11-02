@@ -38,6 +38,7 @@ pv-atif = { workspace = true }
 pv-receipts = { workspace = true }
 pv-bridge = { workspace = true }
 pv-harness = { workspace = true }
+pv-judge = { workspace = true, features = ["runner"] }
 clap = { workspace = true }
 rpassword = { workspace = true }
 serde_json = { workspace = true }

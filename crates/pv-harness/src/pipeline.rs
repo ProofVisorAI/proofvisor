@@ -232,6 +232,9 @@ pub struct AppState {
     pub(crate) content_sink: crate::content::SharedContentSink,
     /// Workload assertion verifier, when `[workload_identity]` is set.
     pub(crate) workload: crate::workload::SharedWorkloadIssuer,
+    /// Semantic judge, when `[judge]` is set. The sandbox carries the
+    /// matching threshold policy.
+    pub judge: Option<Arc<crate::judge::JudgeService>>,
 }
 
 /// Pre-resolved metric handles for the request hot path so the
@@ -2134,7 +2137,17 @@ impl AppState {
             authzen,
             content_sink,
             workload,
+            judge: None,
         })
+    }
+
+    /// Attach the semantic judge. Build the sandbox with
+    /// `Sandbox::with_judge_policy(config.threshold_policy())` so the
+    /// thresholds the judge's verdicts meet are the configured ones.
+    #[must_use]
+    pub fn with_judge(mut self, judge: Arc<crate::judge::JudgeService>) -> Self {
+        self.judge = Some(judge);
+        self
     }
 
     /// Install the sink that receives every journaled step in content form
@@ -3560,6 +3573,18 @@ impl AppState {
         // (chain-of-custody split). Chat requests use `get_or_open`
         // (recycles closed ids); the strict `_no_reopen` variant here
         // makes the `is_closed()` check below fire.
+        // Ask the semantic judge before taking the session's admission
+        // lock: its wait (up to the adapter deadline) must not hold up a
+        // concurrent session close or the session's other calls.
+        let mut prejudged = self.prejudge(
+            preflight_denial.is_none(),
+            parsed_call.as_ref(),
+            workflow,
+            raw,
+            &session_id,
+            &identity,
+            caller,
+        );
         let session =
             self.sessions
                 .get_or_open_no_reopen(&session_id, workflow, &identity, &self.config.breaker);
@@ -3602,18 +3627,76 @@ impl AppState {
             .worker
             .try_reserve(&session_id)
             .map_err(PipelineError::unavailable_source)?;
-        let budgeted_check = || {
+        let mut budgeted_check = || -> (ToolVerdict, Option<pv_judge::JudgeRecord>) {
             let principal_binding = self
                 .config
                 .principal_budget
                 .as_ref()
                 .map(|spec| (principal_id_for_budget(&identity), spec));
             let principal_ref = principal_binding.as_ref().map(|(id, spec)| (id.as_str(), *spec));
-            self.sandbox
-                .check_with_principal(self.store.as_ref(), &session_id, principal_ref, raw)
+            let (call, scored) = match prejudged.take() {
+                Some(prejudged) => (prejudged.call, Some((prejudged.outcomes, prejudged.judge_us))),
+                None => match self.sandbox.precheck(raw) {
+                    Ok(call) => (call, None),
+                    Err(verdict) => return (verdict, None),
+                },
+            };
+            // Untagged tools never reach the judge: same path as before.
+            let judged = self
+                .judge
+                .as_ref()
+                .and_then(|judge| judge.tasks_for(&call.request.tool).map(|tasks| (judge, tasks)));
+            match judged {
+                None if self.judge.is_none() && self.judge_configured_for(&call.request.tool) => {
+                    // `[judge]` tags this tool but no judge is attached to
+                    // this state: refuse rather than skip the review.
+                    let reason = format!(
+                        "tool {:?} is tagged for semantic review but the judge is not running",
+                        call.request.tool
+                    );
+                    (
+                        ToolVerdict::Blocked {
+                            tool: call.request.tool.clone(),
+                            stage: "policy",
+                            policy: Some(pv_sandbox::JUDGE_POLICY_NAME.to_owned()),
+                            denial_code: pv_sandbox::DenialCode::JudgeUnavailable,
+                            response: pv_sandbox::rpc::denial_error(
+                                call.request.id.as_ref(),
+                                pv_sandbox::DenialCode::JudgeUnavailable,
+                                &reason,
+                            ),
+                            reason,
+                            elapsed_us: 0,
+                        },
+                        None,
+                    )
+                }
+                None => (
+                    self.sandbox
+                        .admit(self.store.as_ref(), &session_id, principal_ref, call, None),
+                    None,
+                ),
+                Some((judge, tasks)) => {
+                    // Normally scored before the admission lock; only a
+                    // call whose eligibility changed in between is scored here.
+                    let (outcomes, judge_us) = scored.unwrap_or_else(|| {
+                        self.run_judge(judge, tasks, &call, &session_id, &identity, caller)
+                    });
+                    let (verdict, record) = self.judged_admission(
+                        judge,
+                        tasks,
+                        call,
+                        outcomes,
+                        judge_us,
+                        &session_id,
+                        principal_ref,
+                    );
+                    (verdict, Some(record))
+                }
+            }
         };
-        let verdict = if let Some(denial) = preflight_denial {
-            denial
+        let (verdict, judge_record) = if let Some(denial) = preflight_denial {
+            (denial, None)
         } else {
             match parsed_call.as_ref() {
                 // `sandbox.check`'s budget gate spends before we return, so we must
@@ -3643,6 +3726,7 @@ impl AppState {
                         ),
                         elapsed_us: 0,
                     }
+                    .into_unjudged()
                 }
                 // Same pre-spend veto for the intent map and the active
                 // mission: a denied call must neither consume budget nor be
@@ -3669,6 +3753,7 @@ impl AppState {
                                 reason,
                                 elapsed_us: 0,
                             }
+                            .into_unjudged()
                         }
                         crate::authz::AuthzDecision::Permit { .. } => budgeted_check(),
                     }
@@ -3741,6 +3826,44 @@ impl AppState {
                 )
             }
         };
+        let mut payload = payload;
+        if let Some(record) = &judge_record {
+            if let (Some(map), Ok(value)) = (payload.as_object_mut(), serde_json::to_value(record)) {
+                map.insert("judge".to_owned(), value);
+            }
+        }
+        if let (
+            Some(judge),
+            ToolVerdict::Blocked {
+                tool,
+                stage,
+                policy,
+                denial_code,
+                ..
+            },
+        ) = (&self.judge, &verdict)
+        {
+            // Parse and protocol refusals say nothing about intent, and a
+            // tool name the operator never defined (no schema, no judge
+            // tag) is caller-chosen text that must not reach the judge.
+            let known_tool = self.sandbox.has_schema(tool) || judge.tasks_for(tool).is_some();
+            if !matches!(*stage, "parse" | "passthrough") && known_tool {
+                let predicate = (policy.as_deref() == Some(pv_sandbox::JUDGE_POLICY_NAME))
+                    .then(|| {
+                        judge_record
+                            .as_ref()
+                            .and_then(|record| record.decision_predicate.clone())
+                    })
+                    .flatten();
+                judge.record_denial(
+                    &session_id,
+                    &identity.instance_uid,
+                    tool,
+                    denial_code.as_str(),
+                    predicate,
+                );
+            }
+        }
         let tool_call_id = parsed_call
             .as_ref()
             .and_then(|request| request.id.as_ref())
@@ -3751,7 +3874,12 @@ impl AppState {
                 tool_call_id: tool_call_id.clone(),
                 function_name: request.tool.clone(),
                 arguments: request.arguments.clone(),
-                extra: None,
+                // Same record as the event payload, so a retroactive
+                // receipt over the ATIF file signs it too.
+                extra: judge_record
+                    .as_ref()
+                    .and_then(|record| serde_json::to_value(record).ok())
+                    .map(|record| serde_json::json!({ "judge": record })),
             }]
         });
         let observation = parsed_call.as_ref().map(|_| pv_atif::Observation {
@@ -3807,6 +3935,186 @@ impl AppState {
         });
         drop(admission);
         Ok((verdict, session))
+    }
+
+    /// Score a tagged tool's call before the session admission lock, when
+    /// the call can reach the judge at all: no route-level refusal, not a
+    /// consequential tool on the unsigned workflow, permitted by the local
+    /// policy decision point, and schema-valid. Anything else returns
+    /// `None` and is refused by the regular gates without a judge call.
+    #[allow(clippy::too_many_arguments)]
+    fn prejudge(
+        &self,
+        eligible: bool,
+        request: Option<&pv_sandbox::ToolCallRequest>,
+        workflow: Workflow,
+        raw: &[u8],
+        session_id: &str,
+        identity: &AgentIdentity,
+        caller: &AuthenticatedCaller,
+    ) -> Option<Prejudged> {
+        let judge = self.judge.as_ref()?;
+        let request = request.filter(|_| eligible)?;
+        let tasks = judge.tasks_for(&request.tool)?;
+        if workflow == Workflow::Unsigned
+            && self
+                .config
+                .consequential_tools
+                .iter()
+                .any(|required| required == &request.tool)
+        {
+            return None;
+        }
+        let permitted = matches!(
+            self.pdp
+                .decide_for(&request.tool, pv_core::time::now_ms() / 1000, &caller.facts()),
+            crate::authz::AuthzDecision::Permit { .. }
+        );
+        if !permitted {
+            return None;
+        }
+        let call = self.sandbox.precheck(raw).ok()?;
+        let (outcomes, judge_us) = self.run_judge(judge, tasks, &call, session_id, identity, caller);
+        Some(Prejudged {
+            call,
+            outcomes,
+            judge_us,
+        })
+    }
+
+    /// True when `[judge]` tags `tool`, whether or not a judge is attached.
+    fn judge_configured_for(&self, tool: &str) -> bool {
+        self.config
+            .judge
+            .as_ref()
+            .is_some_and(|judge| judge.tools.iter().any(|tagged| tagged.tool == tool))
+    }
+
+    /// Build the judge's context for a call and score it.
+    fn run_judge(
+        &self,
+        judge: &Arc<crate::judge::JudgeService>,
+        tasks: &[pv_judge::JudgeTask],
+        call: &pv_sandbox::ValidatedCall,
+        session_id: &str,
+        identity: &AgentIdentity,
+        caller: &AuthenticatedCaller,
+    ) -> (Vec<pv_judge::JudgeOutcome>, u64) {
+        let tool = &call.request.tool;
+        let facts = caller.facts();
+        let validated = caller.validated.as_ref();
+        let context = judge.context(&crate::judge::ContextInputs {
+            session_id,
+            intent: self.pdp.intent_for(tool),
+            missions: self.pdp.applicable_missions(&facts),
+            charter: &identity.charter.name,
+            delegation_depth: validated.map_or(0, |validated| validated.total_delegation_depth),
+            parents: validated.map(delegation_parents).unwrap_or_default(),
+        });
+        judge.evaluate_blocking(tasks, tool, &call.request.arguments, context)
+    }
+
+    /// Run the policy and budget gates on a judged call with its verdicts.
+    ///
+    /// Shadow mode: the verdicts are recorded with what judge-aware
+    /// policy would have done, and the call is admitted without them.
+    /// Enforce mode: policy applies them. Under the pilot cap, a
+    /// score-based block beyond the day's cap is recorded and let
+    /// through; a judge failure, or any predicate in ask-by-default mode,
+    /// always keeps its block.
+    #[allow(clippy::too_many_arguments)]
+    fn judged_admission(
+        &self,
+        judge: &Arc<crate::judge::JudgeService>,
+        tasks: &[pv_judge::JudgeTask],
+        call: pv_sandbox::ValidatedCall,
+        outcomes: Vec<pv_judge::JudgeOutcome>,
+        judge_us: u64,
+        session_id: &str,
+        principal: Option<(&str, &pv_state::BudgetSpec)>,
+    ) -> (ToolVerdict, pv_judge::JudgeRecord) {
+        let tool = call.request.tool.clone();
+        let evidence = pv_sandbox::JudgeEvidence {
+            outcomes,
+            drift_tripped: judge.drift_tripped(),
+        };
+        let decision = self.sandbox.judge_decision(&evidence);
+        let review_ids = judge.sample_reviews(&evidence.outcomes);
+        let verdicts = evidence
+            .outcomes
+            .iter()
+            .zip(tasks)
+            .map(|(outcome, task)| {
+                let mut record = pv_judge::OutcomeRecord::from_outcome(
+                    outcome,
+                    &task.adapter,
+                    judge.adapter_kind(&task.adapter),
+                );
+                record.review_id = review_ids.get(outcome.predicate_id()).cloned();
+                record
+            })
+            .collect();
+        let with_verdicts = self.sandbox.policy_verdict(&call, Some(&evidence));
+        let (policy_decision, deciding_policy) = match &with_verdicts {
+            Some(ToolVerdict::Blocked {
+                denial_code, policy, ..
+            }) => (
+                if *denial_code == pv_sandbox::DenialCode::ApprovalRequired {
+                    pv_judge::JudgeAction::Ask
+                } else {
+                    pv_judge::JudgeAction::Deny
+                },
+                policy.clone(),
+            ),
+            _ => (pv_judge::JudgeAction::Allow, None),
+        };
+        let would_block = with_verdicts.is_some() && self.sandbox.policy_verdict(&call, None).is_none();
+        let store = self.store.as_ref();
+        let (verdict, enforced, pilot_cap_reached) = match judge.mode() {
+            pv_judge::JudgeMode::Shadow => (
+                self.sandbox.admit(store, session_id, principal, call, None),
+                false,
+                false,
+            ),
+            pv_judge::JudgeMode::Enforce => {
+                let all_scored = evidence
+                    .outcomes
+                    .iter()
+                    .all(|outcome| matches!(outcome, pv_judge::JudgeOutcome::Scored(_)));
+                let verdict = self
+                    .sandbox
+                    .admit(store, session_id, principal, call.clone(), Some(&evidence));
+                let judge_caused = !verdict.is_allowed() && would_block;
+                // The pilot cap relaxes score-based blocks only: never a
+                // judge failure, never the calibration drift gate.
+                let relaxable = all_scored
+                    && !evidence.outcomes.iter().any(|outcome| {
+                        evidence
+                            .drift_tripped
+                            .iter()
+                            .any(|id| id == outcome.predicate_id())
+                    });
+                if judge_caused && relaxable && !judge.pilot_admits_block(store, &tool) {
+                    // Nothing was spent by the refused admission (the
+                    // policy gate runs before the budget gate).
+                    (
+                        self.sandbox.admit(store, session_id, principal, call, None),
+                        false,
+                        true,
+                    )
+                } else {
+                    (verdict, true, false)
+                }
+            }
+        };
+        let mut record = pv_judge::JudgeRecord::new(judge.mode(), judge_us, verdicts, &decision, enforced);
+        record.would_block = would_block;
+        record.policy_decision = policy_decision;
+        record.policy = deciding_policy;
+        record.pilot_cap_reached = pilot_cap_reached;
+        record.drift_tripped = evidence.drift_tripped;
+        judge.count_decision(decision.action, enforced);
+        (verdict, record)
     }
 
     /// Authorize a tool call and wait for its verdict event to become durable.
@@ -4540,6 +4848,47 @@ fn pdp_policy_name(code: pv_sandbox::DenialCode) -> &'static str {
         pv_sandbox::DenialCode::MissionExpired | pv_sandbox::DenialCode::MissionDenied => "pdp.mission",
         pv_sandbox::DenialCode::PdpDenied => "pdp.authzen",
         _ => "pdp",
+    }
+}
+
+/// The agents above the caller in its delegation chain, nearest first:
+/// the `parent_token` chain, then the agents named in nested `act`
+/// claims. An `act` entry that is a client id rather than an agent
+/// instance simply matches no recorded refusal.
+fn delegation_parents(validated: &pv_identity::ValidatedIdentity) -> Vec<String> {
+    let caller = &validated.claims.instance_uid;
+    let mut parents: Vec<String> = Vec::new();
+    let mut push = |uid: &str| {
+        if uid != caller && !parents.iter().any(|known| known == uid) {
+            parents.push(uid.to_owned());
+        }
+    };
+    for token in validated.chain_tokens.iter().skip(1) {
+        push(&token.instance_uid);
+    }
+    let mut actor = validated.claims.act.as_ref();
+    while let Some(claim) = actor {
+        push(&claim.sub);
+        actor = claim.act.as_deref();
+    }
+    parents
+}
+
+/// A tagged call scored before the session admission lock.
+struct Prejudged {
+    call: pv_sandbox::ValidatedCall,
+    outcomes: Vec<pv_judge::JudgeOutcome>,
+    judge_us: u64,
+}
+
+/// A verdict reached without consulting the semantic judge.
+trait Unjudged {
+    fn into_unjudged(self) -> (ToolVerdict, Option<pv_judge::JudgeRecord>);
+}
+
+impl Unjudged for ToolVerdict {
+    fn into_unjudged(self) -> (ToolVerdict, Option<pv_judge::JudgeRecord>) {
+        (self, None)
     }
 }
 

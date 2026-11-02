@@ -20,7 +20,7 @@ default = []
 redis = ["pv-state/redis"]
 nats = ["pv-bridge/nats"]
 kafka = ["pv-bridge/kafka"]
-onnx = ["pv-loopdetect/onnx"]
+onnx = ["pv-loopdetect/onnx", "pv-judge/onnx"]
 qdrant = ["pv-loopdetect/qdrant"]
 # Round-6 (hunt5 portability F3): passthrough for the S3 cold tier —
 # without it no shipped artifact (docker builds `--features full`)
@@ -50,6 +50,8 @@ pv-compress = { workspace = true }
 pv-loopdetect = { workspace = true }
 pv-redact = { workspace = true }
 pv-sandbox = { workspace = true, features = ["wasm"] }
+pv-judge = { workspace = true, features = ["runner", "cloud"] }
+url = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }

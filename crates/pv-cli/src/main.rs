@@ -219,6 +219,41 @@ enum Command {
         #[arg(long)]
         structural_only: bool,
     },
+    /// Measure a configured semantic-judge adapter against a labelled set
+    /// (JSON Lines) and fail when it falls below the given floors.
+    JudgeCalibrate {
+        /// Harness configuration holding the `[judge]` section.
+        #[arg(long)]
+        config: PathBuf,
+        /// Name of the `[[judge.adapters]]` entry to measure.
+        #[arg(long)]
+        adapter: String,
+        /// Labelled set, one JSON example per line.
+        #[arg(long)]
+        set: PathBuf,
+        /// Fewest examples per predicate.
+        #[arg(long, default_value_t = 1)]
+        min_examples: u64,
+        /// Lowest acceptable AUROC, as a probability (0.5 is chance).
+        #[arg(long, default_value_t = 0.0)]
+        min_auroc: f64,
+        /// Lowest acceptable separation of mean positive-label
+        /// probability between positive and negative examples.
+        #[arg(long, default_value_t = -1.0)]
+        min_separation: f64,
+        /// Largest tolerated share of examples the judge failed to score.
+        #[arg(long, default_value_t = 0.0)]
+        max_failure_rate: f64,
+        /// Require accuracy to rise with confidence.
+        #[arg(long)]
+        require_monotone: bool,
+        /// Examples a confidence band needs to count in that check.
+        #[arg(long, default_value_t = 30)]
+        min_per_band: u64,
+        /// Allowed accuracy drop between bands, as a probability.
+        #[arg(long, default_value_t = 0.02)]
+        tolerance: f64,
+    },
     /// Upload locally-spooled ProofVisor session evidence to the hosted console.
     ConsoleSync {
         /// ATIF spool directory (`atif_spool_dir` in the harness config).
@@ -431,6 +466,29 @@ async fn run(cli: Cli) -> Result<()> {
             path,
             structural_only,
         } => config_validate(&path, structural_only),
+        Command::JudgeCalibrate {
+            config,
+            adapter,
+            set,
+            min_examples,
+            min_auroc,
+            min_separation,
+            max_failure_rate,
+            require_monotone,
+            min_per_band,
+            tolerance,
+        } => {
+            let floor = pv_judge::calibration::CalibrationFloor {
+                min_examples,
+                min_auroc_ppm: pv_judge::threshold_to_ppm(min_auroc).map_err(anyhow::Error::msg)?,
+                min_separation_ppm: separation_floor_ppm(min_separation)?,
+                max_failure_ppm: pv_judge::threshold_to_ppm(max_failure_rate).map_err(anyhow::Error::msg)?,
+                require_monotone,
+                min_per_band,
+                tolerance_ppm: pv_judge::threshold_to_ppm(tolerance).map_err(anyhow::Error::msg)?,
+            };
+            judge_calibrate(&config, &adapter, &set, &floor).await
+        }
         Command::ConsoleSync {
             spool_dir,
             console_url,
@@ -1011,6 +1069,40 @@ async fn read_capped_response(response: reqwest::Response, max_bytes: u64) -> Re
         buf.extend_from_slice(&chunk);
     }
     String::from_utf8(buf).context("response body was not valid UTF-8")
+}
+
+/// Largest labelled set read by `judge-calibrate` (64 MiB).
+const MAX_LABELLED_SET_BYTES: u64 = 64 * 1024 * 1024;
+
+fn separation_floor_ppm(value: f64) -> Result<i64> {
+    if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
+        anyhow::bail!("--min-separation must be between -1 and 1");
+    }
+    // In range by the check above.
+    #[allow(clippy::cast_possible_truncation)]
+    let ppm = (value * f64::from(pv_judge::PPM_ONE)).round() as i64;
+    Ok(ppm)
+}
+
+async fn judge_calibrate(
+    config_path: &Path,
+    adapter: &str,
+    set_path: &Path,
+    floor: &pv_judge::calibration::CalibrationFloor,
+) -> Result<()> {
+    let text = read_capped_str(config_path, MAX_CONFIG_BYTES, "config")?;
+    let config = pv_harness::HarnessConfig::from_toml(&text).map_err(anyhow::Error::msg)?;
+    let set = read_capped_str(set_path, MAX_LABELLED_SET_BYTES, "labelled set")?;
+    let examples = pv_judge::calibration::load_jsonl(&set).map_err(anyhow::Error::msg)?;
+    let report = pv_harness::judge::calibrate_from_config(&config, adapter, &examples)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    let shortfalls = report.shortfalls(floor);
+    if !shortfalls.is_empty() {
+        anyhow::bail!("calibration floor not met:\n  {}", shortfalls.join("\n  "));
+    }
+    Ok(())
 }
 
 fn config_validate(path: &Path, structural_only: bool) -> Result<()> {

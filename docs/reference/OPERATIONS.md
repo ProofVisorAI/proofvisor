@@ -401,6 +401,101 @@ Do NOT delete markers as routine hygiene — each one is the only
 evidence that a crash window may contain an unaudited provider
 interaction.
 
+## Semantic judge
+
+The `[judge]` section is described in
+[CONFIGURATION.md](CONFIGURATION.md#semantic-judge-judge). This section
+covers running it.
+
+### Rollout
+
+| Phase | Configuration | What happens |
+| --- | --- | --- |
+| Shadow | `mode = "shadow"` | The judge scores every tagged call and never blocks. Each `agent.tool_call` event's `payload.judge.would_block` says whether judge-aware policy would have blocked a call the rest of policy allowed. Compare that against what actually happened before enforcing. |
+| Capped pilot | `mode = "enforce"` with `[judge.pilot] daily_block_cap` | Policy acts on the verdicts for the tagged tools, but at most `daily_block_cap` score-based blocks per tool per UTC day. Later ones are recorded (`pilot_cap_reached: true`) and let through. Tag only a few tools per design partner. |
+| Scale | `mode = "enforce"`, no `[judge.pilot]` | Widen `[[judge.tools]]` once calibration holds. |
+
+### Failure modes
+
+| Failure | Behaviour | Denial code |
+| --- | --- | --- |
+| Deadline expired (`deadline_ms`) | `[judge.on_failure] timeout`: deny (default) or ask. | `JUDGE_UNAVAILABLE` or `APPROVAL_REQUIRED` |
+| Judge crashed or unreachable | `unavailable`: deny (default) or ask. | `JUDGE_UNAVAILABLE` or `APPROVAL_REQUIRED` |
+| Malformed output (wrong labels, not a probability distribution) | `malformed`: ask (default) or deny. Treated as the uncertain band. | `APPROVAL_REQUIRED` or `JUDGE_UNAVAILABLE` |
+| Low confidence (top label below `min_confidence`) | Ask. | `APPROVAL_REQUIRED` |
+| Judge saturated (`max_concurrency` calls in flight) | `saturated`: deny (default) or ask, for tagged tools only. Untagged tools are unaffected. Never a silent allow. | `JUDGE_UNAVAILABLE` or `APPROVAL_REQUIRED` |
+| Model answers with an unpinned identity (cloud) | Deny, and an error log line. | `JUDGE_UNAVAILABLE` |
+| Local model or tokenizer file does not hash to its pin | The daemon refuses to start and logs the hash it found. | none (boot error) |
+| Local adapter configured in a build without the `onnx` feature | The daemon refuses to start; `pvctl config-validate` reports it. | none (boot error) |
+
+Shadow mode never blocks, whatever fails; the failure is recorded in
+the verdict's `status`. The process-level test
+`judge_enforces_across_kill_and_restart_and_fails_closed_when_it_dies`
+in `crates/pv-harness/tests/e2e_process_restart.rs` runs these paths
+against the real binary across a SIGKILL and restart.
+
+### Calibration
+
+Before enforcing a model, measure it on a labelled set (JSON Lines;
+format in `crates/pv-judge/src/calibration.rs`), seeded from shadow-mode
+traces and design-partner calls:
+
+```bash
+pvctl judge-calibrate --config proofvisor.toml --adapter local-args \
+  --set labelled.jsonl --min-examples 200 --min-auroc 0.9 \
+  --min-separation 0.5 --require-monotone
+```
+
+It prints AUROC, separation, accuracy, and accuracy by confidence band
+for each predicate, and exits non-zero when a floor is not met. Run it
+in CI for the pinned model, and record the measured values next to the
+floors with the date and the set they came from.
+
+At runtime, `[judge.drift]` samples scored verdicts for human review.
+A sampled verdict carries `review_id` in its record. A reviewer reports
+whether the judge's most probable label was right:
+
+```bash
+curl -X POST https://proofvisor.internal/admin/v1/judge/reviews \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -d '{"review_id": "<review_id>", "correct": true}'
+```
+
+Accuracy is tracked per confidence band. When a higher band becomes
+less accurate than a lower one (each with at least
+`min_reviews_per_band` reviews, beyond `tolerance`), the predicate
+switches to ask-by-default: judged calls that policy would allow are
+held with `APPROVAL_REQUIRED`, and denials still deny. The switch logs a
+warning, is saved to `[judge.drift] state_file` (the review response
+says `"persisted": true`; a failed save is logged and counted in
+`pv_judge_drift_persist_failures_total`), survives restarts, and stays
+until an operator resets it, after recalibrating or replacing the
+model:
+
+```bash
+curl -X POST https://proofvisor.internal/admin/v1/judge/drift/reset \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -d '{"predicate_id": "arg_matches_task@1"}'
+```
+
+`GET /admin/v1/judge/drift` returns the per-band counts. These routes
+exist only when `operator_tokens` and `[judge.drift]` are both set.
+
+### State kept per instance
+
+The prior-denial log (the refusals the judge sees as context), the
+sampled verdicts waiting for review, and the concurrency limit live in
+each harness process and start empty after a restart; a review of a
+verdict sampled before a restart answers `unknown_review_id`. The drift
+statistics and switches are saved to each instance's `state_file`, so
+they survive that instance's restarts but are not shared: give every
+instance its own file, send each review to the instance that sampled
+the verdict, and reset a switch on every instance where it tripped
+(`GET /admin/v1/judge/drift` shows which). With several instances,
+route a session and its delegated children to the same instance if the
+judge should see their refusals. The pilot cap counters live in the
+state store and are shared.
+
 ## Metrics you should alert on
 
 | Metric | Alert condition | What it means |
@@ -440,6 +535,12 @@ interaction.
 | `pv_mcp_discovery_failures_total{backend="…"}` | Sustained rate > 0 | `tools/list` could not discover a backend's tools (handshake refused, backend down, or the caller holds no usable credential for it). That backend's tools are missing from tool lists until it recovers; tool calls to it fail with 502. |
 | `pv_mcp_tools_withheld_total{reason="…"}` | Sudden increase in `invalid_name` or `unrouted` | Backends advertise tools the gateway cannot accept (names with uppercase or non-ASCII characters) or that routing sends elsewhere. `scope` and `policy` reasons reflect normal filtering by caller permissions. |
 | `pv_content_records_dropped_total` | Any sustained rate > 0 | Full-content tenant telemetry is falling behind: the queue to the tenant exporter was full, or the sink failed, and records were dropped. The audit journal and receipts are unaffected. Check the tenant collector's reachability and throughput. |
+| `pv_judge_calls_total{predicate="…",status="…"}` | Sustained rate > 0 of `timeout`, `unavailable`, `saturated`, or `model_mismatch` | The semantic judge is failing; in enforce mode each such call was refused or held. `saturated` means `max_concurrency` is too low for the traffic or the model is too slow; `model_mismatch` means the cloud judge changed models without a new pin. |
+| `pv_judge_wait_seconds` | p99 near the adapter `deadline_ms` | Judged calls are waiting close to the deadline; timeouts follow. |
+| `pv_judge_decisions_total{mode="…",decision="…",enforced="…"}` | Sudden change in the `deny` or `ask` share | The judge's behaviour shifted (new traffic, a model change, drift). In shadow mode this is the would-have-blocked rate. |
+| `pv_judge_pilot_cap_reached_total` | Any increase | The pilot's daily block cap was reached and score-based blocks are being let through for the rest of the day. |
+| `pv_judge_drift_tripped` (gauge) | > 0 | A predicate is in ask-by-default mode after the calibration drift check. Recalibrate, then reset it. |
+| `pv_judge_drift_persist_failures_total` | Any increase | A drift switch or reset could not be saved to `[judge.drift] state_file`; it applies now but may not survive a restart. Check the file's directory and disk. |
 | `pv_workload_assertions_rejected_total{reason="…"}` | Sustained rate > 0 of `chain`, `signature`, or `replay` | Workload identity assertions are refused. `chain` usually means `[workload_identity].ca_file` does not match the foundation's instance identity CA; `replay` or `signature` can indicate a stolen or forged assertion; `unregistered` means an app has no `[[workload_identities]]` entry. |
 
 ## Backup

@@ -609,6 +609,12 @@ pub struct HarnessConfig {
     /// ATIF fields. Setting either paths or patterns also enables builtins.
     #[serde(default)]
     pub redaction_paths: Vec<String>,
+
+    /// Semantic judge (`[judge]`): named predicates scored by a pinned
+    /// model on tagged MCP tools, decided by policy thresholds. Absent
+    /// means no tool is judged and the admission path is unchanged.
+    #[serde(default)]
+    pub judge: Option<crate::judge::JudgeConfig>,
 }
 
 /// The `redaction_patterns` value every shipped config and `pvctl init`
@@ -766,6 +772,11 @@ pub struct MissionConfig {
     /// applies to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subjects: Vec<String>,
+    /// Operator-written statement of the task this mission is for. The
+    /// semantic judge reads it (never the agent's prompt) when deciding
+    /// whether a tool call's arguments fit the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 impl MissionConfig {
@@ -1608,6 +1619,13 @@ impl HarnessConfig {
         if self.otel_tenant_endpoint.is_some() {
             require(cfg!(feature = "otel"), "otel_tenant_endpoint", "<set>", "otel");
         }
+        if self
+            .judge
+            .as_ref()
+            .is_some_and(crate::judge::JudgeConfig::uses_local_adapter)
+        {
+            require(cfg!(feature = "onnx"), "judge.adapters.kind", "local", "onnx");
+        }
         missing
     }
 
@@ -2416,6 +2434,20 @@ impl HarnessConfig {
                     mission.id
                 ));
             }
+        }
+        for mission in self.mission.iter().chain(&self.missions) {
+            if let Some(task) = &mission.task {
+                if task.trim().is_empty() || task.chars().count() > crate::judge::MAX_TASK_CHARS {
+                    errors.push(format!(
+                        "mission {:?} task must be 1..={} characters",
+                        mission.id,
+                        crate::judge::MAX_TASK_CHARS
+                    ));
+                }
+            }
+        }
+        if let Some(judge) = &self.judge {
+            judge.collect_errors(errors);
         }
         if let Some(workload) = &self.workload_identity {
             if workload.ca_file.trim().is_empty() {

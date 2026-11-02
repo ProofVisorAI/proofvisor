@@ -403,6 +403,7 @@ mod tests {
 
     fn agent_mission(id: &str, intents: &[&str], expires_at: u64) -> MissionConfig {
         MissionConfig {
+            task: None,
             id: id.into(),
             allowed_intents: intents.iter().map(|intent| (*intent).to_owned()).collect(),
             expires_at,
@@ -452,6 +453,7 @@ mod tests {
     #[test]
     fn global_and_per_agent_missions_must_both_allow() {
         let global = MissionConfig {
+            task: None,
             id: "global".into(),
             allowed_intents: vec!["data.read".into(), "data.mutate".into()],
             expires_at: 5000,
@@ -492,6 +494,7 @@ mod tests {
     #[test]
     fn mission_selectors_require_every_set_selector() {
         let mission = MissionConfig {
+            task: None,
             id: "m".into(),
             allowed_intents: vec!["x".into()],
             expires_at: 1,
@@ -544,6 +547,7 @@ mod tests {
     #[test]
     fn expired_mission_denied() {
         let mission = MissionConfig {
+            task: None,
             id: "m-1".into(),
             allowed_intents: vec!["data.mutate".into()],
             expires_at: 500,
@@ -569,6 +573,7 @@ mod tests {
     #[test]
     fn mission_denies_unlisted_intent() {
         let mission = MissionConfig {
+            task: None,
             id: "m-2".into(),
             allowed_intents: vec!["data.read".into()],
             expires_at: 2000,
@@ -586,6 +591,7 @@ mod tests {
     #[test]
     fn mission_permits_listed_intent() {
         let mission = MissionConfig {
+            task: None,
             id: "m-3".into(),
             allowed_intents: vec!["data.mutate".into()],
             expires_at: 2000,
@@ -603,6 +609,7 @@ mod tests {
     #[test]
     fn intent_token_cannot_outlive_its_mission() {
         let mission = MissionConfig {
+            task: None,
             id: "m-ttl".into(),
             allowed_intents: vec!["data.mutate".into()],
             expires_at: 1001,

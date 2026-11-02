@@ -1502,6 +1502,11 @@ fn redact_audit_capture(
         if let Some(calls) = &mut step.tool_calls {
             for call in calls {
                 engine.redact_user_value(&mut call.arguments);
+                // The semantic judge's record, redacted like its copy in
+                // the event payload.
+                if let Some(extra) = &mut call.extra {
+                    engine.redact_value(extra);
+                }
             }
         }
         if let Some(observation) = &mut step.observation {

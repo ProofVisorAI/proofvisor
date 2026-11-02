@@ -21,6 +21,7 @@ const RECOVERY: &str = include_str!("../src/recovery.rs");
 const MCP: &str = include_str!("../src/mcp.rs");
 const CONTENT: &str = include_str!("../src/content.rs");
 const WORKLOAD: &str = include_str!("../src/workload.rs");
+const JUDGE: &str = include_str!("../src/judge.rs");
 const CLI_MAIN: &str = include_str!("../../pv-cli/src/main.rs");
 const K8S_MANIFEST: &str = include_str!("../../../deploy/kubernetes/proofvisor.yaml");
 
@@ -30,7 +31,7 @@ const K8S_MANIFEST: &str = include_str!("../../../deploy/kubernetes/proofvisor.y
 #[test]
 fn alert_table_metrics_are_registered_in_the_sources() {
     let sources = [
-        MAIN_RS, PIPELINE, RECONCILER, ROUTES, WORKER, RECOVERY, MCP, CONTENT, WORKLOAD,
+        MAIN_RS, PIPELINE, RECONCILER, ROUTES, WORKER, RECOVERY, MCP, CONTENT, WORKLOAD, JUDGE,
     ];
     let mut checked = 0;
     for chunk in DOC.split('`').skip(1).step_by(2) {

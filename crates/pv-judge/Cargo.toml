@@ -1,0 +1,71 @@
+[package]
+name = "pv-judge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Semantic judge: named predicates scored by a pinned model, decided by policy thresholds"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+
+[dependencies.tokio]
+workspace = true
+optional = true
+
+[dependencies.reqwest]
+workspace = true
+optional = true
+
+[dependencies.url]
+workspace = true
+optional = true
+
+[dependencies.zeroize]
+workspace = true
+optional = true
+
+[dependencies.tracing]
+workspace = true
+optional = true
+
+[dependencies.tract-onnx]
+version = "0.23"
+optional = true
+
+[dependencies.tokenizers]
+version = "0.23"
+optional = true
+
+[features]
+default = []
+# Async runner (deadlines, concurrency limit), the mock judge and the
+# calibration harness. The sandbox only needs the data model and the
+# threshold rules, so it builds without tokio.
+runner = ["dep:tokio", "dep:tracing"]
+# Generic HTTP judge contract (`proofvisor.judge.v1`). A second egress
+# path: tools opt in one by one in the harness config.
+cloud = ["runner", "dep:reqwest", "dep:url", "dep:zeroize"]
+# Local ONNX sequence classifier via pure-Rust tract, pinned by the
+# SHA-256 of the exact bytes loaded.
+onnx = ["runner", "dep:tract-onnx", "dep:tokenizers"]
+
+[dev-dependencies]
+tokio = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+axum = { workspace = true }
+prost = "0.14"
+
+[lints]
+workspace = true

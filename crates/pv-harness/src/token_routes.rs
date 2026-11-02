@@ -331,6 +331,152 @@ struct AdminRevocation {
     token_kind: Option<String>,
 }
 
+/// The operator whose bearer token authorizes this admin request.
+fn operator_name(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let digest = bearer_digest(headers)?;
+    state
+        .config
+        .operator_tokens
+        .iter()
+        .find(|operator| digest_matches(&digest, &operator.sha256))
+        .map(|operator| operator.name.clone())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JudgeReview {
+    review_id: String,
+    correct: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JudgeDriftReset {
+    predicate_id: String,
+}
+
+/// `POST /admin/v1/judge/reviews`: a reviewer's answer for a sampled
+/// verdict (was the judge's most probable label correct?). Feeds the
+/// runtime calibration check, which may flip the predicate to
+/// ask-by-default.
+pub(crate) async fn admin_judge_review(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(operator) = operator_name(&state, &headers) else {
+        return unauthorized();
+    };
+    let Some(judge) = state.judge.as_ref() else {
+        return response(StatusCode::NOT_FOUND, json!({"error":"judge_not_configured"}));
+    };
+    let Some(drift) = judge.drift() else {
+        return response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"judge_drift_not_configured"}),
+        );
+    };
+    let Ok(review) = serde_json::from_slice::<JudgeReview>(&body) else {
+        return response(StatusCode::BAD_REQUEST, json!({"error":"invalid_request"}));
+    };
+    match drift.record_review(&review.review_id, review.correct) {
+        Ok(result) => {
+            judge.publish_drift();
+            let persisted = save_drift(judge).await;
+            if result.tripped_now {
+                tracing::warn!(
+                    predicate = %result.predicate_id,
+                    operator = %operator,
+                    "judge accuracy no longer rises with confidence; predicate switched to ask-by-default"
+                );
+            }
+            response(
+                StatusCode::OK,
+                json!({
+                    "predicate_id": result.predicate_id,
+                    "tripped": result.tripped,
+                    "tripped_now": result.tripped_now,
+                    "persisted": persisted,
+                }),
+            )
+        }
+        Err(_) => response(StatusCode::NOT_FOUND, json!({"error":"unknown_review_id"})),
+    }
+}
+
+/// `GET /admin/v1/judge/drift`: the calibration check's state.
+pub(crate) async fn admin_judge_drift(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if operator_name(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    let Some(drift) = state.judge.as_ref().and_then(|judge| judge.drift()) else {
+        return response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"judge_drift_not_configured"}),
+        );
+    };
+    response(
+        StatusCode::OK,
+        serde_json::to_value(drift.snapshot()).unwrap_or(Value::Null),
+    )
+}
+
+/// `POST /admin/v1/judge/drift/reset`: clear ask-by-default for a
+/// predicate after recalibrating or replacing its model.
+pub(crate) async fn admin_judge_drift_reset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(operator) = operator_name(&state, &headers) else {
+        return unauthorized();
+    };
+    let Some(judge) = state.judge.as_ref() else {
+        return response(StatusCode::NOT_FOUND, json!({"error":"judge_not_configured"}));
+    };
+    let Some(drift) = judge.drift() else {
+        return response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"judge_drift_not_configured"}),
+        );
+    };
+    let Ok(request) = serde_json::from_slice::<JudgeDriftReset>(&body) else {
+        return response(StatusCode::BAD_REQUEST, json!({"error":"invalid_request"}));
+    };
+    let was_tripped = drift.reset(&request.predicate_id);
+    judge.publish_drift();
+    let persisted = save_drift(judge).await;
+    tracing::warn!(
+        predicate = %request.predicate_id,
+        operator = %operator,
+        was_tripped,
+        "judge drift gate reset by operator"
+    );
+    response(
+        StatusCode::OK,
+        json!({"predicate_id": request.predicate_id, "was_tripped": was_tripped, "persisted": persisted}),
+    )
+}
+
+/// Save the drift state on the blocking pool. The new state already
+/// applies in this process either way; `false` means it may not survive
+/// a restart (logged, and counted in
+/// `pv_judge_drift_persist_failures_total`).
+async fn save_drift(judge: &Arc<crate::judge::JudgeService>) -> bool {
+    let judge = Arc::clone(judge);
+    match tokio::task::spawn_blocking(move || judge.persist_drift()).await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            tracing::error!(error = %error, "judge drift state was not saved");
+            false
+        }
+        Err(_) => {
+            tracing::error!("judge drift state save task failed");
+            false
+        }
+    }
+}
+
 pub(crate) async fn admin_revoke(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     control_request(state, move |state| admin_revoke_inner(state, headers, body)).await
 }

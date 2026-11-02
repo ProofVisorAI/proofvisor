@@ -21,6 +21,7 @@ pub mod dashboard;
 pub mod http_serve;
 pub(crate) mod inflight;
 pub(crate) mod journal;
+pub mod judge;
 pub(crate) mod mcp;
 pub mod mcp_client;
 #[cfg(feature = "otel")]
