@@ -257,8 +257,10 @@ jobs:
         run: node scripts/quarantine-drill.mjs
       # The deliveries view's Retry button needs a webhook receiver on
       # 127.0.0.1 and a quick retry sweeper. Those are test-only
-      # settings, so this drill gets its own API instance (same
-      # database) and console copy instead of loosening the main one.
+      # settings, so this drill gets its own API instance, console copy
+      # and database: the main API's retry sweeper refuses internal
+      # targets, and with a shared database it could claim the queued
+      # retry first and mark it failed (ssrf_private_ip_blocked).
       - name: Webhook delivery Retry button (console to receiver)
         working-directory: server
         timeout-minutes: 4
@@ -267,6 +269,9 @@ jobs:
           WEBHOOK_SWEEPER_INTERVAL_MS: "1000"
           SMTP_URL: smtp://ci:ci@127.0.0.1:2525
         run: |
+          node -e 'const { PrismaClient } = require("@prisma/client"); const db = new PrismaClient(); db.$executeRawUnsafe("CREATE DATABASE proofvisor_redeliver").then(() => db.$disconnect(), (e) => { console.error(e.message); process.exit(1); })'
+          export DATABASE_URL=postgres://proofvisor:devpw@127.0.0.1:5432/proofvisor_redeliver
+          npx prisma migrate deploy
           PORT=8986 ALLOWED_ORIGINS=http://127.0.0.1:8788 npx tsx src/index.ts > /tmp/api-redeliver.log 2>&1 &
           echo $! > /tmp/api-redeliver.pid
           cp -r /tmp/console-root /tmp/console-redeliver
