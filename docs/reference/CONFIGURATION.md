@@ -575,7 +575,7 @@ Built-in predicates:
 | `max_input_tokens` | `512` (local) | Longer inputs are truncated by the tokenizer. |
 | `endpoint` | cloud: required; typesafe: `https://api.typesafe.ai/v1/systemone` | `https://…`, or `http://` to a loopback address only. Redirects are not followed. |
 | `bearer_file` | none (cloud); required (typesafe) | Owner-only file holding a bearer token for the endpoint (for `typesafe`, the API key). |
-| `redact` | `true` (cloud) | Run the harness redaction engine (`redaction_patterns`, `redaction_paths`, and the built-in patterns) over the arguments and context before they are sent. When the harness has no redaction configured, the built-in patterns alone are applied. |
+| `redact` | `true` (cloud) | Run the harness redaction engine (`redaction_patterns`, `redaction_paths`, and the built-in patterns) over the arguments and context before they are sent. Arguments and recorded outputs are redacted like tool arguments in the audit trail, whole numbers and object keys included. When the harness has no redaction configured, the built-in patterns alone are applied. |
 
 A local model reads the request rendered as text in a fixed, versioned
 layout (template version 1, `pv_judge::render::render_request`), so it

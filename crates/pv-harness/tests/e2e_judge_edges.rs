@@ -1180,7 +1180,13 @@ async fn a_typesafe_judge_decides_through_the_thresholds_and_is_recorded() {
     let reply = call(
         &h,
         "ts-1",
-        json!({"note": "mail dana.customer@example.org a refund"}),
+        // Personal data as text, as a whole number, and as an object key:
+        // redacted before it leaves, like tool arguments in the audit trail.
+        json!({
+            "note": "mail dana.customer@example.org a refund",
+            "n": 4_111_111_111_111_111u64,
+            "owner.private@example.org": {"note": "x"}
+        }),
     )
     .await;
     assert_eq!(reply.status, 403, "{}", reply.json);
@@ -1197,10 +1203,13 @@ async fn a_typesafe_judge_decides_through_the_thresholds_and_is_recorded() {
     let sent = seen.lock()[0].clone();
     assert_eq!(sent["model"], "jev-1.14.0");
     let state = sent["state"].as_str().unwrap();
-    assert!(
-        !state.contains("dana.customer@example.org"),
-        "redacted before it leaves: {state}"
-    );
+    for secret in [
+        "dana.customer@example.org",
+        "4111111111111111",
+        "owner.private@example.org",
+    ] {
+        assert!(!state.contains(secret), "{secret} left the harness: {state}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

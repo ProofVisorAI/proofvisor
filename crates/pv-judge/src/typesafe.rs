@@ -28,7 +28,7 @@
 //! the runner's deadline bounds each call.
 
 use crate::adapter::{AdapterKind, BoxFuture, JudgeAdapter, JudgeError};
-use crate::cloud::{validate_endpoint, Redactor, MAX_RESPONSE_BYTES};
+use crate::cloud::{validate_endpoint, RedactionTarget, Redactor, MAX_RESPONSE_BYTES};
 use crate::model::{sha256_hex, JudgeRequest, ModelPin, RawScores, SessionContext};
 use crate::predicate::PredicateDef;
 use crate::render::render_request;
@@ -173,10 +173,10 @@ impl TypeSafeJudge {
         }
         let mut redacted = request.clone();
         if let Some(redact) = &self.redactor {
-            redact(&mut redacted.validated_args);
+            redact(&mut redacted.validated_args, RedactionTarget::Arguments);
             let mut context = serde_json::to_value(&redacted.context)
                 .map_err(|_| JudgeError::Unavailable("judge context is not serializable".to_owned()))?;
-            redact(&mut context);
+            redact(&mut context, RedactionTarget::Context);
             redacted.context = serde_json::from_value::<SessionContext>(context)
                 .map_err(|_| JudgeError::Unavailable("redacted judge context is invalid".to_owned()))?;
         }

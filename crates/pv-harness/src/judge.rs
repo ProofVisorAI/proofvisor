@@ -1603,6 +1603,17 @@ fn micros_since(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
+/// What a remote adapter runs before a request leaves: the caller's
+/// arguments (and recorded outputs) are redacted like tool arguments in
+/// the audit trail, numbers and object keys included; the operator's
+/// context keeps its numbers.
+fn remote_redactor(engine: Arc<pv_redact::RedactionEngine>) -> pv_judge::cloud::Redactor {
+    Arc::new(move |value: &mut Value, target| match target {
+        pv_judge::cloud::RedactionTarget::Arguments => engine.redact_user_value(value),
+        _ => engine.redact_value(value),
+    })
+}
+
 /// The redaction engine a remote adapter applies: the harness's, or the
 /// built-in patterns when the harness has none (`redact = true` must
 /// mean something).
@@ -1654,8 +1665,7 @@ pub fn build_adapters(
                 .map_err(|error| format!("judge adapter {:?}: {error}", adapter.name))?;
                 if adapter.redact {
                     let engine = redaction_for(adapter, &redaction)?;
-                    cloud =
-                        cloud.with_redactor(Arc::new(move |value: &mut Value| engine.redact_value(value)));
+                    cloud = cloud.with_redactor(remote_redactor(engine));
                 }
                 Arc::new(cloud)
             }
@@ -1682,8 +1692,7 @@ pub fn build_adapters(
                     .map_err(|error| format!("judge adapter {:?}: {error}", adapter.name))?;
                 if adapter.redact {
                     let engine = redaction_for(adapter, &redaction)?;
-                    typesafe =
-                        typesafe.with_redactor(Arc::new(move |value: &mut Value| engine.redact_value(value)));
+                    typesafe = typesafe.with_redactor(remote_redactor(engine));
                 }
                 Arc::new(typesafe)
             }

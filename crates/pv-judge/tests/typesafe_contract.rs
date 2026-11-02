@@ -114,7 +114,7 @@ fn runner(endpoint: &str, key: &str, deadline: Duration) -> JudgeRunner {
         timeout: Duration::from_secs(30),
     })
     .unwrap()
-    .with_redactor(Arc::new(|value: &mut Value| redact(value)));
+    .with_redactor(Arc::new(|value: &mut Value, _| redact(value)));
     let mut adapters = BTreeMap::new();
     adapters.insert(
         "typesafe".to_owned(),

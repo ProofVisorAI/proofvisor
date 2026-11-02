@@ -40,8 +40,18 @@ pub const CONTRACT: &str = "proofvisor.judge.v1";
 /// Largest accepted response body.
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// Which part of a request a [`Redactor`] is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedactionTarget {
+    /// The caller's tool arguments (or a recorded output): user data, so
+    /// numbers and object keys are redacted too.
+    Arguments,
+    /// The operator's context: its numeric fields must stay numbers.
+    Context,
+}
+
 /// A function that redacts a JSON value in place before it leaves.
-pub type Redactor = Arc<dyn Fn(&mut Value) + Send + Sync>;
+pub type Redactor = Arc<dyn Fn(&mut Value, RedactionTarget) + Send + Sync>;
 
 /// Cloud judge settings.
 #[derive(Clone)]
@@ -118,10 +128,10 @@ impl CloudJudge {
         });
         if let Some(redact) = &self.redactor {
             if let Some(arguments) = body.get_mut("arguments") {
-                redact(arguments);
+                redact(arguments, RedactionTarget::Arguments);
             }
             if let Some(context) = body.get_mut("context") {
-                redact(context);
+                redact(context, RedactionTarget::Context);
             }
         }
         let mut builder = self.client.post(self.endpoint.clone()).json(&body);
