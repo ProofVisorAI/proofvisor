@@ -17,7 +17,7 @@ Acknowledgments: https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY-A
 # In-scope surfaces:
 #   • proofvisor.com and *.proofvisor.com
 #   • the ProofVisor console SPA at /app
-#   • the hosted API (launches with the beta; in scope from day one)
+#   • the hosted API at api.proofvisor.com
 #   • the on-device daemon (crates/pv-harness + crates/pv-atif in this repo)
 #
 # Out of scope: dependency CVEs already tracked upstream, findings that

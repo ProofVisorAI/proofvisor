@@ -6,8 +6,10 @@ order:
 1. `$PV_CONFIG` (an absolute path to a specific file)
 2. `./proofvisor.toml`
 3. `./config/harness.toml`
-4. `$HOME/.proofvisor/proofvisor.toml`
-5. built-in defaults
+4. `./agentvisor.toml` (the file name used before the ProofVisor rename)
+5. `$HOME/.proofvisor/proofvisor.toml`, or `$HOME/.agentvisor/agentvisor.toml`
+   when only the pre-rename file exists
+6. built-in defaults
 
 `config/harness.example.toml` is documentation only and is NOT
 searched — see engineering review round 51 §9.4. If you were relying
@@ -27,9 +29,24 @@ source. All are optional.
 | `PV_SIGNING_SEED_FILE` | `proofvisord` | Path to the 32-byte Ed25519 signing seed — **the root of the entire trust story**. Default `config/signing.seed` relative to the working directory. If the file is missing, a fresh seed is generated and a WARN names the new key id: every receipt signed after an unintended regeneration verifies only against the NEW key, so mount this from a Secret in production and treat the WARN as a compliance incident outside first boot. |
 | `PV_CONFIG` | `proofvisord`, `pvctl` | Absolute path to the config file; rank 1 in the search order above. |
 | `PV_UPSTREAM_URL` | `proofvisord` | Overrides `upstream_url` (useful in containers where the config file is baked). |
-| `PV_BEARER_TOKEN_FILE` | `pvctl` | Path to a file holding the NHI bearer used by `pvctl loadgen`/probe commands. |
+| `PV_LISTEN` | `proofvisord` | Overrides `listen`. |
+| `PV_UPSTREAM_CHAT_PATH` | `proofvisord` | Overrides `upstream_chat_path`. |
+| `PV_UPSTREAM_AUTH_HEADER` | `proofvisord` | Overrides `upstream_auth_header`. |
+| `PV_UPSTREAM_AUTH_SCHEME` | `proofvisord` | Overrides `upstream_auth_scheme`. An empty value is kept and sends the raw key. |
+| `PV_UPSTREAM_KEY_FILE` | `proofvisord` | Path to a file holding the upstream API key. Used only when the config sets neither `upstream_api_key_env` nor `upstream_api_key_file` and passthrough is off. |
+| `PV_UPSTREAM_API_KEY` | `proofvisord` | The upstream API key itself. Used under the same conditions as `PV_UPSTREAM_KEY_FILE`; the file wins when both are set. |
+| `PV_STATE_ENDPOINT` | `proofvisord` | Overrides `state_endpoint`. |
+| `PV_BRIDGE_ENDPOINT` | `proofvisord` | Overrides `bridge_endpoint`. |
+| `PV_QDRANT_URL` | `proofvisord` | Overrides `qdrant_url`. |
+| `PV_STRICT_BUDGET` | `proofvisord` | `1`, `true`, `yes` or `on` turns on `strict_stage_budget`. |
+| `PV_BEARER_TOKEN_FILE` | `pvctl` | Path to a file holding the NHI bearer used by `pvctl loadgen` and `pvctl session-promote`. |
+| `PV_POLICY_BUNDLE_FILE` | `pvctl` | Default for `pvctl console-sync --policy-bundle-file`. |
 | `RUST_LOG` | `proofvisord` | Tracing filter (default `info`). A parse failure falls back to `info` with a warning. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `proofvisord` | OTLP trace export target. Requires a build with `--features otel`; a default-features binary warns loudly instead of silently ignoring them. |
+
+Both `proofvisord` and `pvctl` also accept the pre-rename `AV_*` names: at
+startup each `AV_*` variable is copied to its `PV_*` name when that name is
+unset or empty, and a warning on stderr names the variables it copied.
 
 
 ## Networking
@@ -50,7 +67,7 @@ source. All are optional.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `dashboard_enabled` | `true` | Serves `/dashboard*` and `/api/v1/dashboard/*`. These endpoints are **unauthenticated** and mirror the in-memory session registry. The default-on posture is safe only because the `listen` default is loopback and config validation refuses a wildcard bind without identity; front the harness with the same ingress control you use for `/metrics` before exposing it. |
+| `dashboard_enabled` | `true` | Serves `/dashboard*` and `/api/v1/dashboard/*`. These endpoints are **unauthenticated** and mirror the in-memory session registry. The default-on posture is safe only because the `listen` default is loopback and config validation refuses a wildcard bind while the dashboard is on, even with `require_identity = true`, unless `allow_wildcard_bind = true`; front the harness with the same ingress control you use for `/metrics` before exposing it. |
 
 ## Upstream
 
@@ -59,7 +76,7 @@ source. All are optional.
 | `config_version` | `1` | Config format version; unknown versions are refused at boot. |
 | `upstream_url` | required | Base URL of the model backend (OpenAI, vLLM, LiteLLM, Ollama, …). For `provider = "anthropic"` use `https://api.anthropic.com`; for `provider = "gemini"` use `https://generativelanguage.googleapis.com`. |
 | `upstream_chat_path` | `/v1/chat/completions` | Path appended to `upstream_url` for chat traffic when `provider = "openai"`. The native adapters own their paths (`/v1/messages` for Anthropic, `/v1beta/models/{model}:generateContent` or `:streamGenerateContent?alt=sse` for Gemini) and ignore this key. |
-| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters, which translate each OpenAI request into the provider's own API and translate the response back into OpenAI chat-completion objects and chunks (see [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md)). |
+| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters, which translate each OpenAI request into the provider's own API and translate the response back into OpenAI chat-completion objects and chunks (see [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md)). The native adapters have been tested only against local stand-ins, not against the live Anthropic or Gemini APIs. |
 | `provider_default_max_tokens` | `4096` | Output-token limit sent to Anthropic when a request sets neither `max_tokens` nor `max_completion_tokens`; the Anthropic Messages API refuses requests without one. Must be at least 1. Other providers ignore it. |
 | `upstream_authorization_passthrough` | `false` | Forward the client's `Authorization` header verbatim to the upstream. **Incompatible with `require_identity = true`** (the header carries the NHI identity token there, not an upstream credential) and with the static upstream key options — boot refuses those combinations. |
 | `ignore_client_authorization` | `false` | Accept and DISCARD a client `Authorization` bearer when no identity validator is configured (stock OpenAI SDKs always send a placeholder key; without this a keyless dev upstream 401s the documented quickstart on request one). The header never reaches the upstream. Refused in combination with `require_identity = true` or `upstream_authorization_passthrough = true`. |
@@ -158,7 +175,7 @@ max_payout_usd_micros }`).
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `policy_bundle_file` | none | File that `pvctl console-sync --watch --pull-policies` writes the console's policy bundle to (owner-only; a group- or world-writable file is refused). The daemon applies it at boot and refuses to start if the file exists but cannot be applied, then polls it for changes and writes what it enforces to `<file>.status.json`, which `pvctl` reports to the console. Pushed policies only tighten the local config: `budget` caps merge with `[budget]` (the stricter cap wins), `allowlist` and `schema` rules run after the local policy chain and schemas, and `rate` policies limit model tokens per principal over a sliding window. `guardrail` policies whose body is the JSON spec (see [OPERATIONS.md](OPERATIONS.md#guardrail-policies)) refuse tool arguments, chat requests or model responses that match their deny patterns, and `transform` policies whose body is the JSON spec (see [OPERATIONS.md](OPERATIONS.md#transform-policies)) replace matches in tool arguments or chat requests before they are journaled or forwarded; a free-text guardrail or transform is documentation only. A newer file that cannot be applied leaves the rules in force unchanged. Unset: nothing is pulled. |
+| `policy_bundle_file` | none | File that `pvctl console-sync --watch --pull-policies` writes the console's policy bundle to (owner-only; a group- or world-writable file is refused). The daemon applies it at boot and refuses to start if the file exists but cannot be applied, then polls it for changes and writes what it enforces to `<file>.status.json`, which `pvctl` reports to the console. Pushed policies only tighten the local config: `budget` caps merge with `[budget]` (the stricter cap wins), `allowlist` and `schema` rules run after the local policy chain and schemas, and `rate` policies limit model tokens per principal over a sliding window. `guardrail` policies whose body is the JSON spec (see [OPERATIONS.md](OPERATIONS.md#guardrail-policies)) refuse tool arguments, chat requests or model responses that match their deny patterns, and `transform` policies whose body is the JSON spec (see [OPERATIONS.md](OPERATIONS.md#transform-policies)) replace matches in tool arguments, chat requests or model responses before they are journaled or forwarded; a free-text guardrail or transform is documentation only. A newer file that cannot be applied leaves the rules in force unchanged. Unset: nothing is pulled. |
 | `policy_bundle_poll_s` | `5` | Seconds between checks of `policy_bundle_file` (1–3600). |
 
 ## Storage
@@ -167,9 +184,9 @@ max_payout_usd_micros }`).
 | --- | --- | --- |
 | `atif_spool_dir` | `spool/atif` (relative to the working directory) | Where ATIF trajectories and their `.atif-auth` sidecars land. Backup with the same discipline you use for receipts. |
 | `atif_retention_days` | unset | When set to a positive N, an hourly sweep removes **sealed** ATIF pairs (`.json` + `.atif-auth`) whose mtime is older than N days. Unpaired remnants are left for the reconciler's quarantine sweep. Leave the key unset (or set to `None` in TOML by omitting it) to disable in-process retention entirely; `0` is rejected by config validation because a zero-day window would prune every sealed pair on the first tick. See round 51 §8.1. |
-| `bridge_data_dir` / `bridge_backend` / `bridge_endpoint` | see docs | Broker configuration; either the embedded Bridge or an external one. |
+| `bridge_data_dir` / `bridge_backend` / `bridge_endpoint` | `data/bridge` / `embedded` / unset | Broker configuration; either the embedded Bridge or an external one. |
 | `bridge_manifest_path` | `manifests/bridge.example.yaml` | Declarative topic-schema manifest used by every Bridge backend; resolves to an embedded built-in when the default path has no file on disk. |
-| `state_backend` / `state_endpoint` | see docs | State store: embedded or Redis. |
+| `state_backend` / `state_endpoint` | `memory` / unset | State store: in-process memory or Redis. |
 
 ## Reconciler
 
@@ -343,7 +360,7 @@ writes can leave a revocation without a receipt.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `revocation_audit_per_minute` | `600` | Maximum revocation audit records per process per minute, from 1 to 100000. This budget is separate from rejected-identity sampling. |
+| `revocation_audit_per_minute` | `600` | Maximum revocation audit records per process per minute. It must be at least 1. This budget is separate from rejected-identity sampling. |
 | `operator_tokens` | `[]` | Named SHA-256 digests of independent operator bearer secrets. Enables the administrative route described below. |
 | `introspection_tokens` | `[]` | SHA-256 digests of independent backend bearer secrets, each bound to one configured backend name. Enables introspection. |
 
@@ -612,7 +629,9 @@ refused by `validate()` in combination with production settings.
 | --- | --- |
 | `listen = "0.0.0.0:*"` + `require_identity = false` + `allow_wildcard_bind = false` | Explicit boot refusal. |
 | `principal_budget = {…}` + `require_identity = false` + `allow_anonymous_principal_budget = false` | Explicit boot refusal. |
-| `upstream_authorization_passthrough = true` + `require_identity = false` | Explicit boot refusal. |
+| Wildcard `listen` + `dashboard_enabled = true` + `allow_wildcard_bind = false` (also with `require_identity = true`) | Explicit boot refusal (the dashboard has no identity check of its own). |
+| `upstream_authorization_passthrough = true` + `require_identity = true` | Explicit boot refusal (the client's header carries the identity token, not an upstream key). |
+| `upstream_authorization_passthrough = true` + `upstream_api_key_env` or `upstream_api_key_file` | Explicit boot refusal (choose one upstream auth mode). |
 | `ignore_client_authorization = true` + `require_identity = true` | Explicit boot refusal (the validator must see the header). |
 | `ignore_client_authorization = true` + `upstream_authorization_passthrough = true` | Explicit boot refusal (cannot both discard and forward). |
 

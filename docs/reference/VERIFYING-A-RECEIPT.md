@@ -41,12 +41,12 @@ that loop.
 
 A third channel exists for deployments that upload evidence to the
 hosted console: the deployment page in the console shows the public
-key the daemon anchored on its first upload (`POST /ingest/pubkey`;
+key the daemon anchored on its first upload (`POST /api/v1/ingest/pubkey`;
 rotation is refused, so the anchor is stable). Compare its fingerprint
-with the key you were handed. There is no published key list at
-`https://proofvisor.com/.well-known/receipt-keys.json` today; that
-file is planned but does not exist, so do not build tooling that
-fetches it yet.
+with the key you were handed. The file
+`https://proofvisor.com/.well-known/receipt-keys.json` is published,
+but it lists only the sample receipt's key and the console demo key,
+not the keys of real deployments.
 
 ### The browser verifier at proofvisor.com/verify/
 
@@ -55,13 +55,17 @@ JCS + Ed25519 check described below, entirely in your browser. Be clear
 about what it proves. It checks that the signature verifies under the
 public key embedded in the receipt and that the receipt is internally
 consistent (`key_id` matches the embedded key, the framing matches
-`receipt_version`). Its list of trusted keys contains only the sample
-receipt's key and the mock console's demo key. A receipt from a real
-deployment therefore gets the verdict "internally consistent, trust
-anchor not verified" — not "authentic" — until you, the auditor,
-compare the receipt's key fingerprint with the key shown on the
-deployment page in the console (or the key the operator gave you). The
-browser page cannot do that comparison for you.
+`receipt_version`). Its list of trusted keys, loaded from
+`/.well-known/receipt-keys.json`, contains only the sample receipt's
+key and the mock console's demo key. When you open the page through a
+verify link that the console shares, the link carries the deployment id,
+and the page compares the receipt's key with the key the console pinned
+for that deployment (`GET /api/v1/public/receipt-keys/{deploymentId}`).
+Without such a link, a receipt from a real deployment gets the verdict
+"internally consistent, trust anchor not verified" — not "authentic" —
+until you, the auditor, compare the receipt's key fingerprint with the
+key shown on the deployment page in the console (or the key the
+operator gave you).
 
 ## 2. Locate the receipt for a session
 
@@ -90,19 +94,19 @@ session id alone.
 ```
 $ pvctl receipt-verify path/to/receipt.json \
     --public-key-hex 7d2b60851d57106aed8bd9bae69efd35f0c41c56bfd3096d327bbe31c9baa19f
+```
 
 `--public-key-hex` is repeatable — pin both the retiring and the
 incoming key during a rotation window; the receipt's `key_id` selects
 which one verifies it. Keys are accepted in hex (what `pvctl pubkey`
 and the startup banner print) or standard base64 (what the receipt's
 `public_key_b64` field carries).
-```
 
 The command:
 
 * parses the receipt JSON
-* extracts the `signature` and `subject` fields
-* canonicalises `subject` with RFC 8785 JCS
+* removes the `signature_b64` field
+* canonicalises the remaining receipt body with RFC 8785 JCS
 * builds the signing message for the receipt's `receipt_version`
   (bare JCS bytes for v1; domain tag + length + JCS bytes for v2 —
   see §5a for the exact framing)
@@ -128,7 +132,7 @@ Check at least:
   charter contents)
 * `stop_reason_id` is one of the enumerated values and `stop_reason`
   is its canonical caption (or a provider-native free-text caption
-  when the id is `0` "unspecified"); see `pv_events::StopReason`
+  when the id is `0` "Unknown"); see `pv_events::StopReason`
 * When `subject.kind == "event_chain"`: `subject.chain_head` (64-hex)
   matches the head hash of the OCSF event chain you replayed and
   `subject.event_count` matches the number of events folded in
@@ -241,7 +245,8 @@ The recommended pattern for auditors and downstream consumers:
   `bridge_data_dir`)
 * verify each receipt as it arrives
 * if a batch's `event_count` sum diverges from your own count of
-  the corresponding `agent.step` events on the same session ids,
+  the corresponding events on the other `agent.*` topics for the
+  same session ids,
   escalate — the harness dropped or refused to sign a step
 
 `pvctl receipt-verify` is deliberately stateless: it takes one

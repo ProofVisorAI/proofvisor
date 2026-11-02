@@ -1,5 +1,12 @@
 # Validation record — 2026-09-24
 
+This is a dated record from 2026-09-24, and its present-tense statements
+describe the state at that time. For the current state (the live
+deployment on Render, Resend mail, Google sign-in, release
+`v0.1.0-rc.8`) and newer test results, see `docs/FEATURES.md` sections
+7 to 10. Live runs against Anthropic, Gemini and a real enterprise
+identity provider are still owed.
+
 This record describes the recovered implementation and local verification of
 the daemon, CLI, console, storage adapters, and deployment artifacts. It is
 evidence for the source in this workspace, not certification of an unspecified
@@ -201,8 +208,9 @@ Each required architecture builds a local OCI archive, runs its packaged API
 and startup checks, and retains an unfiltered vulnerability report. A separate
 main-only job verifies the archive hashes, runtime configuration, filesystem,
 scan binding, and embedded provenance/SBOM before copying the tested bytes.
-Convenience tags move only after the required attestations succeed, and Fly
-receives the checked immutable digest. Standalone and reusable console runs
+Convenience tags move only after the required attestations succeed. An
+optional Fly deploy job exists in `deploy.yml` but is unused (superseded:
+the live API runs on Render, which builds from `server/Dockerfile`). Standalone and reusable console runs
 have distinct cancellation groups.
 
 All 27 release-policy regressions passed. A real loopback registry rehearsal

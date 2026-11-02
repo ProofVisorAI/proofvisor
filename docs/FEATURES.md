@@ -3,7 +3,7 @@
 Dated 2026-10-31, rechecked on 2026-11-01 (last pass in the evening,
 on `main`). Sections 1 to 6 list only features that an automated
 end-to-end test drives through the real server or binary and that
-passed on every run recorded in sections 8 and 9: the Rust test suites,
+passed on every run recorded in sections 8 to 10: the Rust test suites,
 the API and console test suites, the browser drills, the real-binary
 drills and the interop tests. Where the far end of a test is a stand-in
 rather than the real service (a local server speaking a vendor's wire
@@ -104,7 +104,8 @@ chat-completions format.
 - **Intent tokens, missions and an optional external AuthZEN policy
   decision point.**
 - **Cloud Foundry workload identity** (RFC 7523), `pvctl sidecar` and a
-  buildpack.
+  buildpack. These were tested with fixture certificates and fixture
+  distributions, not on a real Cloud Foundry foundation (section 7).
 
 ## 4. The CLI (`pvctl`)
 
@@ -127,8 +128,10 @@ with demonstration data, which is what the public site shows by default.
   data export (NDJSON), account deletion with a typed confirmation,
   password reset.
 - **Second factor with passkeys (WebAuthn)** and administrator reset.
-- **Single sign-on:** Google, Microsoft and generic OIDC; a SAML 2.0
-  service provider with discovery by email domain. Discovery trusts
+- **Single sign-on:** Google (live on the hosted API); Microsoft (built,
+  but it needs an Entra app registration before its button appears;
+  section 7); generic OIDC and a SAML 2.0 service provider (built in,
+  off by default) with discovery by email domain. Discovery trusts
   only domains the workspace has verified with a DNS TXT record
   (Settings → SSO → Verified email domains), and the login page shows
   which provider it found and asks before leaving. Tested against
@@ -145,11 +148,11 @@ with demonstration data, which is what the public site shows by default.
 - **API keys** with a role (owner, admin, member), shown once.
 - **Policies** as an inventory with hit and block counts per policy and
   the sessions that fired each one. Budget, allow/deny-list, argument
-  schema, token-rate and guardrail policies are pushed to daemons
-  (`pvctl console-sync --pull-policies`), which can only tighten their
-  local configuration and report back whether each policy was applied;
-  a guardrail whose body is free text, and transform policies, stay
-  documentation only (see sections 6 and 7).
+  schema, token-rate, guardrail and transform policies are pushed to
+  daemons (`pvctl console-sync --pull-policies`), which can only tighten
+  their local configuration and report back whether each policy was
+  applied. A guardrail or transform whose body is free text rather than
+  the JSON spec stays documentation only (see section 6).
 - **Webhooks** with HMAC signatures, SSRF guards, retries and a delivery
   log; Slack, Teams and Discord payloads are formatted automatically.
   Emitted events: `policy.block`, `session.blocked`, `member.invited`,
@@ -289,13 +292,19 @@ with demonstration data, which is what the public site shows by default.
   pre-rename console stored budget policies as text only, so a daemon
   reports such a policy as unsupported ("budget policy has no JSON
   spec") until an administrator re-saves it from a template.
-- **Windows.** The daemon and CLI compile for Windows x64, and since
-  2026-11-01 CI also runs them on a Windows runner (`scripts/boot-smoke.py`:
-  boot, readiness, a proxied chat completion, a signed session with a
-  verified receipt, restart on the same spool). Nothing has run on
-  customer Windows hardware and the installer, service unit and
-  containers stay Unix-only, so Windows is still listed here rather than
-  among the shipped platforms.
+- **Windows.** Windows x64 is a Tier 2 platform (see
+  `docs/PLATFORMS.md`). Each release includes a prebuilt `.zip` with
+  the daemon and CLI; `install.sh` does not install it. CI compiles both
+  for Windows, runs the workspace unit tests, and since 2026-11-01 also
+  runs the built binaries on a hosted Windows runner
+  (`scripts/boot-smoke.py`: boot, readiness, a proxied chat completion,
+  a signed session with a verified receipt and a refused tampered copy,
+  restart on the same spool). Other features, such as MCP routes,
+  budgets, console sync, the sidecar and Ctrl-C shutdown, are compiled
+  and unit-tested on Windows but not run there. Nothing has run on
+  customer Windows hardware, and the installer, service unit and
+  containers stay Unix-only, so Windows is listed here rather than among
+  the Tier 1 platforms.
 - **Release state.** The latest release is the pre-release
   `v0.1.0-rc.8` (2026-11-01; the installer pins it); nothing is on
   crates.io yet. Publishing needs explicit approval.
@@ -303,8 +312,11 @@ with demonstration data, which is what the public site shows by default.
   They were tested against local servers that speak each vendor's wire
   format as documented. A run against api.anthropic.com and the Gemini
   API needs real keys and makes a few paid requests
-  (`scripts/provider-smoke.py --allow-live-request --provider anthropic`
-  or `gemini`).
+  (`scripts/provider-smoke.py --allow-live-request --provider anthropic
+  --base-url https://api.anthropic.com --model <model> --output-dir <dir>`,
+  or `--provider gemini --base-url https://generativelanguage.googleapis.com`
+  with the same other options; the script requires `--model` and
+  `--output-dir`, and without `--base-url` it sends to api.openai.com).
 - **Still tested with stand-ins only:** a real Cloud Foundry
   foundation, cloud object storage, and identity providers other than
   Keycloak (for example Okta and Entra ID).
@@ -382,7 +394,7 @@ Added later on 2026-11-01, after a second pass over the whole chain:
 | Live production checks on 2026-11-01 (after the merge, Render deploy and DNS): a throwaway account on `https://api.proofvisor.com`, a deployment, the real daemon (offline demo) uploading its session and Ed25519 receipt with `pvctl console-sync`, read back through the API | account, session cookie, `pv_live_` token, 14 events, 2 allowed and 1 blocked tool call, receipt stored and verified server-side, public key endpoint (CORS open), policies, SCIM settings (off) and billing answered; the account and its deployment were then deleted through the API. One check of my own (a `status` field the API does not return) was wrong, not the product |
 | Full verification of merged `main`, 2026-11-01 (second half of the day), one heavy job at a time | Rust workspace 1,734 passed, 0 failed (3 ignored); API tests 100 of 100; database drill battery 17 of 17; smoke suite; contract suite 141 of 141; policy push with the real daemon and `pvctl` 34 of 34 locally and 36 of 36 on production; interactive drill 35 of 35; browser end-to-end (sign-up through the real form, demo data, tour, checklist); quarantine drill 25 of 25; real daemon crash and restart reaching the console; console injection drill 207 checks, 0 failed; accessibility audit (0 serious or critical violations across 11 routes, 9 modal states, 3 static pages, both themes, forced colours); mobile drill (down to 280 px); strict security-policy drill (including verify and login under it). Several stages first failed because my runner passed them wrong settings (a base path, a relative binary path, a missing `SITE`); each was rerun correctly and passed |
 | Live production, feature by feature, with one throwaway account (24 later checks, 2 earlier runs) | API keys (create, use, revoke, then 401), invitations, retention and IP allow-list settings, a webhook (and a metadata-address target refused), SCIM end to end (token, provision, filter, deactivate, group, wrong token refused, delete), audit log and CSV, personal data export, sign out everywhere (needs the password again), the real daemon's receipt verified by the offline Node verifier and rejected when one byte changed, and on the live verify page in a real browser (genuine accepted, tampered rejected, pinned-key "Trusted" for the right deployment only). A wrong password gets the same `mfaRequired` reply as an account with a second factor and no session cookie. One workspace from this run could not be deleted (see STATUS notes) |
-| Release pipeline, tag `v0.1.0-rc.6` | exposed a real defect: the Windows build step ran under PowerShell and failed on a bash line continuation; fixed on `main` (`shell: bash`). No release was published; the installer on the live site still pins `0.1.0-rc.5`, whose files carry the old names, so prebuilt installs 404 until a new tag is built |
+| Release pipeline, tag `v0.1.0-rc.6` | exposed a real defect: the Windows build step ran under PowerShell and failed on a bash line continuation; fixed on `main` (`shell: bash`). No release was published; at that time the installer on the live site still pinned `0.1.0-rc.5`, whose files carry the old names, so prebuilt installs returned 404. Superseded: `v0.1.0-rc.8` was published on 2026-11-01 and the installer pins it (section 7) |
 | Production build and boot reproduced locally: the merged `server/Dockerfile` image with Render's real settings over a database at the old schema | four migrations applied, `/healthz` and `/readyz` 200, new endpoints present |
 | HTTPS and redirects on the public site | `https://proofvisor.com` presents its own Let's Encrypt certificate; `http` and `www` redirect to it; `/lander` redirects to the home page; `agentvisorai.me` and its `www` forward (301, front page only) |
 | The public console in a browser over HTTPS (`live-site-smoke.mjs`) | 11 checks passed: routes, populated tabs, link and media integrity, link previews, videos, installer |
@@ -417,7 +429,7 @@ Not closed, and why:
 - **Guardrail enforcement** was closed later the same evening (section
   6; pull request ProofVisorAI/proofvisor#397), and **guardrails over
   model responses, transform policies and the named mid-stream budget
-  refusal** after that (section 6, and the table below).
+  refusal** after that (section 6, and the table above).
 - **Live Anthropic and Gemini runs** need real keys; none are available
   on the verification laptop.
 - **Windows hardware, a real Cloud Foundry foundation, Okta and Entra

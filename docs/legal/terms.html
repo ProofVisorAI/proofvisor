@@ -18,13 +18,12 @@
 <body>
 <main>
   <p class="draft" style="background:#e8f5ec;border-color:#9fd4ae;color:#134b23">
-    <strong>What the live demo collects today: nothing.</strong>
-    Everything at proofvisor.com runs in your browser against built-in
-    demo fixtures — no accounts, no server, no analytics, no cookies;
-    the only storage is localStorage on your own device (theme + demo
-    state, clearable with one click via &ldquo;Reset demo data&rdquo;).
-    The policy below describes the <em>hosted service</em> that
-    launches with the beta.
+    <strong>What the public demo collects: nothing.</strong>
+    The demo console at proofvisor.com/app/ runs in your browser against
+    built-in sample data. It stores only your theme and the demo state in
+    your browser&rsquo;s localStorage, which &ldquo;Reset demo data&rdquo;
+    clears. The <em>hosted service</em> at api.proofvisor.com is live,
+    and the terms below apply to it.
   </p>
   <p class="draft">
     <strong>Draft (not yet reviewed by counsel).</strong>
@@ -33,7 +32,7 @@
   </p>
 
   <h1>Terms of service</h1>
-  <p>Last updated: 2026-08-26.</p>
+  <p>Last updated: 2026-11-01.</p>
 
   <p>By signing up for ProofVisor (the "Service"), you agree to
   these terms. If you don't agree, don't sign up.</p>
@@ -41,20 +40,23 @@
   <h2>1. The service</h2>
   <p>ProofVisor is a policy enforcement + audit-receipt layer for AI
   agents. You install a small daemon in your infrastructure; it enforces
-  the guardrails you configure and posts signed receipts to the hosted
+  the guardrails you configure. If you run <code>pvctl console-sync</code>,
+  it uploads session summaries and signed receipts to the hosted
   control plane at <a href="https://api.proofvisor.com">api.proofvisor.com</a>.</p>
 
   <h2>2. Your data</h2>
   <p>We store the metadata your daemon posts (session summaries, tool
   invocations, receipt signatures). We do NOT store the plaintext LLM
-  prompts, completions, or tool arguments unless you explicitly opt in
-  via a workspace setting. Password hashes use argon2id. Everything is
+  prompts, completions, or tool arguments. Password hashes use argon2id. Everything is
   encrypted in transit (TLS) and at rest (managed provider defaults).</p>
 
-  <p>You can export all your data via the console (Settings → Export)
-  at any time. You can delete your account (Settings → Delete Account)
-  which triggers a cascade delete of every deployment, session, event,
-  and receipt in your organization.</p>
+  <p>An organization owner can export all of the organization&rsquo;s data
+  at any time with Settings → General → &ldquo;Download my data&rdquo;. An
+  owner who is the organization&rsquo;s only member can delete it with
+  Settings → General → &ldquo;Delete organization &amp; account&rdquo;
+  (&ldquo;Delete this workspace&rdquo; if you belong to other
+  organizations), which triggers a cascade delete of every deployment,
+  session, event, and receipt in your organization.</p>
 
   <h2>3. Acceptable use</h2>
   <p>Don't use the service to enforce policies on illegal content,
@@ -64,7 +66,7 @@
 
   <h2>4. Uptime</h2>
   <p>The pitch-stage service runs on free-tier infrastructure. See
-  <a href="../STATUS.md">STATUS</a> for current SLOs. We don't yet
+  <a href="https://github.com/ProofVisorAI/proofvisor/blob/main/docs/STATUS.md">STATUS</a> for current SLOs. We don't yet
   offer contractual uptime guarantees.</p>
 
   <h2>5. Fees</h2>

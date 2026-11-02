@@ -120,7 +120,7 @@ configured workload; the manifest's values are starting points.
 
 ## Client discovery and identity (no code change)
 
-An `proofvisor` service binding describes how a **client** reaches the
+A `proofvisor` service binding describes how a **client** reaches the
 gateway. Create a user-provided service and bind it to the client, not to
 `proofvisor`:
 

@@ -2,12 +2,18 @@
 
 ProofVisor is an OpenAI-compatible reverse proxy. Any client that
 speaks the `POST /v1/chat/completions` protocol (OpenAI Python SDK,
-LangChain, LlamaIndex, curl) can point at the harness with:
+LangChain, LlamaIndex, curl) can point at the harness by changing its
+base URL:
 
+```python
+client = OpenAI(
+    api_key=os.environ["OPENAI_API_KEY"],  # your NHI bearer, if require_identity is true
+    base_url="http://localhost:8484/v1",
+)
 ```
-export OPENAI_API_BASE=http://localhost:8484/v1
-export OPENAI_API_KEY=<your NHI bearer, if require_identity is true>
-```
+
+With OpenAI SDK 1.x you can set the environment variable
+`OPENAI_BASE_URL=http://localhost:8484/v1` instead of passing `base_url`.
 
 This document explains exactly what "compatible" means — the
 supported surface, the intentional differences, and the failure modes
@@ -36,7 +42,8 @@ chain (receipts, ATIF trajectories, stop-reason taxonomy, provider-true
 token totals) is built from the translated OpenAI frames and therefore
 has the same shape for every provider. Unsupported `provider` values are
 refused at pre-flight by `pvctl config-validate` and at boot by the
-daemon.
+daemon. The native adapters have been tested only against local
+stand-ins, not against the live Anthropic or Gemini APIs.
 
 ### What the native adapters translate
 
@@ -137,10 +144,14 @@ which does not change with the upstream dialect.
 | --- | --- | --- |
 | `POST` | `/v1/chat/completions` | Full request/response, streaming SSE and non-streaming JSON. |
 
-Every other route on the harness (`/v1/sessions/{id}/promote`,
-`/v1/sessions/{id}/close`, `/health`,
+Every other route on the harness (`/v1/mcp`, `/mcp`,
+`/v1/mcp/{backend}`, `/mcp/{backend}`, `/v1/sessions/{id}/promote`,
+`/v1/sessions/{id}/close`, `/v1/token`, `/v1/revoke`, `/v1/introspect`,
+`/admin/v1/revocations`, `/.well-known/jwks.json`, `/health`,
 `/livez`, `/readyz`, `/metrics`, `/dashboard/*`) is ProofVisor
-territory and is documented separately. Only the chat route is
+territory and is documented separately. `/v1/introspect` exists only
+when `introspection_tokens` is configured, and `/admin/v1/revocations`
+only when `operator_tokens` is configured. Only the chat route is
 "OpenAI-compatible" in the strict sense.
 
 ### The `/v1` vs `/api/v1` split (round-51 §9.3)
@@ -153,10 +164,12 @@ The prefix split is deliberate, not accidental:
   bare `/mcp`** for MCP SDK convention — both accept the same
   requests and share the same `max_request_bytes` cap), and the two
   session lifecycle verbs `/v1/sessions/{id}/close` and
-  `/v1/sessions/{id}/promote`. Errors on this surface use the
-  OpenAI error body (`{"error":{"message","type","param","code"}}`)
-  so SDK `e.code` handling works — including the 413 body-limit
-  rejection.
+  `/v1/sessions/{id}/promote`. Errors on the chat and session
+  lifecycle routes use the OpenAI error body
+  (`{"error":{"message","type","param","code"}}`) so SDK `e.code`
+  handling works — including the 413 body-limit rejection. The MCP
+  routes answer with JSON-RPC errors, and `/v1/token`, `/v1/revoke` and
+  `/v1/introspect` follow their OAuth RFCs (8693, 7009 and 7662).
 * **`/api/v1/*`** is the **operator API** behind the dashboard
   (`stats`, `sessions`, `sessions/{id}`), plus the unprefixed
   operational probes (`/health`, `/livez`, `/readyz`, `/metrics`).
@@ -246,13 +259,14 @@ compression_enabled = false
 
 | Situation | OpenAI | ProofVisor |
 | --- | --- | --- |
-| Rate limit | `429` | `429` |
+| Upstream rate limit | `429` | `429` (relayed from the upstream) |
+| Console-pushed rate policy refusal | n/a | `403` |
 | Post-compression session budget refusal | n/a | `403` (deliberately not 429, which SDKs auto-retry — the cap is permanent for the session) |
 | Post-compression principal budget refusal | n/a | `403` |
 | Semantic loop breaker refusal | n/a | `403` |
-| Semantic loop breaker abort | n/a | `499`-ish (severed connection) |
+| Semantic loop breaker abort | n/a | `409` with `Connection: close` |
 | Missing/invalid bearer | `401` | `401` (identity required) or `403` (scope missing) |
-| Compression floor exceeded and request oversized | n/a | `413` |
+| Request body larger than `max_request_bytes` | `413` | `413` |
 | Upstream 5xx | 5xx | forwarded, plus refund of pre-debited tokens |
 
 ### 2. Error bodies are OpenAI-shaped
@@ -269,9 +283,8 @@ additionally carry `Retry-After`; 401 carries `WWW-Authenticate`.
 
 The harness does NOT buffer streaming responses beyond a per-frame
 window. Streaming clients receive bytes with roughly the same
-latency as connecting directly to the upstream, minus a fixed few
-hundred microseconds for capture and budget checking (production p95
-is 33 µs; see `BENCHMARKS.md`).
+latency as connecting directly to the upstream, plus a small per-frame
+overhead for capture and budget checking.
 
 ### 4. `stream_options.include_usage` is honoured
 
@@ -282,9 +295,9 @@ them to the accumulator.
 
 ### 5. Tool calls carry the audited `tool_call_id`
 
-The audit ID is used as the `tool_call_id` field for downstream
-consumers. When the upstream doesn't supply one, the harness
-generates a stable `event_uid` and uses that.
+The audit record keeps the `tool_call_id` the upstream sent. When the
+upstream omits one, the audit record uses a generated event id
+instead. The response sent to the client is not modified.
 
 ## Session semantics
 
@@ -334,5 +347,5 @@ curl -sS http://localhost:8484/v1/chat/completions \
 
 The response is an OpenAI-shaped `ChatCompletion` object. Your
 audit event lands on the broker in parallel; verify it with
-`pvctl event-tail --data-dir /path/to/bridge --topic agent.step`
+`pvctl event-tail --data-dir /path/to/bridge --topic agent.stop_reason`
 (the `--data-dir` points at the harness's `bridge_data_dir`).

@@ -64,7 +64,7 @@ inventory:
 | `{stem}.session.json` | Sealed metadata: session id, identity, workflow, journal version | worker (`append_active_event_journal`) at first event | `remove_step_journal` after successful close |
 | `{stem}.events.ndjson` | Append-only sealed journal — one JSON line per audit event | worker (`append_journal`) | `remove_step_journal` after successful close |
 | `{stem}.json` | ATIF trajectory (unsigned workflow) | finalizer at close | retention sweep OR archive on collision |
-| `{stem}.atif-auth` | Provenance sidecar: signature + key_id + integrity claim over `{stem}.json` | finalizer immediately after `write_atomic({stem}.json)` | retention sweep (paired with `.json`) |
+| `{stem}.atif-auth` | Provenance sidecar: an HMAC-sealed record of the session id and the SHA-256 digest of `{stem}.json` (the HMAC key is derived from the signing seed) | finalizer immediately after `write_atomic({stem}.json)` | retention sweep (paired with `.json`) |
 | `{stem}.close-complete` | Marker: close ran to completion (both bridge event and receipt/ATIF durably committed) | finalizer at end of close | retention sweep (with its pair; orphaned markers past the window are healed) |
 | `{stem}.promote` | Promotion intent (unsigned → signed retrofit) | promote route handler | finalizer after receipt lands |
 | `{stem}.promote-archived` | Archived-on-collision promote intent | finalizer collision path | never (preserved collision evidence) |
@@ -75,7 +75,7 @@ inventory:
 | `quarantine-notices/{stem}.json` | Authenticated acknowledged quarantine notification, preserving notification identity across restarts | close, recovery, or outbox cleanup | retained with incident evidence, outside the bounded active replay scan |
 | `{stem}.acks.ndjson` | Sealed broker acks, one line per published event: proves an event we tried to publish actually landed | worker after successful emit (appended; one `sync_data` per ack — round-51 §7.3) | `remove_step_journal` at close, with the other journals |
 | `broker-acks/{stem}/{event_uid}.json` | Legacy pre-round-51 per-event ack layout; still read as a fallback so mid-session upgrades see their earlier acks | (no longer written) | `remove_step_journal` at close |
-| `inflight-responses/{digest}.json` | Response-attempt markers (`digest = sha256(session_id:attempt_id)[..32]`) proving the client's response was durably captured before the last chunk left the socket | worker (`persist_response_marker`) at capture commit | worker at capture retirement; recovery reaps stranded markers |
+| `inflight-responses/{digest}.json` | Response-attempt markers (`digest = sha256(session_id:attempt_id)[..32]`). A marker is written before the request is sent upstream and removed once the response is captured, so a marker left after a crash means the response may not have been captured | `write_response_marker`, before upstream dispatch | worker once the response is captured; a leftover marker quarantines its session at recovery and stays on disk as evidence |
 | `tool-executions/{key}.intent.json` | JCS-canonicalized, MAC-sealed tool invocation intent; underpins the at-most-once tool-execution state machine | mcp route handler at admission | `remove_tool_executions` at successful close |
 | `tool-executions/{key}.outcome.json` | Sealed tool execution outcome (upstream response + status) | worker after tool call returns | `remove_tool_executions` at successful close |
 | `tool-executions/{key}.audited` | Marker: the tool call's audit event has landed on the broker | worker after the ack lands | `remove_tool_executions` at successful close |
@@ -85,8 +85,8 @@ Every one of these files carries a `{stem}` derived as
 `sha256_hex(session_id.as_bytes())[..32]` — a 128-bit fixed-width
 truncation. Collision probability at 10⁹ sessions is ~10⁻²⁰,
 comfortably below the audit-chain-tamper threshold set by the
-Ed25519 verifier. Session ids of >128 UTF-8 code points are refused
-at admission for the same reason.
+Ed25519 verifier. Session ids longer than 128 bytes, or containing
+anything other than visible ASCII (0x21–0x7E), are refused at admission.
 
 ## Why not a database
 
@@ -111,75 +111,56 @@ Restart verification must read that persisted artifact rather than assume
 the session control endpoint is a history API.
 
 `Finalizer::recover_spooled_sessions` runs at process start and every
-`reconcile_tick_s` seconds. It walks the spool and does five things,
-in order:
+`reconcile_tick_s` seconds. It runs six passes over the spool, in this
+order:
 
-### 1. Consolidate step journals
+1. **Quarantine sessions with incomplete effects.** A leftover marker
+   under `inflight-responses/` or an unresolved intent under
+   `tool-executions/` belongs to a request that was cut off by a crash.
+   Each such session that is not currently open is quarantined by id,
+   because its capture is incomplete. This pass runs first, before any
+   session is adopted back into the registry.
+2. **Replay lifecycle outboxes.** Every unacknowledged file under
+   `outbox/` is published and acknowledged, so a crashed close's events
+   reach the broker before its session is adopted again. Without a
+   Bridge this pass does nothing.
+3. **Recover signed journals.** Signed sessions interrupted by a crash
+   are adopted from their authenticated (HMAC-verified) journals and
+   finalized. A session that fails recovery (for example, because its
+   journal fails authentication) is skipped and counted in
+   `pv_signed_recovery_skipped_total`; its files stay on disk.
+4. **Consolidate step journals.** Unsigned sessions interrupted by a
+   crash are rebuilt from `{stem}.session.json` and
+   `{stem}.events.ndjson`. Replaying the events restores token counts,
+   budget debits and provenance, and broker acknowledgments from
+   `{stem}.acks.ndjson` (or the legacy `broker-acks/{stem}/` files) stop
+   already published events from being sent again. Failures are counted
+   in `pv_unsigned_recovery_skipped_total`.
+5. **Quarantine orphan `.json` files.** A `{stem}.json` that has no
+   `.atif-auth` sidecar, is older than `MIN_ORPHAN_AGE` (60 s), and
+   whose stem is not in the snapshot of open sessions is renamed to
+   `{stem}.json.corrupt-{uid}`. It is counted in
+   `pv_atif_recovery_skipped_total{reason="unauthenticated"}` and never
+   deleted automatically.
+6. **Adopt ATIF trajectories.** Sealed `{stem}.json` + `{stem}.atif-auth`
+   pairs of closed unsigned sessions that are not in the registry are
+   validated strictly and adopted again. A trajectory that fails is
+   counted in `pv_atif_trajectory_recovery_skipped_total` or in
+   `pv_atif_recovery_skipped_total` with its reason.
 
-For every `{stem}.session.json` + `{stem}.events.ndjson` pair whose
-session id is NOT already registered, decrypt the session-metadata,
-re-hydrate a Session, and insert it into the registry. Events from
-`.events.ndjson` are replayed to reconstruct token counts, budget
-debits, and provenance. Broker acks from `{stem}.acks.ndjson` (and
-the legacy `broker-acks/{stem}/` fallback) are
-folded in to skip re-emitting events the previous incarnation
-already published.
+Two more jobs run on each tick after these passes: retrying marked
+promotions (`{stem}.promote` files; on a collision the intent is renamed
+to `{stem}.promote-archived`) and completing pending closes (failures
+are counted in `pv_pending_close_completion_failed_total`).
 
-Skips (with metrics):
-* Per-session decryption failures → `pv_signed_recovery_skipped_total`
-  or `pv_unsigned_recovery_skipped_total`. The broken session stays
-  on disk for forensic inspection; other sessions continue to be
-  processed.
-* Corrupt receipt → `pv_atif_trajectory_recovery_skipped_total`.
-* Failed pending-close completion tail →
-  `pv_pending_close_completion_failed_total`.
-
-### 2. Reap signed candidates
-
-For every `{stem}.json` with a sibling `{stem}.atif-auth` that
-represents a signed workflow whose journal is consistent but whose
-receipt was never emitted (crash mid-close): re-emit the receipt to
-the broker, write the `close-complete` marker, remove the journal.
-
-### 3. Retry marked promotions
-
-For every `{stem}.promote` file: run the promotion path. On
-success, write `close-complete` and remove `promote`. On collision
-(the target ATIF path already has a different-signed sibling), rename
-to `promote-archived`.
-
-### 4. Quarantine orphan `.json` files
-
-For every `{stem}.json` whose:
-* extension is `.json`,
-* file name does not end with `.session.json`,
-* has NO `.atif-auth` sidecar,
-* is older than `MIN_ORPHAN_AGE` (60s),
-* and whose stem is NOT in the live-session set snapshot taken at
-  the start of the sweep,
-
-rename to `{stem}.json.corrupt-{uid}`. The 60s age gate is defense
-against races on an in-flight close's mid-write; the live-stem
-check is defense in depth for closes that started after the
-snapshot but before the rename. Corrupt files are counted in
-`pv_atif_recovery_skipped_total{reason="unauthenticated"}` and
-never automatically deleted — they're on-disk forensics.
-
-### 5. Retention sweep (independent task, hourly)
-
-If `atif_retention_days` is set, an independent hourly task
-(`prune_sealed_atif`) removes SEALED pairs (`.json` +
-`.atif-auth`) whose mtime is older than N days, together with the
-pair's digest-bound `.close-complete` marker (an orphaned plain-stem
-marker past the window is also healed — the marker cannot verify
-without its artifact bytes). Unpaired remnants
-are left for step 4 to quarantine. Archived collision evidence
-(`.archived-…` names) and signed receipts under `receipts/` are
-never retention targets. Counted in
-`pv_atif_retention_pruned_total`. The identical sweep runs manually
-via `pvctl spool-prune --spool <atif_spool_dir> --retention-days N`
-— useful when `atif_retention_days` is unset and retention is
-managed by external cron.
+The retention sweep is a separate hourly task. If `atif_retention_days`
+is set, `prune_sealed_atif` removes sealed pairs (`.json` + `.atif-auth`)
+whose mtime is older than N days, together with their digest-bound
+`.close-complete` marker. Unpaired files are left for pass 5, and
+archived collision evidence and signed receipts under `receipts/` are
+never removed. Pruned pairs are counted in
+`pv_atif_retention_pruned_total`. The same sweep can be run manually
+with `pvctl spool-prune --spool <atif_spool_dir> --retention-days N`.
 
 ## Race analysis: the three tight windows
 
@@ -187,7 +168,7 @@ managed by external cron.
 
 `finalizer.close_session_locked` writes `{stem}.json` via
 `write_atomic`, then immediately writes `{stem}.atif-auth`. Between
-those two calls, the reconciler's step 4 would see a sidecar-less
+those two calls, the reconciler's pass 5 would see a sidecar-less
 `.json` and quarantine it. Mitigation:
 
 1. Per-session lifecycle lock — the close holds
@@ -209,7 +190,7 @@ close is still in-flight when the sweep visits the file.
 A worker appends to `{stem}.events.ndjson` and then attempts to
 emit the corresponding event to the broker. If the process crashes
 between append and emit, the event is durable on disk but not on
-the wire. Recovery step 1 detects this by comparing the journal's
+the wire. Journal recovery (passes 3 and 4) detects this by comparing the journal's
 last event to the `{stem}.acks.ndjson` inventory (legacy
 `broker-acks/{stem}/` files are consulted as a fallback), re-emits
 any event missing an ack, and appends a fresh ack.
@@ -223,7 +204,8 @@ known limit; operators alerting on emit-then-ack-loss should
 watch the broker-side per-topic ack-loss counter (or Kafka
 `records-lag-max`) rather than an in-process metric, because the
 harness's `pv_events_dropped_total` only labels admission-side
-failures (`stage="worker_queue"` / `stage="response_slot"`), not
+failures (`stage="worker_queue"`, `stage="worker_closed"`,
+`stage="response_slot"` and `stage="quota_post_compression"`), not
 post-emit ack loss.
 
 ### 3. Retention prune / live session (round-51 §8.1-§8.2)
@@ -239,8 +221,8 @@ comfortably inside any reasonable retention window.
 Back up the entire spool using a consistent filesystem snapshot, or stop
 writes before making a file-by-file copy. An `rsync` taken during active writes
 is not guaranteed to contain a consistent set of journals, acknowledgments,
-and execution intents. Retain the matching signing and journal keys through
-your secret backup process.
+and execution intents. Retain the matching signing seed through your secret
+backup process; the journal HMAC key is derived from it.
 
 Restore the complete snapshot. Partial restoration can lose the evidence that
 prevents duplicate tool execution or proves incomplete capture. Recovery
@@ -249,8 +231,8 @@ backup. Verify the restored instance in isolation before accepting traffic.
 
 Rebuild the audit chain from a fresh disk:
 
-1. `stat atif_spool_dir/*.json | count` — should be roughly the
-   number of `agent.receipt` events the broker has for the same
+1. `ls <atif_spool_dir>/receipts/*.json | wc -l` — should be roughly
+   the number of `agent.receipt` events the broker has for the same
    window.
 2. `pvctl receipt-verify` against a known-trusted receipt (from
    before the incident) — proves the signer's public key is intact.

@@ -38,6 +38,10 @@ HTTP chunk framing. HTTP 200 alone is insufficient. A regression test verifies
 that truncated responses, missing terminal markers, and injected error frames
 are refused by this check.
 
+The table above reports the final run, made after the Redis pool fix and
+described last below. The earlier runs are kept for the record in the
+order they happened.
+
 The earlier successful run, before the final durability changes, reported `ramp_ms=166724` and `completed_ms=168098`: every
 request reached the mock in 166.724 seconds, and every complete response was
 received by 168.098 seconds from the start. Accepted audit work then drained

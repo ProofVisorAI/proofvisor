@@ -11,8 +11,8 @@ three things:
    the gateway. It also keeps `PV_GATEWAY_URL`, `PV_AUDIENCE`,
    `PV_IDENTITY_JWKS_URL`, and adds `PV_CLIENT_BASE_URL`.
 2. **Writes an MCP client configuration** (`mcp.json`, path in
-   `PROOFVISOR_MCP_CONFIG`) in the common `mcpServers` format: an
-   `proofvisor` server for every backend's tools, plus an
+   `PROOFVISOR_MCP_CONFIG`) in the common `mcpServers` format: a
+   `proofvisor` server for every backend's tools, plus a
    `proofvisor-<name>` server for each backend named in the binding. Adding
    a backend name to the binding and restaging updates the configuration;
    the gateway's `tools/list` supplies the tools themselves.
@@ -113,7 +113,7 @@ the gateway (`[[workload_identities]]` with its app GUID) before starting it.
 `buildpack.toml` declares API 0.9. `bin/detect` returns 100 when there is no
 binding, and `bin/build` creates a launch-only layer with `env.launch`
 values, `mcp.json`, and, when the sidecar is enabled, `bin/pvctl`,
-`sidecar.json`, and an `proofvisor-sidecar` process type (not the default
+`sidecar.json`, and a `proofvisor-sidecar` process type (not the default
 process). The application still needs a language buildpack. Supply a
 service binding at build time under `$CNB_PLATFORM_DIR/bindings`, or set
 `SERVICE_BINDING_ROOT`. The selected builder must include `jq`; minimal

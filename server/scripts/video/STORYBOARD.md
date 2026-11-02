@@ -1,5 +1,6 @@
 # ProofVisor — Investor Mockup Video Storyboard
-# Duration: ~44 seconds (v21 distilled cut). Target: 30-second understanding.
+# Duration: ~29 seconds (v21 distilled cut, five scenes). Target: 30-second understanding.
+# Timings below follow the published film's captions (docs/pitch/pitch.vtt).
 
 ## THE PITCH (in one line)
 "AI agents make real decisions. When one costs $8,400, you need a receipt."
@@ -7,34 +8,28 @@
 ## Narrative arc (Kishotenketsu — set up, expand, twist, land)
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 00:00 - 00:06  TITLE CARD "AI agents are making real decisions"        │
-│                Fade in on brand color. One sentence, huge type.         │
-│                Bottom: "ProofVisor" logo (small).                    │
+│ 00:00 - 00:05  TITLE CARD — the problem                                 │
+│                "One wrong decision. $8,400 gone."                        │
+│                "A buying agent, tricked into paying a fake vendor.       │
+│                No way to prove what happened." Red accent on $8,400.     │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 00:06 - 00:12  TITLE CARD "$8,400 problem"                              │
-│                "One AI agent, one bad tool call — a $8,400 mistake     │
-│                nobody signed off on."                                   │
-│                Red accent color for the number.                         │
+│ 00:05 - 00:10  CONSOLE OVERVIEW — the value                              │
+│                Camera lands on the $31,840 saved figure.                 │
+│                Caption: "ProofVisor watches every AI agent. $31,840      │
+│                saved from blocked orders."                               │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 00:12 - 00:22  CONSOLE OVERVIEW — the "receipt"                        │
-│                Cut to console /overview. Camera holds on:              │
-│                  32 sessions · 7 BLOCKED · $31,840 prevented losses    │
-│                Caption overlay: "Every session, every decision — logged"│
+│ 00:10 - 00:18  SESSION DETAIL — the mechanism                            │
+│                The blocked $8,400 order, signed.                         │
+│                Caption: "Unapproved vendor: blocked, signed. The safe    │
+│                retry went through."                                      │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 00:22 - 00:32  SESSION DETAIL — the "proof"                            │
-│                Zoom into one blocked session. Show:                    │
-│                  ✓ Signature verified · policies enforced · $8,400     │
-│                    blocked action                                       │
-│                Caption: "Cryptographically signed. Verifiable offline."│
+│ 00:18 - 00:24  /verify PAGE — the proof                                  │
+│                The receipt verifies in the browser.                      │
+│                Caption: "Verified in the browser. No account."           │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 00:32 - 00:42  /verify PAGE — the "twist"                              │
-│                Cut to proofvisor.com/verify. Drop the sample.         │
-│                Green ✅ SIGNATURE VERIFIES fills the screen.            │
-│                Caption: "Anyone with the link can verify."             │
-├─────────────────────────────────────────────────────────────────────────┤
-│ 00:42 - 00:50  CLOSING CARD                                             │
-│                "AI agents you can hand to an auditor."                  │
-│                "proofvisor.com"                                        │
+│ 00:24 - 00:29  CLOSING CARD                                              │
+│                "AI agents you can hand to an auditor."                   │
+│                "proofvisor.com"                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ## Design decisions

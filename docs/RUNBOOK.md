@@ -9,12 +9,13 @@ One page. Grep for the failure, do the fix, move on. Kept short on purpose.
 > and are kept as a template: on Render, do the equivalent step from the
 > service dashboard (logs, environment variables, redeploy of a previous
 > commit) or with the Render CLI. The static site and mock-mode console
-> are GitHub Pages; their failure modes are the Pages/CDN sections below.
+> are GitHub Pages; this runbook does not yet have a section for them.
 
 ## Contact + escalation
 
 - Ops on-call: whoever pushed last (`git log -1 --format='%an %ae' main`)
-- Security disclosures: security@proofvisor.com
+- Security disclosures: private advisory form at
+  https://github.com/ProofVisorAI/proofvisor/security/advisories/new
 - Status page: `docs/STATUS.md` in this repo (edit + push to update)
 - Investor comms: read-only status page + one-line email
 
@@ -69,17 +70,23 @@ fly logs --app proofvisor-api -i <machine-id>
 #   - Wrong image ref → docker inspect the digest
 #   - Health check flaking → check /readyz on the machine
 
-# Rollback to previous digest — same command, older SHA.
-fly deploy --image "ghcr.io/proofvisorai/proofvisor-api:sha-<older>" --strategy rolling
+# Rollback to the previous image digest. Use the digest, not a sha-<revision>
+# tag: those tags can be overwritten (see CI-CD.md, "Rollback").
+fly deploy --image "ghcr.io/proofvisorai/proofvisor-api@sha256:<previous digest>" --strategy rolling
 ```
+
+On Render (production), roll back from the service's Deploys page instead.
 
 ### 4. Trivy CI job fails on a fixable HIGH/CRITICAL
 
 **Signal:** the [Deploy workflow](../.github/workflows/deploy.yml) fails at
-`Trivy image scan (fail on fixable HIGH/CRITICAL)`. Scanner errors also fail
-this step. The gate uses `--ignore-unfixed`; passing it does not mean the full
-image has no vulnerabilities. The workflow separately saves the unfiltered
-`trivy-full.json` as the `console-image-vulnerabilities` artifact.
+`Gate fixable HIGH/CRITICAL findings and seal the tested bytes`. That step runs
+`scripts/release-policy.py`, which reads the unfiltered `trivy-full.json`
+written by the earlier step `Preserve a complete unfiltered Trivy scan` and
+rejects any HIGH or CRITICAL finding that has a fixed version. Scanner errors
+fail the scan step. Passing the gate does not mean the full image has no
+vulnerabilities. The `console-evidence-<arch>` artifact keeps `trivy-full.json`
+even when validation fails.
 
 Reproduce both views for the exact image under review:
 
@@ -91,7 +98,7 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOME/.cache/trivy:/root/.cache/trivy" -v "$PWD:/reports" \
   aquasec/trivy:0.74.0 image --scanners vuln --ignorefile /dev/null \
   --format json --output /reports/trivy-full.json proofvisor-console-scan
-# Apply the CI severity/fixability gate using the same cached database.
+# Approximate the CI severity/fixability gate using the same cached database.
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$HOME/.cache/trivy:/root/.cache/trivy" \
   aquasec/trivy:0.74.0 image --skip-db-update --scanners vuln \
@@ -115,17 +122,17 @@ for its image identity, retained findings, and validation limits.
 **Current state:** the mailer is wired (`server/src/lib/mail.ts`).
 Production requires `RESEND_API_KEY` or `SMTP_URL` at boot — the
 server refuses to start without one (`no_mailer_configured` at
-`mail.ts:115`) so a misconfigured deploy fails fast instead of
-silently swallowing resets. `auth.ts:1117` calls `getMailer()` and
-logs `{ userId, mailer, messageId }` on send.
+`mail.ts:116`) so a misconfigured deploy fails fast instead of
+silently swallowing resets. The reset-request handler (`auth.ts:1810`)
+calls `getMailer()` and logs `{ userId, mailer, messageId }` on send.
 
 Triage:
 
 - Check the driver secrets in the deploy config: `RESEND_API_KEY` (or
-  `SMTP_URL`) plus `EMAIL_FROM`. `env.ts:287-292` documents the
+  `SMTP_URL`) plus `EMAIL_FROM`. `env.ts:330-333` documents the
   precedence — Resend wins over SMTP.
-- Tail the server logs for `pw_reset_email_sent` at info and any
-  `pw_reset_email_error` at warn/error — the driver name and the
+- Tail the server logs for `password_reset_email_sent` at info and any
+  `password_reset_deferred_failed` at error — the driver name and the
   provider's message id / error surface there.
 - If Resend: verify the `EMAIL_FROM` domain is DNS-verified in the
   Resend dashboard (unverified senders queue silently).
@@ -193,15 +200,12 @@ success or raise the batch cap as a rate-limit fix.
 
 ### 9. Cert renewal fails
 
-Fly does this automatically via Let's Encrypt. If the cert is about to
-expire:
-
-```bash
-fly certs check api.proofvisor.com --app proofvisor-api
-# Renew manually
-fly certs remove api.proofvisor.com --app proofvisor-api
-fly certs add api.proofvisor.com --app proofvisor-api
-```
+Render issues and renews the `api.proofvisor.com` certificate. If it is
+about to expire, check the custom domain's status in the service's
+Settings → Custom Domains in the Render dashboard, and confirm that the
+CNAME still points to `agentvisor-api.onrender.com`. GitHub Pages issues
+and renews the `proofvisor.com` certificate; check the Pages settings of
+`ProofVisorAI/proofvisorai.github.io`.
 
 ### 10. Log correlation — how do I find one customer's request?
 
@@ -252,13 +256,15 @@ clock claim by design.
 
 ## Standard operating procedures
 
-- **Every deploy** goes through `main` → `.github/workflows/deploy.yml`.
-  Never `fly deploy` from a laptop against the prod app — that skips
-  the Trivy scan.
+- **Every deploy** is a merge to `main`. Render Auto-Deploy is set to
+  "After CI Checks Pass", so Render builds `server/Dockerfile` and deploys
+  once that commit's GitHub checks are green. Avoid Manual Deploy and
+  environment-variable saves for code changes: they deploy the latest
+  commit without waiting for CI.
 - **Every migration** is a Prisma migration in `server/prisma/migrations/`,
   reviewed in a PR before it lands. Never `prisma db push` against prod.
-- **Every secret rotation** is a `fly secrets set` command in the ops
-  log below (edit + push).
+- **Every secret rotation** is done in the Render dashboard's environment
+  settings and recorded in the ops log below (edit + push).
 - **Every backup restore drill** should use a separate empty database. Decrypt
   a recent [nightly backup](../.github/workflows/backup.yml) using the vaulted
   passphrase, restore with a compatible PostgreSQL client, and verify data,

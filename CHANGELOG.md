@@ -2,7 +2,10 @@
 
 All notable changes are documented here. The project follows Semantic Versioning.
 
-## 0.1.0 - 2026-11-01
+## 0.1.0 - Unreleased
+
+The latest build is the GitHub pre-release v0.1.0-rc.8 (2026-11-01). There
+is no final v0.1.0 release yet, and nothing is published on crates.io.
 
 Ahead of this release, a comprehensive third-party engineering review
 (August 2026) covered the full codebase, deployment artifacts, and
@@ -65,8 +68,8 @@ exercised against release binaries in CI on every push
   Kubernetes manifest are renamed accordingly. `find_server_binary`
   still falls back to the legacy binary names for source-built installs.
 - **Minimum supported Rust version raised to 1.95.** wasmtime 48 (the
-  WebAssembly policy engine) needs 1.95, and only the 48 line carries the
-  fixes for RUSTSEC-2026-0420 and RUSTSEC-2026-0324.
+  WebAssembly policy engine) needs 1.95, and no 47.x release carries the
+  fixes for RUSTSEC-2026-0378 and RUSTSEC-2026-0423.
 - Exchanged tokens now bind each revocation ancestor to its issuer. Reissue
   exchanged tokens created by older builds: tokens without issuer ancestry
   are refused because their revocation identity is ambiguous.
@@ -180,7 +183,8 @@ exercised against release binaries in CI on every push
   requests cannot install a token for an address changed during hashing.
 - Console releases validate and scan local OCI artifacts before a separate
   main-only job publishes them. Promotion preserves the tested image bytes and
-  attestations; Fly deploys the verified immutable digest. Pull request jobs
+  attestations in GHCR. The live API runs on Render, which builds from
+  `server/Dockerfile`; the optional Fly deploy job is unused. Pull request jobs
   have no registry publication credentials.
 - Redis pools verify one connection at startup and grow on demand, preserving
   the 32-connection cap and two-second checkout deadline. This fixes startup
@@ -300,6 +304,23 @@ exercised against release binaries in CI on every push
 
 ### Added
 
+- Windows: the CI `windows` job now starts the built daemon on the Windows
+  runner and runs one signed session through it
+  (`scripts/boot-smoke.py`: boot, readiness, a streaming request, close,
+  receipt verification and a restart), instead of only compiling and
+  unit-testing it. Releases now include a native Windows x64 zip
+  (`x86_64-pc-windows-msvc`); v0.1.0-rc.8 is the first release with it.
+  Windows remains a Tier 2 platform.
+- Release and installer-test builds for Apple Silicon run on `macos-15`
+  instead of `macos-14`.
+- Console: webhook deliveries have a Retry button, which calls the
+  existing `POST /api/v1/webhooks/:id/redeliver/:deliveryId` route.
+- Console: the demo deployment no longer offers Rotate.
+- Console: copy buttons fall back to the older browser copy method when
+  the clipboard API is unavailable or refused, and say whether the copy
+  worked.
+- Site: `/.well-known/receipt-keys.json` is published with the other site
+  files.
 - Policy push: `guardrail` policies are enforced by daemons when their
   body is the JSON spec `{"applies_to": "tool.args" | "llm.ingress",
   "deny_patterns": [<regex>, …], "effect": "block"}` (documented in
@@ -390,7 +411,7 @@ exercised against release binaries in CI on every push
   through, a non-loopback listen address is refused, and SIGTERM stops
   it. The CLI help contract now lists all twenty-one subcommands.
 - CI: `scripts/policy-push-e2e.mjs` (console → daemon policy push with
-  the real binaries, 42 checks) runs in the Console + API workflow on
+  the real binaries) runs in the Console + API workflow on
   every push; it was previously run only by hand. The script honours a
   signup `Retry-After` once, since it shares one API and one IP with the
   other suites. The contract suite (`server/ci/e2e.mjs`) now covers the
@@ -539,7 +560,9 @@ exercised against release binaries in CI on every push
   Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI,
   Mistral, and Azure OpenAI), `"anthropic"`, and `"gemini"`. Each
   adapter is pinned by full-chain integration tests proving the audit
-  chain records the same shape across dialects.
+  chain records the same shape across dialects. The Anthropic and Gemini
+  adapters have been tested only against local stand-ins of those wire
+  formats, not against the real vendor APIs.
 - **Health endpoints.** `/livez` (liveness, constant 200) and `/readyz`
   (readiness; 503 while draining or while the spool is unreadable) for
   Kubernetes-style probes.
@@ -576,7 +599,9 @@ exercised against release binaries in CI on every push
   each validated against live backends (Redpanda, nats-server, MinIO)
   plus a live Redis Cluster contract test.
 - crates.io publishing workflow: all workspace crates packaged and
-  uploaded in dependency order on version tags, with a dry-run mode.
+  uploaded in dependency order on final version tags, with a dry-run mode.
+  Pre-release tags (such as v0.1.0-rc.8) run the dry run only, so nothing
+  has been uploaded yet.
 
 ### Fixed
 

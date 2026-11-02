@@ -84,16 +84,17 @@ signed receipts. [ask]."
 | "One base-URL integration" | OpenAI-compatible proxy + MCP passthrough |
 | "~140 requests/sec of fully signed pipeline on a laptop" | Local loadgen, zero daemon-side drops at burst sizes the OS could deliver |
 | "About 1,800 Rust tests (1,170 in `src` + 632 in `tests/`), 66 console-server unit tests, 128-check API e2e, 15-drill security battery, 3-browser matrix" | CI + the 2026-10-30 verification run (all green) |
-| "Disaster recovery proven" | Encrypted nightly backup → restore → receipts still cryptographically verify |
+| "Encrypted nightly backup; restore tested in an isolated drill" | Encrypted nightly backup → restore in an isolated drill → receipts still cryptographically verify (the drill does not retrieve production backups) |
 
 ## Things NOT to claim
 
 - No customers/revenue numbers — there are none yet; say "live today,
   looking for design partners."
 - Don't call receipts "blockchain" (they're signed evidence chains).
-- Don't promise console→daemon policy *sync* — the console manages
-  policies; daemons enforce local files today, and the UI says so
-  honestly.
+- Don't claim that every console policy is enforced: console policies
+  are pushed to daemons and enforced, but a guardrail or transform
+  written as free text (not the JSON spec) is documentation only, and
+  the UI says so.
 
 ## Failure choreography
 

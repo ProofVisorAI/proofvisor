@@ -20,7 +20,7 @@ and nothing runs on Fly.io. The live hosted API is a Render web service
 
 ## Current production deployment
 
-As of 2026-10-30 the hosted API runs on Render as the web service
+As of 2026-11-01 the hosted API runs on Render as the web service
 `proofvisor-api` (created as `agentvisor-api` and renamed on 2026-11-01;
 Render keeps its original hostname `agentvisor-api.onrender.com`, and the
 `render.yaml` blueprint now carries the new name). It is built from `server/Dockerfile` in the Ohio
@@ -102,9 +102,12 @@ Swap any of the three without touching the other two.
 
 ## Deployment walkthrough (frontend + backend + database)
 
-### 1. Frontend — Cloudflare Pages (recommended)
+### 1. Frontend — GitHub Pages in production; Cloudflare Pages as an alternative
 
-`docs/` is a static SPA + landing page. **Cloudflare Pages** is one option:
+`docs/` is a static SPA + landing page. Production publishes it with GitHub
+Pages through `.github/workflows/pages.yml` (see
+[Current production deployment](#current-production-deployment)).
+**Cloudflare Pages** is another option:
 
 ```bash
 npx wrangler pages deploy docs --project-name proofvisor-console
@@ -116,7 +119,8 @@ auto-deploy on every push.
 Bundled with the SPA:
 
 - `docs/_headers` — strict CSP, HSTS 2y+preload, `Permissions-Policy`,
-  cross-origin isolation. Cloudflare + Netlify honor this format.
+  cross-origin isolation. Cloudflare + Netlify honor this format; GitHub
+  Pages ignores it.
 - `docs/_redirects` — proxies `/api/*` and `/healthz` to the API host so
   cookies stay same-origin (skips a CORS preflight).
 - `docs/.well-known/security.txt` — RFC 9116 disclosure contact.
@@ -220,8 +224,9 @@ built from it; without it they fall back to `APP_BASE_URL` — the SPA
 origin — and every IdP round-trip 404s (found the hard way; see the
 `API_PUBLIC_URL` commit trail).
 
-**Background sweepers**: `RETENTION_SWEEPER_INTERVAL_MS` (default 1h)
-and `WEBHOOK_SWEEPER_INTERVAL_MS` (default 15s, floor 1s) control the
+**Background sweepers**: `RETENTION_SWEEPER_INTERVAL_MS` (default 6h,
+allowed range 1 min to 24h) and `WEBHOOK_SWEEPER_INTERVAL_MS` (default
+15s, allowed range 1s to 5 min) control the
 retention purge and webhook retry cadence. Multi-instance safe — the
 webhook sweeper claims rows with `FOR UPDATE SKIP LOCKED`.
 
@@ -369,11 +374,12 @@ diagnostics that work without a shell inside the container.
 
 ```bash
 pg_dump "$OLD_DATABASE_URL" | psql "$NEW_DATABASE_URL"
-fly secrets set DATABASE_URL="$NEW_DATABASE_URL"
+# Then set DATABASE_URL to "$NEW_DATABASE_URL" in the host's environment
+# settings (the Render dashboard in production).
 # The app picks up the new URL on next restart. No migration needed.
 ```
 
-**Move off Cloudflare Pages** → any static host
+**Move off GitHub Pages** (or Cloudflare Pages) → any static host
 
 ```bash
 rsync -pv docs/ new-host:/var/www/proofvisor-console/
@@ -385,16 +391,20 @@ Every path off every platform is a single command.
 
 ## Security posture (2026 baseline)
 
-- **TLS everywhere.** HSTS is set for 2 years with `preload`. Cloudflare
-  or Fly's edge terminates TLS with automatically renewed Let's Encrypt
-  certificates.
+- **TLS everywhere.** The API sets HSTS for 2 years with `preload`. In
+  production, Render terminates TLS for the API with a certificate it
+  issues and renews, and GitHub Pages does the same for the site.
 - **Cookies.** `httpOnly`, `SameSite=Lax`, `Secure` in production. JWT
-  is signed HS256 with a 48-byte secret. Rotate `JWT_SECRET` with
-  `fly secrets set` — old tokens expire on the next boot.
-- **CSP.** `default-src 'none'` on every API response. The SPA has a
-  strict CSP via `docs/_headers` allowing `'self'` scripts only,
-  plus explicit `connect-src` for the API + SSE. Frame ancestors `'none'`.
-- **Password hashing.** Argon2id via the `argon2` native module. Cost:
+  is signed HS256 with a secret of at least 32 characters. Rotate
+  `JWT_SECRET` in the host's environment settings (the Render dashboard in
+  production) — old tokens expire on the next boot.
+- **CSP.** `default-src 'none'` and `frame-ancestors 'none'` on every API
+  response. The SPA sets a strict CSP through a `<meta http-equiv>` tag in
+  `docs/app/index.html` (GitHub Pages ignores `docs/_headers`), allowing
+  `'self'` scripts only, plus explicit `connect-src` for the API + SSE.
+  A meta tag cannot set `frame-ancestors`, so that directive does not
+  apply to the SPA on GitHub Pages.
+- **Password hashing.** Argon2id via `@node-rs/argon2`. Cost:
   19 MiB × 2 iterations × 1 lane — meets OWASP 2024 recommendation.
 - **Rate limits.**
   - Global: 300 req/min per client IP on each API instance. Buckets live in
@@ -444,11 +454,8 @@ Every path off every platform is a single command.
 
 Additional hardening for production (not required for the demo):
 
-- Turn on Neon IP allowlist so only the Fly outbound range can connect.
-- Enable Fly's WAF (`fly deploy --wg`).
+- Turn on the Neon IP allowlist so only the Render service's outbound IP
+  addresses can connect.
 - Enable Postgres row-level security on `sessions`/`events`/`receipts`
   as a defense-in-depth layer (the app already scopes reads by `orgId`,
   but RLS blocks any query that forgets to).
-- Wire a real mailer (Postmark / Resend / SES) so password reset tokens
-  arrive by email in production. Currently the token is only logged in
-  non-production; production emits `{userId}` metadata only.

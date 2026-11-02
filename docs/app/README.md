@@ -11,20 +11,20 @@ ingest tokens, and inspect any session's event stream and signed receipt.
 ## Two operating modes
 
 The console is built as a client-side app with a swappable data source. The
-switch lives at the top of [`index.html`](./index.html):
+switch lives at the top of [`config.js`](./config.js) (not inline in
+`index.html`, because the strict Content Security Policy forbids inline
+scripts):
 
-```html
-<script>
-  window.MOCK_MODE = true;
-  window.API_BASE = "";
-</script>
+```js
+window.MOCK_MODE = true;
+window.API_BASE = "";
 ```
 
 ### Mock mode (default — investor / preview use)
 
 When `MOCK_MODE=true` the console runs against built-in **Northwind Traders**
 fixtures baked into [`datasource.js`](./datasource.js). Anyone landing on the
-URL sees a fully populated workspace: 2 deployments, 7 sessions with events
+URL sees a fully populated workspace: 3 deployments, 32 sessions with events
 and receipts, headline KPIs. Any email + password combination signs you in.
 
 This is what powers the investor pitch and the public demo. The backend is
@@ -79,7 +79,8 @@ See [`server/README.md`](../../server/README.md) for the full deploy runbook.
 
 | File | Purpose |
 |---|---|
-| `index.html` | Entry, sets `MOCK_MODE`, mounts `#app` |
+| `index.html` | Entry, mounts `#app` |
+| `config.js` | Sets `MOCK_MODE` and `API_BASE`; `?live=1` switch |
 | `styles.css` | Design tokens + shell / auth / cards / tables |
 | `datasource.js` | Swappable data layer — `MockDataSource` vs `ApiDataSource` |
 | `app.js` | Hash router, auth, view renderers |
@@ -106,29 +107,32 @@ See [`server/README.md`](../../server/README.md) for the full deploy runbook.
   plus 32 characters, and the table shows only the first 16.
 - `#/policies` — policy definitions (create, edit, enable/disable).
   The create dialog starts from a template (spend cap, vendor
-  allowlist, tool allowlist, token rate limit, PII guard) and writes
-  the JSON spec for the daemon-enforceable kinds (`budget`,
-  `allowlist`, `rate`, `schema`), validated before saving exactly as
-  the server validates it. Daemons that run
+  allowlist, tool allowlist, token rate limit, PII guard, response
+  guard, and two redaction templates) and writes the JSON spec for the
+  daemon-enforceable kinds (`budget`, `allowlist`, `rate`, `schema`,
+  `guardrail`, `transform`), validated before saving exactly as the
+  server validates it. Daemons that run
   `pvctl console-sync --watch --pull-policies` (with `policy_bundle_file`
   in the daemon config and `PV_POLICY_BUNDLE_FILE` set to the same path,
   as the deployment page shows) pull every enabled
   policy as one bundle; each policy shows an enforcement badge such as
   "Enforced by 2 of 3 daemons", names a daemon that still has an older
-  bundle, or says "Not enforceable by daemons" for `guardrail` and
-  `transform` policies, which document a rule and attribute the
-  daemon's own guard hits to its name. A deployment's page shows the
+  bundle, or says "Documentation only (no JSON spec)" for a `guardrail`
+  or `transform` policy whose definition is free text. Such a policy
+  documents a rule and attributes the daemon's own guard hits to its
+  name; a guardrail or transform defined by the JSON spec is enforced. A deployment's page shows the
   bundle etag and time its daemon last applied.
 - `#/settings` — tabbed: `general` (org/user metadata + mock-mode escape
   hatch), `members` (roles and invites; the table columns are Person,
   Role, Joined), `keys` (API keys with prefix `pv_srv_`; the table has a
   Role column and the create dialog has a role selector — owner, admin
-  or member, never above your own role), `sso` (SAML / OIDC / passkeys),
+  or member, never above your own role), `sso` (SAML / OIDC / passkeys /
+  SCIM provisioning),
   `webhooks` (endpoints and deliveries; the server emits `test`,
   `member.invited`, `policy.block`, `session.blocked` and
   `apikey.created`), `audit` (trail + CSV export), `billing` (free
   preview; the Team and Enterprise plans shown there are not purchasable
-  yet, and SCIM provisioning does not exist on the server)
+  yet)
 
 ## The scripted pitch demo
 

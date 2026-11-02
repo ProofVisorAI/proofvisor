@@ -3,7 +3,9 @@
 What runs where, and how it was verified. Every claim below was
 exercised against real binaries — install, boot, policy verdicts,
 budget blocks, receipt seal/verify, tamper rejection — not inferred
-from "it compiles". (Verification rounds 93–99, September 2026.)
+from "it compiles". (Verification rounds 93–99, September 2026.) The
+Windows section is the exception: it says which features were run on a
+Windows runner and which were only compiled and unit-tested.
 
 ## Tier 1 — prebuilt binaries (installer default)
 
@@ -16,7 +18,7 @@ verifies the SHA-256, installs, and smoke-runs them on your machine.
 | `aarch64-unknown-linux-musl` | Static; verified on Ubuntu 22.04, Debian 12, Alpine 3.20, Fedora 42 (arm64). |
 | `aarch64-apple-darwin` | Verified on macOS 14+ (Apple silicon). |
 | `x86_64-apple-darwin` | Verified on macOS 15 (Intel). |
-| `x86_64-unknown-linux-gnu` | Also published; needs glibc ≥ 2.38. The installer prefers musl. |
+| `x86_64-unknown-linux-gnu` | Also published; needs glibc ≥ 2.38. The installer always uses the musl build on Linux. |
 
 ## Tier 2 — build from source (verified working)
 
@@ -27,7 +29,7 @@ emulation:
 
 | Target | Notes |
 |---|---|
-| `aarch64-unknown-linux-gnu` | Also exercised nightly in CI. |
+| `aarch64-unknown-linux-gnu` | Built from source; not exercised in CI (the nightly arm64 runner installs the musl build). |
 | `armv7-unknown-linux-gnueabihf` | 32-bit ARM (Raspberry Pi OS 32-bit). The policy sandbox uses wasmtime's portable interpreter where no native JIT exists. Expect a long compile on a Pi. |
 | `riscv64gc-unknown-linux-gnu` | Native cranelift JIT backend. |
 | `powerpc64le-unknown-linux-gnu` | Works from v0.1.0-rc.4; earlier builds hit a per-arch `O_NOFOLLOW` constant bug that fail-closed every session (fixed, regression-tested on ppc64le). |
@@ -42,8 +44,11 @@ byte frame (`agentvisor-receipt-v2\0` + big-endian length + body).
 
 ## Windows
 
-Native Windows x64 (`x86_64-pc-windows-msvc`) is supported for the
-daemon and the CLI, with the differences listed below. Everything else
+Native Windows x64 (`x86_64-pc-windows-msvc`) is a Tier 2 platform for
+the daemon and the CLI, with the differences listed below. Each release
+includes a prebuilt `.zip`; `install.sh` does not install it. CI
+compiles, unit-tests and boot-tests the binaries on a hosted runner;
+they have never run on customer hardware. Everything else
 in this repository (installer, systemd unit, container images, the
 hosted console) is Unix-only and needs WSL on a Windows machine.
 
@@ -66,20 +71,27 @@ hardware, and the installer, service unit and container images stay
 Unix-only, so Windows remains a Tier-2 target; it is now an exercised
 one rather than a compiled one.
 
-Works natively:
+Exercised on the hosted Windows runner (`scripts/boot-smoke.py`):
 
-- The HTTP gateway (`/v1/chat/completions`, `/mcp`, `/v1/mcp`), the
-  WASM policy sandbox (wasmtime, cranelift), budgets, loop detection,
-  the embedded Bridge and the evidence spool on NTFS, receipt sealing,
-  and offline verification with `pvctl receipt-verify`. Receipts sealed
-  on Windows verify on any other platform and vice versa (see
-  "Receipts are portable").
-- `pvctl` in general, including `pvctl setup`, `pvctl doctor`,
-  `pvctl pubkey`, console sync and the sidecar.
-- Graceful shutdown: the daemon stops on Ctrl-C (and on the console
-  control events Windows maps to it) through `tokio::signal::ctrl_c`,
-  running the same drain sequence as SIGTERM on Unix, including
-  `shutdown_ready_drain_s`.
+- Boot from environment variables, `/readyz`, a streamed chat
+  completion through `/v1/chat/completions` to a stand-in provider,
+  a signed session with its receipt sealed on the NTFS spool,
+  verification with `pvctl receipt-verify` and refusal of a modified
+  copy, and a restart on the same spool that keeps the signing key.
+
+Compiled and unit-tested only on Windows (not run there as binaries):
+
+- The MCP routes (`/mcp`, `/v1/mcp`), the WASM policy sandbox
+  (wasmtime, cranelift), budgets, loop detection and the embedded
+  Bridge. Receipt portability between Windows and other platforms
+  follows from the canonical framing (see "Receipts are portable").
+- `pvctl setup`, `pvctl doctor`, `pvctl pubkey`, console sync and the
+  sidecar.
+- Graceful shutdown: the daemon is built to stop on Ctrl-C (and on the
+  console control events Windows maps to it) through
+  `tokio::signal::ctrl_c`, running the same drain sequence as SIGTERM on
+  Unix, including `shutdown_ready_drain_s`. The boot test stops the
+  daemon forcefully, so this path has not been run on Windows.
 
 Differs from Unix (the Unix behaviour is compiled out with
 `#[cfg(unix)]`):
@@ -114,13 +126,17 @@ Differs from Unix (the Unix behaviour is compiled out with
   these. Download the `.zip` from the GitHub release instead of running
   the installer.
 - **Tests:** the integration tests that spawn the daemon, send SIGKILL
-  or SIGTERM, or assert mode bits are `#[cfg(unix)]`; the Windows CI
-  job runs the unit tests only.
+  or SIGTERM, or assert mode bits are `#[cfg(unix)]`. The Windows CI
+  job runs the workspace unit tests (`--lib`) and `scripts/boot-smoke.py`
+  against the built `proofvisord.exe` and `pvctl.exe`; the integration
+  test suites do not run there.
 
 ## Hosted console (self-host)
 
-`server/Dockerfile` builds and passes the full API e2e suite (128
-checks as of 2026-10-30) on both `linux/amd64` and `linux/arm64`. The
+`server/Dockerfile` built and passed the full API e2e suite (128
+checks) on both `linux/amd64` and `linux/arm64` on 2026-10-30. The
+suite has since grown to 146 checks, which were run locally
+(`docs/FEATURES.md` section 9), not in this image test. The
 build stage uses `node:22` on Debian 13; the runtime stage is Google's
 Distroless Node 22 image (Debian 13, non-root, no shell), with Prisma
 auto-migrate and a fail-closed production env guard.

@@ -7,7 +7,9 @@ npm 11.19.0, and a dedicated PostgreSQL 15.19 container. Existing databases and
 services were not reset. The API ran with `TZ=Asia/Tokyo`; PostgreSQL used UTC.
 
 See the [notification recovery follow-up](#notification-connection-recovery-follow-up)
-for the newest runtime changes and their separate verification.
+for the last runtime changes recorded here. This record ends on
+2026-09-24; later console changes and their verification are in
+`docs/FEATURES.md` sections 8 to 10.
 
 ## API and database checks
 
@@ -392,7 +394,8 @@ The database tests verified these additional boundaries:
 
 ```sh
 # Use an already-built production image. The pinned PostgreSQL image used
-# by scripts/container-smoke.py must also be present; the drill never pulls.
+# by ../scripts/container-smoke.py (the repository's top-level scripts/
+# folder) must also be present; the drill never pulls.
 CONSOLE_AUTH_IMAGE=proofvisor-api:ci node scripts/external-auth-drill.mjs
 node --test ci/external-auth-drill.test.mjs
 ```
@@ -407,7 +410,7 @@ live drill removed its four containers, database volume, network, and private
 credential/certificate files with no cleanup errors. Console CI now requires
 this drill against the existing `proofvisor-api:ci` build and retains only its
 logs and report. The workflow is reusable with read-only permissions so the
-release workflow can require these same checks.
+console image workflow (`deploy.yml`) can require these same checks.
 
 The successful report is
 `/tmp/proofvisor-production-validation/auth-followup/pv-auth-feb8cff83a06-rzqMWB/report.json`;

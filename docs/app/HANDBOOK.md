@@ -201,7 +201,7 @@ catalog at the bottom.
     card is role=alert + focused (drill check 34).
 
 **Evidence & print**
-22. The printed evidence pack is COMPLETE: `@media print` forces
+25. The printed evidence pack is COMPLETE: `@media print` forces
     `.evt-hidden` rows visible, and the provenance footer states the event
     count + a partial-trail warning. On-screen triage never crops evidence.
 
@@ -254,6 +254,14 @@ catalog at the bottom.
 | Script | Guards |
 |---|---|
 | `interactive-drill.mjs` | 35 checks: tour, attack story, onboarding ages, billing math, reset flows, hit-tests + unsized-svg blowouts, storage/router fuzz, pagination + deep links, Back/overlays, double-submit, failure paths + catch-up, cross-tab + FOUC, focus rings/traps + reduced motion + shortcut guards, garbage data, filter/sort/chart/audit/detail ground truth, deployment + key lifecycles, member RBAC, leak soak, form semantics (native validation + Enter submits), skeleton-phase filter liveness, dirty-modal discard guard, theme-toggle state preservation, keyboard-only tour, palette mutation-truth + bfcache eligibility (no unload handlers), fresh-workspace truth (org-named daemon, isolated mutations, founder identity, org audit story, showcase-affordance hiding), hostile environment (storage-denied boot, dead-script crash card role=alert+focus + Reload recovery, WebCrypto-less detail + honest ? state), scripted-pitch manual walk (verify green → tamper red) + de-DE locale |
+| `live-site-smoke.mjs` | 11 checks: link/media crawl, captions, alias stubs, 404, OG/Twitter link previews, video-metadata truth (durations + zero MediaErrors), install-promise (the exact URL app.js prints serves the real installer; live runs also assert the public README leads with working commands) |
+| `a11y-audit.mjs` | 46 axe scans: 11 routes + 9 modal states × 2 themes, 3 static pages × 2 schemes |
+| `mobile-smoke.mjs` | phone/tablet: tab bar, taps, modals fit + hittable + stacking, static pages |
+| `verify-page-drill.mjs` | 15 checks incl. download→drop→green / tamper→red |
+| `receipt-verify-drill.mjs` | download → CLI verifier + tamper matrix |
+| `full-flow-rehearsal.mjs` | ONE continuous session in narrative order: landing CTA → tour → verify finale → attack → receipt → fresh signup → reset. `PROFILE=phone` reruns it as the QR-code path on an iPhone profile; `SLOW=1` adds 300–700ms venue-wifi jitter to every datasource call |
+| `engine-matrix.mjs` | nightly: 11 features × chromium/webkit/firefox (incl. sticky headers, dirty-guard, theme-state) |
+| `lighthouse-audit.mjs` | budgets, re-measures once on a miss (runner variance ±23) |
 
 **Audit-slug parity**: mock `recordAudit` slugs and the `MOCK_AUDIT`
 fixtures mirror the REAL taxonomy in `server/src/lib/audit.ts`
@@ -267,9 +275,9 @@ dedicated slug. The server does have policy CRUD routes
 `policy.update` / `policy.delete`, plus enable/disable variants); the
 mock's `policy.created/updated/enabled/disabled` spellings and
 `policies.defaults_seeded` predate them and are the remaining
-demo-forward exceptions to reconcile. Note that policy *push* from the
-console to daemons is not built: daemons enforce their local policy
-files, and the console only stores definitions.
+demo-forward exceptions to reconcile. Console policies are pushed to
+daemons that run `pvctl console-sync --watch --pull-policies`, and those
+daemons enforce them on top of their local configuration.
 Never invent a slug — check audit.ts first; the audit chips
 self-generate from the category prefix, so a renamed slug silently
 re-files its rows.
@@ -306,16 +314,8 @@ The attack demo's staged rerenders pass the session id so a viewer
 parked on the detail page sees the panel flip live at seal+300ms
 (the random subscribe tick almost never matches that session id) —
 drill check 2 pins the whole unsealed→sealed transition.
-| `live-site-smoke.mjs` | 11 checks: link/media crawl, captions, alias stubs, 404, OG/Twitter link previews, video-metadata truth (durations + zero MediaErrors), install-promise (the exact URL app.js prints serves the real installer; live runs also assert the public README leads with working commands) |
-| `a11y-audit.mjs` | 46 axe scans: 11 routes + 9 modal states × 2 themes, 3 static pages × 2 schemes |
-| `mobile-smoke.mjs` | phone/tablet: tab bar, taps, modals fit + hittable + stacking, static pages |
-| `verify-page-drill.mjs` | 15 checks incl. download→drop→green / tamper→red |
-| `receipt-verify-drill.mjs` | download → CLI verifier + tamper matrix |
-| `full-flow-rehearsal.mjs` | ONE continuous session in narrative order: landing CTA → tour → verify finale → attack → receipt → fresh signup → reset. `PROFILE=phone` reruns it as the QR-code path on an iPhone profile; `SLOW=1` adds 300–700ms venue-wifi jitter to every datasource call |
-| `engine-matrix.mjs` | nightly: 11 features × chromium/webkit/firefox (incl. sticky headers, dirty-guard, theme-state) |
-| `lighthouse-audit.mjs` | budgets, re-measures once on a miss (runner variance ±23) |
 
-CI: `console-smoke.yml` (22-min timeout; nightly adds engines).
+CI: `console-smoke.yml` (30-min timeout; nightly adds engines).
 `server/`-only changes don't trigger the Pages deploy — dispatch
 `console-smoke` manually to prove them against production. The Pages workflow
 **cherry-picks published files** — new static assets (e.g. `.vtt`) must be
@@ -330,34 +330,34 @@ private stretch after the R228 restructure billed every Actions
 minute against the org's free pool — 11,689 minutes exhausted it and
 all workflows started refusing with zero-step instant failures;
 public repos get free minutes; a secret scan of tracked content and
-post-privatization history preceded the flip). The deploy pipeline
-still uses two public snapshot repos — do NOT re-point Pages at the
-monorepo; the site-repo pipeline is certified and the domain claim
-lives there. Both snapshots are force-pushed content exports (no
-history, never edit them directly — the next export overwrites
-everything):
+post-privatization history preceded the flip). The monorepo itself is
+`ProofVisorAI/proofvisor`. Two other repos receive force-pushed
+content exports (no history; never edit them directly, because the next
+export overwrites everything). Do NOT re-point Pages at the monorepo;
+the site-repo pipeline is certified and the domain claim lives there:
 
 - `ProofVisorAI/proofvisorai.github.io` — the ASSEMBLED site.
   `pages.yml` builds (rustdoc + terser) and pushes over SSH using the
   `SITE_DEPLOY_KEY` secret. Its Pages serves `proofvisor.com`
   (legacy branch build off `main`, `.nojekyll` in the artifact).
-- `ProofVisorAI/proofvisor` — the public binary tool: the Rust
+- `ProofVisorAI/agentvisor` — the public binary tool snapshot: the Rust
   workspace + every compile-time-included path + the offline
-  verifier at `server/scripts/verify-receipt.mjs`. `publish-tool.yml` exports
-  an explicit INCLUDE list via `TOOL_DEPLOY_KEY`. If a crate gains a
-  new `include_str!` outside the list, the public build breaks —
-  extend the list AND the workflow's `paths:` trigger.
+  verifier at `tools/verify-receipt.mjs`. `publish-tool.yml` exports
+  an explicit INCLUDE list via `TOOL_DEPLOY_KEY`. Since 2026-11-01 it
+  runs only when dispatched by hand (its push trigger was removed after
+  the rename briefly pointed it at the monorepo). If a crate gains a
+  new `include_str!` outside the list, the exported build breaks —
+  extend the list.
 
-Public site pages link `github.com/ProofVisorAI/proofvisor` (the
-curated tool repo) — keep it that way even while the monorepo is
-public; the tool repo is the stable public artifact. EXTERNAL
+Public site pages link `github.com/ProofVisorAI/proofvisor`, which is
+the public monorepo. EXTERNAL
 PROMISES (URLs/commands the product tells users to run elsewhere)
 must be guarded: the onboarding install command shipped for weeks
 pointing at get.proofvisor.com, a host that never existed in DNS —
 the installer now lives at proofvisor.com/install.sh (same Pages
 artifact, no DNS dependency), installs proofvisord + pvctl from the
 prebuilt GitHub release binaries (SHA-256 checked; pinned to
-v0.1.0-rc.5) and falls back to `cargo install --git` from the public
+v0.1.0-rc.8) and falls back to `cargo install --git` from the public
 repo on other platforms, and smoke check 11
 fetches the EXACT URL the deployed app.js prints. Public-consumer
 chain certified BY EXECUTION (R270–R272): fresh clone compiles; real

@@ -26,16 +26,16 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented** · **⚠�
 | 1.10 | X-Requested-With required on state-changing routes (SPA sets it) | ✅ | [docs/app/datasource.js](docs/app/datasource.js) |
 | 1.11 | SQL injection resistant (Prisma parameterized, verified with `pg_sleep`, `DROP TABLE`) | ✅ | This round |
 | 1.12 | XSS defense — event drawer uses opt-in isHtml tuple, everything else escaped | ✅ | [docs/app/app.js](docs/app/app.js) |
-| 1.13 | Strict CSP: `default-src 'none'; script-src 'self'; script-src-attr 'none'` | ✅ | [docs/_headers](docs/_headers) |
-| 1.14 | HSTS + upgrade-insecure-requests | ✅ | [docs/_headers](docs/_headers) |
-| 1.15 | Pino logger redacts `authorization`, `cookie`, `password`, `token`, `ingestToken` | ✅ | [server/src/lib/auth.ts](server/src/lib/auth.ts) |
+| 1.13 | Strict CSP: `default-src 'none'; script-src 'self'; script-src-attr 'none'` (set by a `<meta http-equiv>` tag, because GitHub Pages ignores `docs/_headers`) | ✅ | [docs/app/index.html](docs/app/index.html) |
+| 1.14 | HSTS + upgrade-insecure-requests on the API (helmet). The static site is on GitHub Pages, which ignores `docs/_headers`; whether GitHub Pages sends HSTS for `proofvisor.com` has not been checked | ✅ | [server/src/index.ts](server/src/index.ts) |
+| 1.15 | Pino logger redacts the `authorization` and `cookie` request headers, the `set-cookie` response header, and `password`, `newPassword`, `token`, `plaintextToken`, `devOnlyResetToken`, `resetLinkHint` fields | ✅ | [server/src/index.ts](server/src/index.ts) |
 | 1.16 | Real Ed25519 receipt verification in the browser (no lies) | ✅ | [docs/app/datasource.js](docs/app/datasource.js) |
 | 1.17 | Deployment ingest token rotation flow with one-time-view modal | ✅ | [docs/app/app.js](docs/app/app.js) |
 | 1.18 | Role enforcement (owner-only for destructive endpoints) | ✅ | [server/src/routes/auth.ts](server/src/routes/auth.ts) |
 | 1.19 | Secrets never committed (grep of repo, .env in gitignore) | ✅ | [.gitignore](.gitignore) |
 | 1.20 | Trivy scan in CI (blocks on fixable HIGH/CRITICAL findings) | ✅ | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) · [Container security review](docs/PRODUCTION-VALIDATION.md#container-security-review) |
 | 1.21 | SBOM and provenance generation configured; GitHub-signed attestations run only for public repositories | 🟢 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) |
-| 1.22 | Dependabot with automatic patch-level merges | ✅ | [.github/workflows/dependabot-automerge.yml](.github/workflows/dependabot-automerge.yml) |
+| 1.22 | Dependabot with automatic patch-level merges. Dependabot version updates were turned off on 2026-09-25 (commit b252ded5 removed `.github/dependabot.yml`); dependency updates are a manual task | ⚠️ | [CI-CD.md](CI-CD.md#continuous-updates) |
 
 ## 2. Operations
 
@@ -54,7 +54,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented** · **⚠�
 | 2.11 | Cursor pagination on `/sessions` (O(log N)) | ✅ | [server/src/routes/read.ts](server/src/routes/read.ts) |
 | 2.12 | Streaming NDJSON export (bounded memory on huge orgs) | ✅ | [server/src/routes/auth.ts](server/src/routes/auth.ts) |
 | 2.13 | Session.orgId denormalized + compound indexes | ✅ | [server/prisma/schema.prisma](server/prisma/schema.prisma) |
-| 2.14 | Render + Fly.io + Koyeb deploy manifests keyed off `/readyz` (only Render is in use; the live service is `proofvisor-api`, and `fly.toml` is an unused template) | ✅ | [render.yaml](render.yaml) · [server/fly.toml](server/fly.toml) |
+| 2.14 | Render, Railway, and Koyeb deploy manifests health-check `/healthz`; the Fly.io template checks `/readyz` (only Render is in use; the live service is `proofvisor-api`, and `fly.toml` is an unused template) | ✅ | [render.yaml](render.yaml) · [railway.json](railway.json) · [koyeb.yaml](koyeb.yaml) · [server/fly.toml](server/fly.toml) |
 | 2.15 | Console image validation, main-only GHCR promotion, and deployment by digest | 🟢 | [.github/workflows/deploy.yml](.github/workflows/deploy.yml) · [Validation scope](docs/PRODUCTION-VALIDATION.md#container-security-review) |
 | 2.16 | Runbook covers 7 pre-launch drills | ✅ | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 
@@ -63,7 +63,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented** · **⚠�
 | # | Item | Status | Reference |
 |---|---|---|---|
 | 3.1 | Google SSO (OIDC) | ✅ | [server/src/routes/oauth.ts](server/src/routes/oauth.ts) |
-| 3.2 | Microsoft SSO (OIDC / Entra multi-tenant) | ✅ | [server/src/routes/oauth.ts](server/src/routes/oauth.ts) |
+| 3.2 | Microsoft SSO (OIDC / Entra multi-tenant): implemented; not configured in production (needs an Entra app registration) | 🟢 | [server/src/routes/oauth.ts](server/src/routes/oauth.ts) |
 | 3.2b | **SAML 2.0 SSO** (Okta / Auth0 / Entra / any) — full SP with signed AuthnRequests, XML-signature verify, replay guard, JIT, RelayState round-trip, metadata endpoint, SP keypair regen | ✅ | [server/src/routes/saml.ts](server/src/routes/saml.ts) · [server/src/lib/saml.ts](server/src/lib/saml.ts) · [server/src/lib/saml-cert.ts](server/src/lib/saml-cert.ts) |
 | 3.3 | Password reset via mailer with token expiry | ✅ | [server/src/routes/auth.ts](server/src/routes/auth.ts) |
 | 3.4 | Mailer supports Resend, SMTP, or dev-stub | ✅ | [server/src/lib/mail.ts](server/src/lib/mail.ts) |
@@ -90,7 +90,7 @@ Legend: **✅ verified** · **🟢 configured** · **📋 documented** · **⚠�
 | 4.1 | Terms of Service published | ✅ | [docs/legal/terms.html](docs/legal/terms.html) |
 | 4.2 | Privacy Policy published | ✅ | [docs/legal/privacy.html](docs/legal/privacy.html) |
 | 4.3 | `/.well-known/security.txt` served | ✅ | [.github/workflows/pages.yml](.github/workflows/pages.yml) |
-| 4.4 | Legal linked from footer on public site | 📋 | [docs/app/index.html](docs/app/index.html) |
+| 4.4 | Legal linked from footer on public site | ✅ | [docs/index.html](docs/index.html) |
 
 ## 5. Documentation
 

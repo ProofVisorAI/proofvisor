@@ -15,7 +15,7 @@ against the actual code paths and features enabled in production.
 
 `cargo audit` reported 23 advisories. **1 was a real defect (fixed), 2 remain
 as low-risk operator-configured surface (documented, upstream fix pending),
-and 20 are unreachable given our compiled feature set.**
+and 20 are unreachable given our compiled feature set.**[^1]
 
 ### Fixed in this session
 
@@ -30,7 +30,7 @@ memory, or pooling allocator: **all NOT reachable.** Our `wasmtime` dep is
 declared as `default-features = false, features = ["runtime", "cranelift", "wat"]`
 in the root `Cargo.toml`. Advisories filtered out on this basis:
 
-- RUSTSEC-2026-0086, 0087, 0088, 0089, 0094, 0095 — Winch backend (not compiled)
+- RUSTSEC-2026-0086, 0087, 0089, 0094, 0095 — Winch backend (not compiled)[^1]
 - RUSTSEC-2026-0085, 0091, 0092, 0093 — component model (not compiled)
 - RUSTSEC-2025-0046, 2026-0020, 2026-0021 — WASI implementations (not compiled)
 - RUSTSEC-2025-0118 — shared linear memory (not compiled)
@@ -50,8 +50,9 @@ this containment invariant:
 
 *Resolved after this audit:* the workspace now pins wasmtime 48.x
 (`Cargo.lock`; 48.0.8 since 2026-10-31, which also closes
-RUSTSEC-2026 "panic lowering a host-created component model stream"
-for the 46.0–48.0.6 range), which post-dates every wasmtime 27 advisory
+RUSTSEC-2026-0378, "panic lowering a host-created component model
+stream", for the 46.0–48.0.6 range, and RUSTSEC-2026-0423, cross-engine
+type confusion, for the 47.0–48.0.7 range), which post-dates every wasmtime 27 advisory
 analyzed above; the containment invariants and their pinned regression
 tests are unchanged.
 
@@ -77,7 +78,8 @@ attacker cannot substitute a hostile model.
   once the workspace's `nats`/`kafka` feature declarations are corrected
   (see "Known pre-existing workspace issue" below).
   *Resolved after this audit:* the workspace now pins `async-nats 0.50`
-  with `rustls-webpki 0.103.13` in `Cargo.lock`.
+  with `rustls-webpki` 0.103.16 in `Cargo.lock` (see the 2026-10-31
+  update below).
 
 - ~~**Compression-marker spoofing (design limitation, pv-compress)**~~ —
   the idempotence marker was an unauthenticated literal substring.
@@ -173,11 +175,22 @@ clippy and the loopback provider contracts pass on the new versions.
 | RUSTSEC-2026-0381, 0383 | `webpki-roots` / `webpki-root-certs` 1.0.9 | upgraded to 1.0.11 |
 | RUSTSEC-2026-0386 (unsound `AsyncFd::new`) | `tokio` 1.53.1 | upgraded to 1.54.1 |
 | RUSTSEC-2026-0385 | `ctutils` 0.4.2 (via `curve25519-dalek` 5) | upgraded to 0.4.7 |
-| GitHub advisory for wasmtime 46.0–48.0.6 | `wasmtime` 47.0.4 | upgraded to 48.0.8 (root manifest now `version = "48"`) |
+| RUSTSEC-2026-0378 (affects 46.0–48.0.6) and RUSTSEC-2026-0423 (affects 47.0–48.0.7) | `wasmtime` 47.0.4 | upgraded to 48.0.8 (root manifest now `version = "48"`) |
 | RUSTSEC-2026-0387 (timing variability in `crypto-bigint` 0.5) | `crypto-bigint` 0.5.5 via `jsonwebtoken` → `p256`/`p384` | **Not reachable**, ignored in `deny.toml`: the ECDSA code path is rejected by the identity validator's EdDSA/HS256 whitelist before decoding (same argument as RUSTSEC-2023-0071). The patched 0.7 line needs `elliptic-curve` 0.14, which `jsonwebtoken` 11.1 does not use yet. |
 
 The Node API (`server/`) was updated the same day for its own advisories:
 `fastify` 5.12.7, `undici` 8.12.3, `nodemailer` 10.3.1 and `fast-uri`
 4.2.3 / 3.1.9. The remaining `npm audit` finding (`zod` < 4.6.6, memory
-exhaustion on oversized constrained strings) is being addressed by the
-zod 4 upgrade recorded in the changelog.
+exhaustion on oversized constrained strings) was closed by the upgrade to
+`zod` 4.6.7, which is the version in `server/package-lock.json`.
+
+[^1]: Two notes on the 2026-08-11 counts above, which are kept as
+    recorded. First, RUSTSEC-2026-0088 was listed twice, under the Winch
+    backend and under the pooling allocator; it is a pooling-allocator
+    advisory, so the duplicate under Winch was removed. Second, the totals
+    do not add up from the lists: the one fixed defect was found by manual
+    review and is not a `cargo audit` advisory, and the compression-marker
+    item is a design limitation rather than an advisory. Also,
+    RUSTSEC-2026-0087 is a Cranelift x86-64 advisory, not a Winch one;
+    Cranelift is compiled, and the fix is included in the current
+    wasmtime 48.0.8.

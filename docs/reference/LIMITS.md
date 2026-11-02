@@ -13,7 +13,7 @@ before you know the knob.
 | Provider response bytes captured | 16 MiB (`MAX_PROVIDER_CAPTURE_BYTES`) | `AbortFinalizingStream` | Stream abort + audit chain records truncation |
 | Provider single-field bytes (message/reasoning) | 8 MiB (`MAX_PROVIDER_FIELD_BYTES`) | `absorb_frame` | Stream abort |
 | Tool calls per response | 128 (`MAX_PROVIDER_TOOL_CALLS`) | `absorb_frame` | Stream abort |
-| SSE frame bytes (single event) | 8 MiB | `parse_provider_chunk` | `Err("unterminated provider SSE frame exceeds limit")` |
+| SSE frame bytes (single event) | 8 MiB (`MAX_PROVIDER_FIELD_BYTES`) | `absorb_network_chunk` | `Err("unterminated provider SSE frame exceeds limit")` |
 
 ## Session and identity
 
@@ -35,7 +35,9 @@ tracks absolute per-session quotas — there is NO sliding-window refill
 and NO time-based recovery. A session's quota is consumed as tokens
 land against `compression.tokens_after` and as tools are called; the
 only way a quota drops back down is on explicit refund (upstream
-failure, request cancellation, lost-race compensation).
+failure, request cancellation, lost-race compensation). Console-pushed
+`rate` policies are separate from these budgets: they limit model tokens
+per principal over a sliding window and refuse with 403.
 
 | Axis | Config key | Type |
 | --- | --- | --- |
@@ -45,8 +47,8 @@ failure, request cancellation, lost-race compensation).
 | Total tool calls across the session | `max_total_tool_calls` | `Option<u64>` |
 
 * Both ledgers are checked **after** compression against
-  `compression.tokens_after`. Compression runs at 50k prompt tokens
-  with a floor of 512 tokens.
+  `compression.tokens_after`. Compression engages at 512 approximate
+  tokens; only the middle-stubbing pass waits for 50,000.
 * **Backend counter TTL**: the Redis backend expires every budget
   counter after 24 hours of key inactivity (`counter_ttl_secs()` on
   the `StateStore` trait; logged at startup as
@@ -77,7 +79,7 @@ Configured under `[breaker]`. Defaults:
 | `min_tokens` | 1000 | Below this many consumed tokens the breaker never trips (avoids false positives on short responses). |
 | `window` | 3 | Consecutive low-novelty steps to trip. |
 | `delta_epsilon` | 0.30 | Novelty threshold: a step whose embedding delta is below this counts toward the streak. |
-| `action` | `reject` | On trip: refuse with HTTP 403 (deliberately not 429, which SDKs auto-retry). Alternative: `inject` (corrective system message). |
+| `action` | `reject` | On trip: refuse with HTTP 403 (deliberately not 429, which SDKs auto-retry). Alternatives: `inject` (corrective system message) or `abort` (HTTP 409 with `Connection: close`). |
 
 Tuning these is deployment-specific; the defaults are what round 51's
 tests exercised.
@@ -95,7 +97,7 @@ tests exercised.
 
 | Limit | Default | Notes |
 | --- | --- | --- |
-| Orphan file bytes to read during recovery | 256 MiB (`MAX_ATIF_RECOVERY_BYTES`) | Larger files are refused with `pv_atif_recovery_skipped_total{reason="too_large"}` and left in place for operator inspection. |
+| Orphan file bytes to read during recovery | 64 MiB (`MAX_ATIF_BYTES`) | Files larger than 256 MiB (`MAX_ATIF_RECOVERY_BYTES`) are refused before any read with `pv_atif_recovery_skipped_total{reason="too_large"}`. Files between 64 MiB and 256 MiB fail the capped read and are counted with `reason="read_error"`. Both are left in place for operator inspection. |
 | Orphan age gate | 60s | Files newer than this are skipped this tick (defense against quarantining in-progress closes). |
 | Live-session-stem check | on always | Sidecar-less .json files whose stem matches a currently-open session are skipped even if aged (round 51 §8.5). |
 | Retention max sleep between prunes | 1 hour | Fixed. |
@@ -108,7 +110,7 @@ tests exercised.
 | Kafka payload | 1 MiB per record | Set by broker; the harness never emits records larger than 512 KiB. |
 | Kafka compression | None, gzip, LZ4 or Snappy when reading | The harness writes uncompressed records. Reading a zstd-compressed batch fails with "Unimplemented compression", because the zstd version our Kafka client depends on has open security advisories. Do not set `compression.type=zstd` on ProofVisor topics. |
 | NATS payload | 1 MiB per message | Set by broker. |
-| Embedded Bridge partition file size | 1 GiB per segment | Rolled over automatically. |
+| Embedded Bridge record line | 16 MiB per line | Lines longer than this are refused when a segment is read back. Each partition is one JSONL segment file (`p<N>.jsonl`); retention rewrites it in place rather than rolling over to new files. |
 
 ## HTTP and TLS
 
@@ -117,7 +119,7 @@ tests exercised.
 | Concurrent HTTP/2 streams (server-side) | 128 | Hyper default. |
 | Concurrent HTTP/2 streams (upstream) | 100 | Hyper default. |
 | Client request read timeout | none | Rely on upstream to terminate stuck streams. |
-| Upstream request read timeout | `upstream_read_timeout_s` | Unset = 60 s default; raise it (and the shutdown grace budgets) for longer streams. |
+| Upstream request read timeout | `upstream_read_timeout_s` | Unset = 60 s default. It is a read-idle timeout: every successful read restarts it, so it does not cap total stream length. Raise it only for upstreams that can stay silent for longer than the timeout. |
 
 ## Cryptography
 
@@ -125,7 +127,7 @@ tests exercised.
 | --- | --- |
 | Signature scheme | Ed25519 (RFC 8032) |
 | Verification | `verify_strict` — refuses low/mixed-order keys and non-canonical `s` scalars |
-| Weak-seed refusal | `[0u8;32]` and `[0xffu8;32]` refused at seed load AND at `Keyring::add_key_bytes` (round 51 §3.1 H1) |
+| Weak-key refusal | All-zero and all-0xFF seeds (`[0u8;32]`, `[0xffu8;32]`) are refused at seed load (round 51 §3.1 H1); `Keyring::add_key_bytes` refuses small-order (weak) public keys |
 | Canonicalization | RFC 8785 JCS |
 | Hash for `key_id` | SHA-256, 128-bit truncation (first 32 hex chars) |
 | Hash for spool stems | SHA-256, 128-bit truncation (16 bytes → 32 hex chars) |

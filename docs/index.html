@@ -59,7 +59,7 @@
         <a class="cta" href="verify/">Verify a receipt</a>
       </p>
       <p class="hero-meta">
-        v0.1.0&#8209;rc.5 (pre&#8209;release) &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
+        v0.1.0&#8209;rc.8 (pre&#8209;release) &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
       </p>
     </div>
   </header>
@@ -81,12 +81,13 @@
           <p class="muted">
             Works the same way for Ollama, LM&nbsp;Studio, Azure OpenAI,
             vLLM, LiteLLM, and anything else that speaks the OpenAI
-            <code>chat/completions</code> wire format. Requests are
-            forwarded unchanged; the <code>provider</code> setting
-            (<code>openai</code>, <code>anthropic</code>, or
-            <code>gemini</code>) only selects how the upstream response
-            frames are parsed. The Anthropic and Gemini presets point at
-            those vendors&rsquo; OpenAI-compatible endpoints.
+            <code>chat/completions</code> wire format. Requests to those
+            servers are forwarded unchanged. With the <code>provider</code>
+            setting <code>anthropic</code> or <code>gemini</code>, ProofVisor
+            converts each request into that vendor&rsquo;s own API format
+            and converts the answer back into the OpenAI format. These two
+            adapters have so far been tested only against local stand-ins,
+            not against the real vendor APIs.
           </p>
         </div>
         <div>
@@ -134,7 +135,9 @@
               it only knows the sample and demo keys. For a real deployment
               it reports &ldquo;internally consistent, trust anchor not
               verified&rdquo; until you compare the key fingerprint with the
-              deployment page in the console.
+              deployment page in the console. A verify link shared from the
+              console also checks the key the console pinned for that
+              deployment.
             </p>
           </div>
           <div class="feature-visual">
@@ -462,7 +465,7 @@ data/bridge/
             </p>
           </div>
           <div>
-            <h3>Actually audited</h3>
+            <h3>Tested and dependency-checked</h3>
             <p>
               Every fix is regression-tested. The full suite runs on
               every code push; supply-chain policy is enforced by
@@ -485,7 +488,7 @@ data/bridge/
           <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY.md">Security model</a>. Trust boundaries and threat model.</li>
           <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/docs/reference/VERIFYING-A-RECEIPT.md">Verifying a receipt</a>. Verifying a receipt from scratch.</li>
           <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/CONFORMANCE-STATUS.md">Conformance status</a>. The compliance / MVP verdict record.</li>
-          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/BENCHMARKS.md">Benchmarks</a>. Hot-path latency and 10&#x00A0;000-connection SLA.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/BENCHMARKS.md">Benchmarks</a>. Hot-path latency and a 10&#x00A0;000-connection load test.</li>
           <li><a href="https://github.com/ProofVisorAI/proofvisor/releases">Releases</a>. Pre-built binaries with SHA-256 checksums.</li>
           <li><a href="api/">API documentation</a>. Rust crate reference. Skip unless you&rsquo;re embedding ProofVisor as a library.</li>
         </ul>

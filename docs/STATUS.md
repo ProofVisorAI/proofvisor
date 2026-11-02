@@ -1,11 +1,12 @@
 # ProofVisor status
 
-Real-time SLO tracker. Curated by the on-call.
+Service status and SLO targets, edited by hand. Nothing on this page is
+updated automatically.
 
 ## Current status
 
 **Demo surfaces operational · hosted API live (demo-scale)** — last
-verified: 2026-10-30.
+verified: 2026-11-01.
 
 - **Console** (`proofvisor.com/app/`) — nominal (mock mode by
   default: the full product experience against built-in fixtures;
@@ -14,23 +15,27 @@ verified: 2026-10-30.
 - **Site + verifier** (`proofvisor.com`, `/verify/`) — nominal. Both
   are GitHub Pages, served from the snapshot repository
   `ProofVisorAI/proofvisorai.github.io` with `proofvisor.com` as the
-  custom domain. DNS for `proofvisor.com` is being pointed at GitHub
-  Pages (A records 185.199.108–111.153; `www` CNAME to
-  `proofvisorai.github.io`).
+  custom domain. DNS for `proofvisor.com` points at GitHub Pages
+  (A records 185.199.108–111.153; `www` CNAME to
+  `proofvisorai.github.io`), and HTTPS is enforced.
 - **Installer + public repo** (`proofvisor.com/install.sh`,
   `github.com/ProofVisorAI/proofvisor`) — nominal, exercised nightly
   by the `public-consumer` workflow
 - **Hosted API** — **live** on the free-tier stack from
   `server/DEPLOY.md`: a Render web service named `proofvisor-api` (created as `agentvisor-api`)
-  (Ohio, Docker image from `server/Dockerfile`), reachable today at
-  `https://agentvisor-api.onrender.com`, plus Neon Postgres
+  (Ohio, Docker image from `server/Dockerfile`), reachable at
+  `https://api.proofvisor.com`, plus Neon Postgres
   (us-east-2, direct/unpooled URL so the LISTEN/NOTIFY bus works) and
-  the Resend mailer (no verified domain yet — delivery restricted to
-  the operator address until DNS records are added). The custom
+  the Resend mailer (domain `proofvisor.com` verified; sender
+  `ProofVisor <no-reply@proofvisor.com>`). The custom
   domain `api.proofvisor.com` is **live** (CNAME to
   `agentvisor-api.onrender.com`, certificate issued by Render, set up
-  2026-11-01; `api.agentvisorai.me` still answers). Auto-Deploy is off:
-  deploy with Manual Deploy in the Render dashboard. Nothing runs on Fly.io;
+  2026-11-01; `api.agentvisorai.me` and the Render hostname
+  `https://agentvisor-api.onrender.com` still answer). Auto-Deploy
+  is on and set to "After CI Checks Pass" (since 2026-11-01): a merge to
+  `main` deploys once that commit's GitHub checks are green. Manual Deploy
+  in the Render dashboard is still available, but note that it, and saving
+  environment variables, deploy the latest commit without waiting for CI. Nothing runs on Fly.io;
   `server/fly.toml` and the `deploy-fly` workflow job are unused. A
   `keepalive.yml` cron pings `/healthz` every 10 min to avoid
   free-tier spin-down. The SLO table below is still the launch
@@ -66,8 +71,10 @@ _(new deployments log incidents here — one row per incident)_
 
 ## Uptime monitoring
 
-The pitch demo uses a single external prober checking `/healthz` every
-60 s. Recommended free-tier providers:
+No external uptime monitor is attached yet. The only scheduled check is
+`keepalive.yml`, which requests `/healthz` every 10 minutes to keep the
+free instance awake; it does not record availability. Recommended
+free-tier providers:
 
 - [BetterStack](https://betterstack.com/uptime) — free 10 monitors, 3 min
   cadence, email + Slack alerts.
@@ -76,12 +83,12 @@ The pitch demo uses a single external prober checking `/healthz` every
 - [UptimeRobot](https://uptimerobot.com) — free 50 monitors, 5 min
   cadence.
 
-Point the monitor at the Render hostname today, and switch to the
-custom domain once its CNAME resolves:
+Point the monitor at the custom domain. The Render hostname also answers
+and can serve as a second check:
 
 ```
-https://agentvisor-api.onrender.com/healthz   # live now
-https://api.proofvisor.com/healthz            # once DNS resolves
+https://api.proofvisor.com/healthz
+https://agentvisor-api.onrender.com/healthz   # Render hostname
 ```
 
 Expect a 200 with `{"ok":true,"version":"…"}`. Also monitor the static
@@ -93,5 +100,6 @@ For deeper checks, prod-mode healthchecks should hit `/readyz` too — a
 
 ## Contact
 
-Incidents: post in-repo issues tagged `incident:` or email
-security@proofvisor.com for anything sensitive.
+Incidents: post in-repo issues tagged `incident:`. For anything
+sensitive, open a private security advisory at
+https://github.com/ProofVisorAI/proofvisor/security/advisories/new .

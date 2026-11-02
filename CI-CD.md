@@ -28,11 +28,14 @@ how updates land, how backups escape any single provider.
      │ image + evidence   │                       │ API is on Render)  │
      └────────────────────┘                       └────────────────────┘
 
-Nightly (04:17 UTC)         Weekly (Mon 06:00 UTC)
- backup.yml                  Dependabot
- pg_dump → verified encryption → artifact          npm / cargo / actions / docker
- 30-day retention            → patch auto-merge, minor+ needs review
+Nightly (04:17 UTC)
+ backup.yml
+ pg_dump → verified encryption → artifact
+ 30-day retention
 ```
+
+`deploy.yml` runs only when the paths listed in the workflow change, or when
+someone starts it manually.
 
 ## The workflows in detail
 
@@ -42,10 +45,16 @@ Nightly (04:17 UTC)         Weekly (Mon 06:00 UTC)
 | `.github/workflows/console-api.yml` | push to main, all PRs | Console syntax and TypeScript checks, API and browser tests, two-instance recovery, daemon crash synchronization, container runtime checks, and encrypted backup/restore tests |
 | `.github/workflows/deploy.yml` | main pushes and PRs matching console/release-tool paths; manual runs | Build local OCI archives, test and scan each platform, promote verified bytes on main, then optionally deploy the exact digest to Fly (this last job is unused: `FLY_API_TOKEN` is not set and the live API runs on Render) |
 | `.github/workflows/pages.yml` | main pushes matching its source/docs path filters; manual runs | Rustdoc and the docs SPA to GitHub Pages |
-| `.github/workflows/deny.yml` | push to main, all PRs | cargo-deny advisory, license, and duplicate checks |
-| `.github/workflows/publish-crates.yml` | tag `pv-*-vX.Y.Z` | Publish crates to crates.io |
-| `.github/workflows/release.yml` | tag `vX.Y.Z` | Build release binaries and a GitHub release |
-| `.github/workflows/dependabot-automerge.yml` | Dependabot PRs | Approve and enable auto-merge for eligible dependency updates after required checks pass |
+| `.github/workflows/deny.yml` | main pushes and PRs that change `Cargo.toml`, `crates/*/Cargo.toml`, `Cargo.lock`, `deny.toml`, or the workflow; weekly on Monday at 07:00 UTC | cargo-deny advisory, license, and duplicate checks |
+| `.github/workflows/publish-crates.yml` | tag `vX.Y.Z` or `vX.Y.Z-*`; manual runs (dry run by default) | Publish crates to crates.io. A pre-release tag runs `cargo publish --dry-run` only. Nothing has been published to crates.io yet |
+| `.github/workflows/release.yml` | tag `vX.Y.Z` or `vX.Y.Z-*` | Build release binaries and a GitHub release |
+| `.github/workflows/release-pin-bump.yml` | a published GitHub release; manual runs | Update the version pinned in `docs/install.sh` on main, then start the Pages deployment |
+| `.github/workflows/api-drills.yml` | main pushes and PRs that change `server/**` or the workflow; manual runs | Run the database-backed API drill battery (`server/scripts/run-drill-battery.sh`) |
+| `.github/workflows/console-smoke.yml` | after each completed Docs (Pages) run on main; daily at 06:00 UTC; manual runs | Run browser drills against the deployed site and console |
+| `.github/workflows/public-consumer.yml` | daily at 07:30 UTC; manual runs | Run the installer and the public README steps as an outside user would, across operating systems and containers |
+| `.github/workflows/publish-tool.yml` | manual runs only | Push a snapshot of the public Rust runtime and CLI to a separate public repository |
+| `.github/workflows/keepalive.yml` | every 10 minutes; manual runs | Request `https://api.proofvisor.com/healthz` so the free Render instance does not sleep |
+| `.github/workflows/dependabot-automerge.yml` | Dependabot PRs | Approve and enable auto-merge for eligible dependency updates after required checks pass. Dependabot version updates are turned off (see [Continuous updates](#continuous-updates)), so this workflow currently has nothing to act on |
 | `.github/workflows/backup.yml` | daily 04:17 UTC; manual runs | Verify and encrypt a PostgreSQL dump, then upload the ciphertext with 30-day retention |
 
 Third-party GitHub Actions are pinned by commit SHA. This does not imply
@@ -137,10 +146,12 @@ reproducible builds or an independently certified SLSA level.
 
 The live hosted API runs on Render as the web service `proofvisor-api`
 (`https://api.proofvisor.com`, a custom domain on that service). Render
-builds from `server/Dockerfile` itself, but Auto-Deploy is off for this
-service, so a merge to `main` does not deploy until someone runs Manual
-Deploy in the Render dashboard; the promoted GHCR digest is not what it
-runs today. The
+builds from `server/Dockerfile` itself, so the promoted GHCR digest is not
+what it runs today. Auto-Deploy is on and set to "After CI Checks Pass"
+(since 2026-11-01): a merge to `main` deploys once that commit's GitHub
+checks are green. Manual Deploy in the Render dashboard is still available,
+but note that it, and saving environment variables, deploy the latest commit
+without waiting for CI. The
 workflow's optional Fly.io deployment job is unused because nothing runs on
 Fly.io. Other container hosts can use the same OCI image. Configure the
 database, HTTPS origins, mailer, application secrets, and host networking
@@ -217,24 +228,19 @@ run on a non-main branch also cannot publish or deploy.
 
 ## Continuous updates
 
-Dependabot runs Mondays at 06:00 UTC. Ecosystems:
+Dependabot version updates are turned off. Commit b252ded5 (2026-09-25)
+removed `.github/dependabot.yml` because Dependabot kept recreating pull
+requests that could not merge. Dependency updates are now a manual task.
+To restore automatic updates, recover the file from git history:
 
-| Ecosystem | Directory | Grouping | Auto-merge |
-|---|---|---|---|
-| cargo | `/` | Minor+patch grouped, security individual | Patch only |
-| npm | `/server` | Minor+patch grouped, security individual | Patch only |
-| github-actions | `/` | Ungrouped | Patch + minor (SHA-pinned) |
-| docker | `/docker` | Ungrouped | Patch + minor (SHA-pinned) |
-| docker | `/server` | Ungrouped | Patch + minor (SHA-pinned) |
+```bash
+git show b252ded5~1:.github/dependabot.yml > .github/dependabot.yml
+```
 
-Auto-merge policy lives in `dependabot-automerge.yml`. The bot approves
-+ enables auto-merge; GitHub actually merges only after every required
-status check goes green. A regression in the update still blocks the
-merge.
-
-Security advisories (CVEs) bypass the weekly grouping and land as
-individual PRs, so a critical fix isn't stuck behind an unrelated minor
-bump.
+The auto-merge policy still lives in `dependabot-automerge.yml`. When
+Dependabot pull requests exist, the bot approves them and enables
+auto-merge; GitHub merges only after every required status check passes.
+Without the configuration file, the workflow has nothing to act on.
 
 ## Backups (off-provider escape hatch)
 
@@ -254,10 +260,10 @@ See [the recovery runbook](docs/RUNBOOK.md) for restoring a scheduled artifact i
 ## Supply-chain hardening summary
 
 - All third-party actions pinned by full commit SHA.
-- Every workflow has a top-level `permissions:` block; jobs opt in.
+- Every workflow except `api-drills.yml` has a top-level `permissions:` block; jobs opt in. `api-drills.yml` has none, so it runs with the repository's default token permissions.
 - Public-repository builds use OIDC (`id-token: write`) for signed attestations. Registry publication uses the job's GitHub token.
 - Trivy retains a complete vulnerability report, including unfixed findings. Both platforms must pass the fixable HIGH/CRITICAL policy before the promotion job can publish anything; scanner errors and artifact mismatches fail closed. Unfixed findings require release review.
-- cargo-deny gates every PR against a curated advisory + license list.
+- cargo-deny checks every PR that changes a Cargo manifest, `Cargo.lock`, or `deny.toml` against a curated advisory + license list, and runs weekly on main.
 - `.well-known/security.txt` served from both the SPA and the API.
 
 ## Costs and limits

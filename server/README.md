@@ -51,7 +51,7 @@ window.MOCK_MODE = false;
 window.API_BASE = "http://localhost:8080"; // bare origin — paths already carry /api/v1
 ```
 
-Two footguns (both caught by CI's Browser E2E job, which makes these
+Three footguns (all caught by CI's Browser E2E job, which makes these
 exact edits before driving the SPA in headless Chromium):
 
 - `API_BASE` is the **origin only**. The datasource calls
@@ -153,9 +153,9 @@ All routes are prefixed `/api/v1`.
 | `GET`/`POST` | `/deployments` | Token returned **once** on create. Each row carries `sessions24h` and `spend24hUsdMicros` (the spend is `null` for members), `isDemo`, and `policyBundle: {etag, appliedAt, daemonVersion, stale, applied, unsupported}` (or `null` before the daemon first reports) |
 | `PATCH`/`DELETE` | `/deployments/:id` (+ `POST /:id/rotate-token`) | Rename/env edit (labels only), delete (409 if sealed receipts unless forced), rotate |
 | `GET`/`POST`/`PATCH`/`DELETE` | `/keys[/:id]` | API keys: list / mint (shown once) / rename / revoke — rank-guarded. `POST` accepts `role` (`owner`, `admin`, or `member`; default `admin`; never above the caller's own role, else 403 `cannot_grant_role_above_own`). The console sends the role chosen in its create dialog |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/policies[/:id]` | Policy CRUD (name/kind/scope/description/body/enabled). For the daemon-enforceable kinds (`budget`, `allowlist`, `rate`, `schema`) the body must be a JSON spec of that kind's shape (see `src/lib/policy-bundle.ts`); an invalid spec is refused with 400 `invalid_input` and a `specError` explanation. A `schema` spec may only reference its own contents (`$ref` values starting with `#`) and the standard draft meta-schemas, because daemons never fetch URLs or files named in a pushed schema. `guardrail` and `transform` bodies are free text that documents a rule and attributes the daemon's own guard hits. Reads add `enforceable`, the parsed `spec`, and `enforcement: {deployments, applied, stale, unsupported}`, which counts daemons against the org's current policy bundle. Members may read but not write |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/policies[/:id]` | Policy CRUD (name/kind/scope/description/body/enabled). For the daemon-enforceable kinds (`budget`, `allowlist`, `rate`, `schema`) the body must be a JSON spec of that kind's shape (see `src/lib/policy-bundle.ts`); an invalid spec is refused with 400 `invalid_input` and a `specError` explanation. A `schema` spec may only reference its own contents (`$ref` values starting with `#`) and the standard draft meta-schemas, because daemons never fetch URLs or files named in a pushed schema. A `guardrail` or `transform` policy whose body is a JSON spec (see the "Guardrail policies" and "Transform policies" sections of `docs/reference/OPERATIONS.md`) is pushed to daemons and enforced; a free-text body only documents a rule and attributes the daemon's own guard hits. Reads add `enforceable`, the parsed `spec`, and `enforcement: {deployments, applied, stale, unsupported}`, which counts daemons against the org's current policy bundle. Members may read but not write |
 | `GET`/`POST`/`DELETE` | `/demo`, `/demo/attack` | Live-mode "Simulate an attack" (owner/admin): `POST /demo/attack {pace: "staged"\|"instant"}` stages a blocked-payment session under a `demo-attack` deployment flagged `isDemo`, sealed with a receipt signed by the public demo key; `GET /demo` reports whether demo rows exist; `DELETE /demo` removes them. Demo deployments are never counted as daemons, and a real deployment named `demo-attack` makes the attack answer 409 |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/webhooks[/:id]` (+ `POST /:id/test`, `GET /:id/deliveries`) | Endpoints (SSRF-guarded), HMAC-signed deliveries with retries, cursor-paginated delivery log. Emitted events: `test`; `member.invited`; `policy.block` (every ingest batch that contains a blocked tool call); `session.blocked` (once per session, on its first blocked tool call or on a `status: "blocked"` upsert, with a `reason` of `first_blocked_event` or `status_blocked`); `apikey.created` (carries the key's display hint and role only, never the plaintext). Each delivery carries `X-ProofVisor-Event`, `-Delivery`, `-Timestamp` and `-Signature` (`sha256=<HMAC>`), and the same four values under the older `X-AgentVisor-*` names, so receivers set up before the rename keep verifying; those duplicates are deprecated |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/webhooks[/:id]` (+ `POST /:id/test`, `GET /:id/deliveries`, `POST /:id/redeliver/:deliveryId` to retry one delivery immediately, `POST /:id/rotate-secret`) | Endpoints (SSRF-guarded), HMAC-signed deliveries with retries, cursor-paginated delivery log. Emitted events: `test`; `member.invited`; `policy.block` (every ingest batch that contains a blocked tool call); `session.blocked` (once per session, on its first blocked tool call or on a `status: "blocked"` upsert, with a `reason` of `first_blocked_event` or `status_blocked`); `apikey.created` (carries the key's display hint and role only, never the plaintext). Each delivery carries `X-ProofVisor-Event`, `-Delivery`, `-Timestamp` and `-Signature` (`sha256=<HMAC>`), and the same four values under the older `X-AgentVisor-*` names, so receivers set up before the rename keep verifying; those duplicates are deprecated |
 
 ### Ingest (daemon → API)
 
@@ -294,9 +294,12 @@ prod target) wired into CI:
 
 - **`npm test`** — the `node:test` unit and recovery suites under
   `ci/*.test.mjs` (startup env guard, container entrypoint, bus and
-  datasource recovery, multi-instance, external auth). No database or
-  running server is needed. On 2026-10-30 this was 66 tests across
-  8 files, all passing.
+  datasource recovery, multi-instance, external auth, billing, SCIM).
+  There are 15 test files. Six of them (`billing`, `identity-hardening`,
+  `ingest-auth`, `metrics-exposure`, `rename-compat`, `scim`) start an API
+  process and need a PostgreSQL database at `DATABASE_URL`, which defaults
+  to the local docker-compose database (see `ci/helpers/api-process.mjs`).
+  The others need no database or running server.
 - **`ci/e2e.mjs`** — API contract suite (141 checks as of 2026-10-31).
   Boot the server, then `API_BASE=http://127.0.0.1:<port> node ci/e2e.mjs`.
   Runs in the Console + API workflow.

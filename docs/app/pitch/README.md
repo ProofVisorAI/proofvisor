@@ -1,15 +1,16 @@
 # Product console (client-side simulation)
 
-A self-contained, clickable version of the ProofVisor console, presented
-exactly as the shipped product: setup wizard, one-line integration, a live
+A self-contained, clickable simulation of the product's main steps: setup
+wizard (the real wizard runs in the terminal as `pvctl setup`), one-line
+integration, a live
 session (including an $8,400 prompt-injection payout refused at the door), the
 fleet overview, signed-receipt verification, and the evidence layout on disk.
 
 It is a client-side simulation with representative data — there is no backend
 and no network call; it works offline from a `file://` URL. Numbers, sessions,
-and signatures shown are illustrative, but the behavior mirrors the real Rust
-implementation 1:1 (receipt fields, 403 policy refusals, loop breaker, spool
-layout).
+and signatures shown are illustrative. The receipt fields, 403 policy
+refusals, loop breaker and spool layout follow the real Rust implementation,
+but the page is not a complete copy of the product.
 
 - **Published at:** <https://proofvisor.com/app/pitch/> (deployed by
   `.github/workflows/pages.yml` together with the landing page).

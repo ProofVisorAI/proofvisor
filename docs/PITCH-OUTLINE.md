@@ -42,17 +42,17 @@ touches (LLM + tools):
 
 1. **Gates in the request path** — identity, size, budgets
    (tokens, per-tool calls, **payout caps in USD**), JSON tool
-   schemas, custom WASM policies, loop breaker. Fail-closed. (No
-   per-caller rate limiting in the daemon today; put that at your
-   ingress.)
+   schemas, custom WASM policies, loop breaker. Fail-closed.
+   Per-principal token rate limits are enforced through "rate"
+   policies pushed from the console.
 2. **Signed receipts** — every session on the signed workflow (the
    default in every shipped config) seals with an Ed25519 receipt
    (counts, cost, event-chain head). Verifiable **offline** against
    the deployment's public key.
 3. **One-line adoption** — OpenAI-compatible proxy + MCP; change the
-   base URL, done. Hosted console for the team: sessions, policy
-   definitions (daemons still enforce local files; no push yet),
-   audit trail, SSO/MFA.
+   base URL, done. Hosted console for the team: sessions, policies
+   (pushed to daemons and enforced; free-text guardrails are
+   documentation only), audit trail, SSO/MFA.
 
 ## 4. Demo (1:10–2:30) — see DEMO-SCENARIO.md
 
@@ -84,8 +84,8 @@ signed receipt → verified in the hosted console. Offline-safe.
   The security/enterprise surface (SAML/OIDC SSO, passkey MFA, roles,
   audit export) is implemented; SSO has been tested with fixtures,
   not yet against a customer identity provider. Billing is a free
-  preview: Team/Enterprise plans are not purchasable, and there is no
-  SCIM.
+  preview: Team/Enterprise plans are not purchasable. SCIM
+  provisioning is built in.
 - Ask: **[design partners running agents that move money / seed
   conversation — pick per audience]**.
 
@@ -101,8 +101,8 @@ signed receipt → verified in the hosted console. Offline-safe.
 | Receipts — blockchain? | No. Ed25519 signatures over a canonical event-chain frame; verify offline with the public key. Auditors get math, not consensus. |
 | Multi-tenant / team story? | Orgs, roles with rank guards, SAML + passkey MFA (incl. admin recovery), IP allowlists, retention windows, full audit trail with export. |
 | Data privacy? | Self-hosted daemon: prompts stay in your infra; console gets metadata + what you choose to sync. GDPR export and delete are self-serve in Settings: both ask for your password again, and delete also asks you to type a confirmation phrase. |
-| Policy management at fleet scale? | Console manages policy definitions today; daemons enforce local files — fleet auto-sync is on the roadmap and the UI says so honestly. |
-| What breaks if OpenAI changes the API? | We speak the wire shape, tested against provider adapters; local Ollama works too (demo runs with zero network). |
+| Policy management at fleet scale? | Policies written in the console are pushed to every daemon that pulls them, and each policy shows how many daemons enforce it. A guardrail or transform written as free text is documentation only, and the UI says so. |
+| What breaks if OpenAI changes the API? | We speak the wire shape, tested against provider adapters (the Anthropic and Gemini adapters only against local stand-ins so far, not the real vendor APIs); local Ollama works too (demo runs with zero network). |
 
 ## Workshop questions to resolve tomorrow (owner: Zach)
 

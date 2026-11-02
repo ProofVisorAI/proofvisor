@@ -8,7 +8,7 @@ ProofVisor treats request bodies, JWTs, MCP arguments, upstream responses, manif
 
 - NHI JWT verification binds algorithms to key types and rejects `alg=none`, confusion attacks, future timestamps, expired tokens, TTLs above 15 minutes, unknown keys, scope escalation, and delegation depth above four.
 - Corporate Ed25519 JWKS keys load at boot and refresh periodically. The last valid set remains available during endpoint failures; a successful refresh retires keys no longer advertised by the IdP.
-- MCP calls pass parse, JSON Schema, WASM policy, and atomic budget gates. Any failure blocks the call. (The `pv-sandbox` crate also contains a native allow/deny tool-list type, but the daemon does not wire it; only JSON Schema and WASM policies are enforced.)
+- MCP calls pass parse, JSON Schema, WASM policy, console-pushed allowlist, schema and guardrail rules, and atomic budget gates. Any failure blocks the call. Pushed transform rules can rewrite tool arguments before the verdict, and pushed guardrails can also refuse chat requests and model responses. (The `pv-sandbox` crate also contains a native allow/deny tool-list type, `NativePolicy`, which the daemon does not use; pushed allowlists are enforced through `pv_sandbox::pushed` instead.)
 - Multi-dimensional action budgets commit through one in-memory transaction or one Redis Lua script.
 - WASM policies have fuel and memory limits and fail closed on traps or ABI errors.
 - Receipt signatures cover RFC 8785 canonical JSON. `pvctl receipt-verify` requires an independently trusted public key; embedded receipt keys are not trust anchors.
@@ -38,4 +38,4 @@ ProofVisor treats request bodies, JWTs, MCP arguments, upstream responses, manif
 
 ## Reporting
 
-Report vulnerabilities privately to the repository maintainers. Include a minimal reproduction, affected version, impact, and suggested mitigation. Do not include production credentials or customer data.
+Report vulnerabilities privately to the repository maintainers through GitHub's private advisory form: <https://github.com/ProofVisorAI/proofvisor/security/advisories/new>. Do not open a public issue. Include a minimal reproduction, affected version, impact, and suggested mitigation. Do not include production credentials or customer data.

@@ -68,7 +68,11 @@ Prebuilt static binaries cover Linux (x86_64/aarch64, any libc) and
 macOS (both architectures); other Unix targets build from source —
 the verified matrix, including 32-bit ARM, riscv64, ppc64le and
 big-endian s390x, is in [docs/PLATFORMS.md](docs/PLATFORMS.md).
-Windows runs via WSL.
+Native Windows x64 is a Tier 2 platform: each release includes a
+Windows zip, and CI builds, tests and starts the daemon on Windows, but
+it has not run on customer hardware. The installer, the systemd unit
+and the containers are Unix-only; use WSL for those. See
+[docs/PLATFORMS.md](docs/PLATFORMS.md#windows).
 
 Or install straight from this repository (same thing the script runs):
 
@@ -88,8 +92,9 @@ pvctl
 
 > Plain `cargo install pv-harness pv-cli` (crates.io, no `--git`)
 > does not work yet: the crates are not published to crates.io. The
-> latest GitHub release is the `v0.1.0-rc.5` pre-release, which is the
-> version the installer pins; there is no final `v0.1.0` release yet.
+> latest GitHub release is the `v0.1.0-rc.8` pre-release (2026-11-01),
+> which is the version the installer pins; there is no final `v0.1.0`
+> release yet.
 > Use the `--git` lines above or [Install from source](#install-from-source).
 
 Bare `pvctl` launches a guided setup: pick your AI provider from a
@@ -240,6 +245,9 @@ uncomment `ignore_client_authorization` — before sending traffic.
 - `GET /.well-known/jwks.json`: public key that verifies exchanged tokens
   and intent tokens.
 - `GET /health`: liveness.
+- `GET /livez`: liveness for Kubernetes-style probes (always 200).
+- `GET /readyz`: readiness (503 while the daemon is draining or while the
+  ATIF spool is not writable).
 - `GET /metrics`: Prometheus text exposition.
 - `GET /dashboard`: read-only operator dashboard (HTML). Disable via
   `dashboard_enabled = false` in the harness config.
@@ -327,7 +335,7 @@ single-instance:
 | Subsystem | Single-instance default | Multi-instance requirement |
 | --- | --- | --- |
 | Signer seed | file on disk | same seed mounted at each replica (or a rotation you accept per replica) |
-| State store (session and principal budgets; the daemon has no per-caller rate limiter) | `state_backend = "memory"` | `state_backend = "redis"` with `state_endpoint = "redis://..."` and identical `PV_STATE_ENDPOINT` at each replica |
+| State store (session and principal budgets; console-pushed `rate` policies are counted in each replica's own memory, not in this store, so with N replicas a caller can receive up to N times the rate limit) | `state_backend = "memory"` | `state_backend = "redis"` with `state_endpoint = "redis://..."` and identical `PV_STATE_ENDPOINT` at each replica |
 | Bridge (event bus) | `bridge_backend = "embedded"` (per-pod data-dir) | `bridge_backend = "kafka"` or `"nats"` with shared endpoints |
 | ATIF spool | pod-local `atif_spool_dir` (enforced: the daemon holds an exclusive lock on `.proofvisord.lock` in the spool and a second instance refuses to boot) | one replica per spool volume — sharing a spool is refused at startup because the reconciler's per-file lifecycle lock is process-local and two replicas would race on close |
 | Session registry | in-memory only | client stickiness (LB session affinity on `X-PV-Session`) OR accept that a session's audit chain lives on one pod for its lifetime and doesn't survive that pod's eviction |

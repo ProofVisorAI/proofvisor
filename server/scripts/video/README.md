@@ -1,7 +1,8 @@
 # Investor mockup video pipeline
 
-Reproducible 43-second walkthrough of the ProofVisor console for the
-pitch. Renders against the live site at https://proofvisor.com so it
+Reproducible walkthrough of the ProofVisor console for the pitch, about
+29 seconds long (the five-scene v21 cut; the published copy is
+`docs/pitch/pitch.mp4`). Renders against the live site at https://proofvisor.com so it
 always reflects what an investor visiting the URL would see.
 
 ## Requirements
@@ -28,10 +29,18 @@ bash scripts/video/compose-teaser.sh    # ~30s, writes /tmp/video-v4/proofvisor-
 
 Result:
 
-* `proofvisor-mockup-v21-distilled.mp4` — 44.7s @ 1920×1080 H.264, narration + subtle whoosh. **Definitive pitch cut.**
+* `proofvisor-mockup-v21-distilled.mp4` — about 29 s @ 1920×1080 H.264, narration + subtle whoosh. **Definitive pitch cut.** (The audio file names still carry the old "44s" length.)
 * `proofvisor-mockup-v9-audio.mp4` — same visuals, subtle whoosh only (social autoplay).
 * `proofvisor-mockup-v4.mp4` — same visuals, silent (safe fallback).
 * `proofvisor-mockup-teaser.mp4` — 12s social cut.
+
+## The full novice tour
+
+The longer film on the pitch page (`docs/pitch/tour.mp4`, about 127 s)
+comes from the scripts in `tour/`: `record-tour.mjs` records the scenes
+to `/tmp/video-tour/scenes/`, the three `build-*-tour.sh` scripts write
+the audio to `/tmp/video-tour/audio/`, and `compose-tour.sh` stitches
+the scenes with captions into `/tmp/video-tour/proofvisor-mockup-v20-tour.mp4`.
 
 ## Uploading to GitHub for a shareable URL
 

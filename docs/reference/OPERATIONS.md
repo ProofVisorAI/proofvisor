@@ -164,8 +164,7 @@ pvctl console-sync --spool-dir /var/lib/proofvisor/spool/atif \
 ```
 
 The console URL is the API's bare origin (`https://api.proofvisor.com`
-for the hosted console once its DNS resolves; a self-hosted API's origin
-otherwise). `pvctl` appends `/api/v1/ingest` itself, so do not include a
+for the hosted console; a self-hosted API's origin otherwise). `pvctl` appends `/api/v1/ingest` itself, so do not include a
 path. The console's deployment page prints these three values ready to
 paste, together with `pvctl console-sync --watch`.
 
@@ -447,7 +446,8 @@ interaction.
 
 You need **three** things to reconstruct evidence for an audit:
 
-1. The signer seed file (`signer.seed`) — filesystem, offline, GPG.
+1. The signer seed file (default `config/signing.seed`, or the path in
+   `PV_SIGNING_SEED_FILE`) — filesystem, offline, GPG.
 2. The spool dir (`atif_spool_dir`) — all `.atif-auth` sidecars
    must be preserved; the corresponding `.json` trajectories are
    recoverable from the broker if lost.
@@ -455,9 +455,11 @@ You need **three** things to reconstruct evidence for an audit:
    embedded Bridge's data-dir or the external broker's log
    retention.
 
-Losing (1) permanently invalidates every past receipt: they still
-verify against the historical public key, but you can no longer
-prove that key was yours. Losing (2) sacrifices operational
+Losing (1) does not break past receipts: they still verify against
+the published public key. You can no longer sign with that key,
+however, and the spool's journals and `.atif-auth` sidecars can no
+longer be authenticated, because their HMAC key is derived from the
+seed. Losing (2) sacrifices operational
 forensics but does NOT compromise the cryptographic chain. Losing
 (3) means downstream consumers depend on the harness's live disk
 copy — restore quickly.

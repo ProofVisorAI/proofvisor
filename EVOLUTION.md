@@ -14,13 +14,13 @@ Breaking wire-format changes require a major version or a new explicit format ve
 
 ## Stable boundaries
 
-Backends evolve through `EventBus`, `StateStore`, `Embedder`, `VectorSink`, `Signer`, and `PolicyEngine`. New connectors must satisfy the same contract tests before becoming selectable in configuration — see `crates/pv-state/src/lib.rs::state_store_contract` (round-51 §10.5: consumed by both the `InMemoryStore` and `RedisStore` suites so a divergence cannot silently ship) and the analogous `embedded_contract` / `live_contract` fixtures in `pv-bridge`.
+Backends evolve through `EventBus`, `StateStore`, `Embedder`, `VectorSink`, `Signer`, and `PolicyEngine`. New connectors must satisfy the same contract tests before becoming selectable in configuration — see `crates/pv-state/src/lib.rs::state_store_contract` (used by both the `InMemoryStore` and `RedisStore` suites so a divergence cannot silently ship) and the analogous `embedded_contract` / `live_contract` fixtures in `pv-bridge`.
 
 ## Key rotation
 
 Receipts embed a derived key id and public key. Verifiers may retain multiple public keys. Rotating the active signer does not invalidate old receipts.
 
-Operational protocol (§8.10 was previously an unoperationalized claim): the [`OPERATIONS.md#key-rotation`](docs/reference/OPERATIONS.md) runbook drives the rollover with `pvctl pubkey` (extracts the public key of a running deployment) and `pvctl receipt-verify --public-key-hex <hex> [--public-key-hex <old>]…` (accepts multiple keys, pin every historical trust anchor an auditor may see). Receipts carry their `key_id`; `pv-receipts::Keyring` fingerprints and dispatches automatically.
+Operational protocol: the [`OPERATIONS.md#key-rotation`](docs/reference/OPERATIONS.md#key-rotation) runbook drives the rollover with `pvctl pubkey --seed <file>` (derives the public key from a signing-seed file) and `pvctl receipt-verify --public-key-hex <hex> [--public-key-hex <old>]…` (accepts multiple keys, pin every historical trust anchor an auditor may see). Receipts carry their `key_id`; `pv-receipts::Keyring` fingerprints and dispatches automatically.
 
 ## Schema changes
 

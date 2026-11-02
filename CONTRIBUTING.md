@@ -35,11 +35,12 @@ RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D warnings" \
 > `make ci`, and `make lint-all-features` fail with
 > `fatal error: curl/curl.h: No such file or directory`.
 
-Some suites depend on live backends (Redis, Kafka/Redpanda, NATS, Qdrant).
-Bring them up with the compose file used by CI:
+Some suites depend on live backends (Redis, Kafka/Redpanda, NATS, Qdrant,
+and MinIO for the S3 cold-store contracts). Bring them up with the compose
+file used by CI:
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d --wait redpanda redis qdrant nats
+docker compose -f docker/docker-compose.yml up -d --wait redpanda redis qdrant nats minio
 ```
 
 The 10,000-connection SLA gate is opt-in behind `RUN_HEAVY_PERF=1`; see the
