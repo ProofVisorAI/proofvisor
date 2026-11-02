@@ -96,6 +96,19 @@ impl CloudJudge {
         if config.timeout.is_zero() {
             return Err("cloud judge timeout must be above zero".to_owned());
         }
+        // A token file with a second line or a label around the token
+        // would fail every call with an unexplained request error.
+        if config
+            .bearer
+            .as_ref()
+            .is_some_and(|token| token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()))
+        {
+            return Err(
+                "cloud judge bearer token must be one token of printable characters with no spaces or \
+                 line breaks; the token file seems to hold more than the token"
+                    .to_owned(),
+            );
+        }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(config.timeout)
@@ -227,6 +240,22 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn bearer_tokens_must_be_one_printable_token() {
+        let build = |token: &str| {
+            CloudJudge::new(CloudJudgeConfig {
+                endpoint: url::Url::parse("https://judge.example.com/v1/score").unwrap(),
+                bearer: Some(Zeroizing::new(token.to_owned())),
+                pin: ModelPin::new("m", "1", "a".repeat(64)).unwrap(),
+                timeout: Duration::from_secs(1),
+            })
+        };
+        assert!(build("tok_0123456789").is_ok());
+        for bad in ["", "tok\nsecond", "Bearer tok", "tok\u{2026}"] {
+            assert!(build(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn endpoints_need_tls_except_on_loopback() {

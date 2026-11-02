@@ -199,9 +199,17 @@ async fn finish(
 
 fn failure(predicate_id: &str, slot: &AdapterSlot, error: JudgeError, started: Instant) -> JudgeOutcome {
     if matches!(error, JudgeError::ModelMismatch { .. }) {
+        // The reported model name comes from the backend: bound it, and
+        // flatten line breaks, before it reaches the log.
+        let shown: String = error
+            .to_string()
+            .chars()
+            .take(512)
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
         tracing::error!(
             predicate = predicate_id,
-            error = %error,
+            error = %shown,
             "judge answered with an unpinned model; the call is refused"
         );
     }

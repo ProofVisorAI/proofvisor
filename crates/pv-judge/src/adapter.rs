@@ -196,6 +196,12 @@ impl JudgeOutcome {
     }
 }
 
+/// A label from a backend as shown in an error: at most 64 characters,
+/// since the backend chooses it.
+fn shown_label(label: &str) -> String {
+    label.chars().take(64).collect()
+}
+
 /// Check raw adapter output against the predicate and the pin, and
 /// convert it to a [`Verdict`] in the predicate's label order.
 ///
@@ -226,12 +232,16 @@ pub fn validate_scores(
     for (index, (label, p)) in raw.probs.iter().enumerate() {
         if !predicate.has_label(label) {
             return Err(JudgeError::Malformed(format!(
-                "label {label:?} is not a label of {}",
+                "label {:?} is not a label of {}",
+                shown_label(label),
                 predicate.id
             )));
         }
         if raw.probs.iter().take(index).any(|(earlier, _)| earlier == label) {
-            return Err(JudgeError::Malformed(format!("label {label:?} appears twice")));
+            return Err(JudgeError::Malformed(format!(
+                "label {:?} appears twice",
+                shown_label(label)
+            )));
         }
         if !p.is_finite() || *p < 0.0 || *p > 1.0 {
             return Err(JudgeError::Malformed(format!(

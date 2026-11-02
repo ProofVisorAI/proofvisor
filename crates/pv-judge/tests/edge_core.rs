@@ -296,8 +296,12 @@ fn labels_that_differ_by_case_or_normalization_are_refused() {
     let long = "m".repeat(1_000_000);
     let error = validate(&[(&long, 0.5), ("mismatch", 0.5)]).unwrap_err();
     assert_eq!(error.kind(), FailureKind::Malformed);
-    // The in-memory detail echoes the whole label; the record keeps only
-    // the first 256 characters, which is what reaches the audit trail.
+    // The detail shows only the start of a label the backend chose.
+    assert!(
+        error.to_string().chars().count() < 200,
+        "{}",
+        error.to_string().len()
+    );
     let record = OutcomeRecord::from_outcome(
         &JudgeOutcome::Failed(JudgeFailure {
             predicate_id: P.into(),
@@ -309,7 +313,7 @@ fn labels_that_differ_by_case_or_normalization_are_refused() {
         "a",
         AdapterKind::Cloud,
     );
-    assert_eq!(record.detail.unwrap().chars().count(), 256);
+    assert!(record.detail.unwrap().chars().count() <= 256);
 }
 
 #[test]

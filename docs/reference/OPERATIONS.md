@@ -465,7 +465,11 @@ policy would have blocked and the calls the harness actually refused.
 It replays the thresholds only. A WASM policy (interface version 2)
 that reads verdicts is not replayed. It does not detect tampering
 either: verify the receipts that cover the records first
-(`pvctl receipt-verify`).
+(`pvctl receipt-verify`). Two more limits: a Bridge line that does not
+parse is skipped with a warning in the log rather than counted in the
+report, so compare `records_read` with what you expect; and a record
+written by a later build with fields this build does not know is
+counted as unreadable.
 
 ### Calibration
 
