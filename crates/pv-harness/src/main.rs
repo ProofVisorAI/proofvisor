@@ -709,9 +709,10 @@ async fn run(config_override: Option<PathBuf>) -> Result<()> {
         // session is still skipped, which is the pathology this fix
         // exists to close. Set it to 3 s: healthy close_session
         // completes in < 100 ms so 3 s is 30× headroom for the healthy
-        // path, and up to 10 stuck sessions can fire their per-session
-        // deadline before the outer timer expires — giving the 11th
-        // (and later) healthy sessions a chance to close cleanly.
+        // path, and with eight closes running at once, dozens of stuck
+        // sessions can fire their per-session deadline before the outer
+        // timer expires — giving the healthy sessions behind them a
+        // chance to close cleanly.
         //
         // Contrast with the reconciler's `IDLE_CLOSE_DEADLINE = 90 s`
         // (R26): that path is NOT wrapped by an outer timeout so a
@@ -727,13 +728,30 @@ async fn run(config_override: Option<PathBuf>) -> Result<()> {
             "pv_shutdown_session_close_timeouts_total",
             pv_harness::pipeline::SESSION_CLOSE_TIMEOUTS_HELP,
         );
-        for session in open_sessions {
-            let session_id = session.id.clone();
-            let outcome = tokio::time::timeout(
-                PER_SESSION_CLOSE_DEADLINE,
-                shutdown_finalizer.close_session(session, pv_events::StopReason::SessionClosed),
-            )
-            .await;
+        // Close several sessions at once. Each close writes and syncs a
+        // trajectory or a receipt, so closing a few hundred one after
+        // another could outlast the 30 s phase on a slow disk, and every
+        // session not reached was left to restart-time recovery (which
+        // then slowed the next start). Closes of different sessions are
+        // independent: the idle sweeper and the close API already run
+        // them concurrently.
+        const SHUTDOWN_CLOSE_CONCURRENCY: usize = 8;
+        use futures::StreamExt as _;
+        let mut closes = futures::stream::iter(open_sessions)
+            .map(|session| {
+                let finalizer = shutdown_finalizer.clone();
+                async move {
+                    let session_id = session.id.clone();
+                    let outcome = tokio::time::timeout(
+                        PER_SESSION_CLOSE_DEADLINE,
+                        finalizer.close_session(session, pv_events::StopReason::SessionClosed),
+                    )
+                    .await;
+                    (session_id, outcome)
+                }
+            })
+            .buffer_unordered(SHUTDOWN_CLOSE_CONCURRENCY);
+        while let Some((session_id, outcome)) = closes.next().await {
             match outcome {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => failures.push(format!("session {session_id}: {error}")),

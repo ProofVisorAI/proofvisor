@@ -39,6 +39,8 @@ pub mod local;
 pub mod mock;
 #[cfg(feature = "runner")]
 pub mod runner;
+#[cfg(feature = "cloud")]
+pub mod typesafe;
 
 pub use adapter::{
     prob_to_ppm, threshold_to_ppm, validate_scores, AdapterKind, BoxFuture, FailureKind, JudgeAdapter,

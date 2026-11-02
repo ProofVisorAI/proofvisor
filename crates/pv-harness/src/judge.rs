@@ -150,6 +150,17 @@ pub enum JudgeAdapterKind {
     Local,
     /// HTTP endpoint speaking `proofvisor.judge.v1` (a second egress path).
     Cloud,
+    /// TypeSafe's Jev model through its System One API (a second egress
+    /// path, like `cloud`). Recorded in verdicts as a cloud adapter.
+    Typesafe,
+}
+
+impl JudgeAdapterKind {
+    /// True when the adapter sends arguments out of the harness, so each
+    /// use needs an explicit `allow_cloud` opt-in.
+    pub fn is_remote(self) -> bool {
+        matches!(self, Self::Cloud | Self::Typesafe)
+    }
 }
 
 /// `[[judge.adapters]]`: one judge backend and its pinned model.
@@ -158,7 +169,7 @@ pub enum JudgeAdapterKind {
 pub struct JudgeAdapterConfig {
     /// Name that `[[judge.tools]]` bindings refer to.
     pub name: String,
-    /// `local` or `cloud`.
+    /// `local`, `cloud` or `typesafe`.
     pub kind: JudgeAdapterKind,
     /// Hard per-call deadline (default 200 ms local, 1000 ms cloud).
     #[serde(default)]
@@ -168,6 +179,9 @@ pub struct JudgeAdapterConfig {
     /// Pinned model version.
     pub model_version: String,
     /// Pinned SHA-256 of the weights (local: of the `.onnx` file).
+    /// TypeSafe publishes no weight hash: for `typesafe` it may be left
+    /// out and is derived from `model_version`.
+    #[serde(default)]
     pub weights_sha256: String,
     /// Local: path of the `.onnx` model.
     #[serde(default)]
@@ -185,9 +199,11 @@ pub struct JudgeAdapterConfig {
     #[serde(default)]
     pub max_input_tokens: Option<usize>,
     /// Cloud: endpoint URL (`https`, or `http` to loopback only).
+    /// TypeSafe: defaults to its System One API.
     #[serde(default)]
     pub endpoint: Option<String>,
-    /// Cloud: owner-only file holding the bearer token.
+    /// Cloud: owner-only file holding the bearer token. TypeSafe: the API
+    /// key (required).
     #[serde(default)]
     pub bearer_file: Option<String>,
     /// Cloud: run the harness redaction engine over arguments and
@@ -205,13 +221,27 @@ impl JudgeAdapterConfig {
     pub fn deadline(&self) -> Duration {
         Duration::from_millis(self.deadline_ms.unwrap_or(match self.kind {
             JudgeAdapterKind::Local => DEFAULT_LOCAL_DEADLINE_MS,
-            JudgeAdapterKind::Cloud => DEFAULT_CLOUD_DEADLINE_MS,
+            JudgeAdapterKind::Cloud | JudgeAdapterKind::Typesafe => DEFAULT_CLOUD_DEADLINE_MS,
         }))
     }
 
-    /// The pinned model.
+    /// The pinned model. For `typesafe`, `weights_sha256` is derived from
+    /// the version name when left out, and must equal that when given.
     pub fn pin(&self) -> Result<pv_judge::ModelPin, String> {
-        pv_judge::ModelPin::new(&self.model_name, &self.model_version, &self.weights_sha256)
+        let weights = if self.kind == JudgeAdapterKind::Typesafe {
+            let derived = pv_judge::typesafe::derived_weights_sha256(&self.model_version);
+            if !self.weights_sha256.is_empty() && self.weights_sha256 != derived {
+                return Err(format!(
+                    "judge adapter {:?}: TypeSafe publishes no weight hash, so weights_sha256 is \
+                     derived from model_version; leave it out or set it to {derived}",
+                    self.name
+                ));
+            }
+            derived
+        } else {
+            self.weights_sha256.clone()
+        };
+        pv_judge::ModelPin::new(&self.model_name, &self.model_version, &weights)
             .map_err(|error| format!("judge adapter {:?}: {error}", self.name))
     }
 }
@@ -604,7 +634,7 @@ impl JudgeConfig {
                     ));
                     continue;
                 };
-                if adapter.kind == JudgeAdapterKind::Cloud && !tool.allow_cloud {
+                if adapter.kind.is_remote() && !tool.allow_cloud {
                     errors.push(format!(
                         "judge tool {:?} uses cloud adapter {:?}: its arguments would leave the \
                          harness; set allow_cloud = true on this tool to opt in",
@@ -701,7 +731,7 @@ impl JudgeConfig {
                 ));
                 return;
             };
-            if adapter.kind == JudgeAdapterKind::Cloud && !allow_cloud {
+            if adapter.kind.is_remote() && !allow_cloud {
                 errors.push(format!(
                     "[judge.{section}] uses cloud adapter {adapter_name:?}: recorded outputs would \
                      leave the harness; set allow_cloud = true in [judge.{section}] to opt in"
@@ -880,6 +910,38 @@ fn collect_adapter_errors(adapter: &JudgeAdapterConfig, errors: &mut Vec<String>
                         errors.push(format!("judge adapter {:?}: {error}", adapter.name));
                     }
                 }
+            }
+        }
+        JudgeAdapterKind::Typesafe => {
+            if local_fields {
+                errors.push(format!(
+                    "judge adapter {:?} is typesafe; model_path, tokenizer_path, tokenizer_sha256, \
+                     output_labels and max_input_tokens belong to local adapters",
+                    adapter.name
+                ));
+            }
+            if let Some(raw) = adapter.endpoint.as_deref() {
+                match url::Url::parse(raw) {
+                    Err(_) => errors.push(format!("judge adapter {:?} endpoint is not a URL", adapter.name)),
+                    Ok(url) => {
+                        if let Err(error) = pv_judge::cloud::validate_endpoint(&url) {
+                            errors.push(format!("judge adapter {:?}: {error}", adapter.name));
+                        }
+                    }
+                }
+            }
+            if adapter.bearer_file.as_deref().is_none_or(|p| p.trim().is_empty()) {
+                errors.push(format!(
+                    "judge adapter {:?} (typesafe) needs bearer_file: an owner-only file holding the API key",
+                    adapter.name
+                ));
+            }
+            if !pv_judge::typesafe::is_fixed_version(&adapter.model_version) {
+                errors.push(format!(
+                    "judge adapter {:?} (typesafe) model_version {:?} must be a fixed release such as \
+                     jev-1.14.0; jev-latest and jev-preview move without notice and cannot be pinned",
+                    adapter.name, adapter.model_version
+                ));
             }
         }
     }
@@ -1541,6 +1603,24 @@ fn micros_since(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
+/// The redaction engine a remote adapter applies: the harness's, or the
+/// built-in patterns when the harness has none (`redact = true` must
+/// mean something).
+fn redaction_for(
+    adapter: &JudgeAdapterConfig,
+    redaction: &Option<Arc<pv_redact::RedactionEngine>>,
+) -> Result<Arc<pv_redact::RedactionEngine>, String> {
+    match redaction {
+        Some(engine) => Ok(Arc::clone(engine)),
+        None => pv_redact::RedactionEngine::new(pv_redact::RedactionConfig {
+            include_builtin_patterns: true,
+            ..pv_redact::RedactionConfig::default()
+        })
+        .map(Arc::new)
+        .map_err(|error| format!("judge adapter {:?} redaction: {error}", adapter.name)),
+    }
+}
+
 /// Build the configured adapters (boot path). Reads model, tokenizer,
 /// and bearer files; a pin mismatch refuses to start the harness.
 pub fn build_adapters(
@@ -1573,24 +1653,39 @@ pub fn build_adapters(
                 })
                 .map_err(|error| format!("judge adapter {:?}: {error}", adapter.name))?;
                 if adapter.redact {
-                    // With no harness redaction configured, still apply the
-                    // built-in patterns: `redact = true` must mean something.
-                    let engine = match &redaction {
-                        Some(engine) => Arc::clone(engine),
-                        None => Arc::new(
-                            pv_redact::RedactionEngine::new(pv_redact::RedactionConfig {
-                                include_builtin_patterns: true,
-                                ..pv_redact::RedactionConfig::default()
-                            })
-                            .map_err(|error| {
-                                format!("judge adapter {:?} redaction: {error}", adapter.name)
-                            })?,
-                        ),
-                    };
+                    let engine = redaction_for(adapter, &redaction)?;
                     cloud =
                         cloud.with_redactor(Arc::new(move |value: &mut Value| engine.redact_value(value)));
                 }
                 Arc::new(cloud)
+            }
+            JudgeAdapterKind::Typesafe => {
+                let endpoint = url::Url::parse(
+                    adapter
+                        .endpoint
+                        .as_deref()
+                        .unwrap_or(pv_judge::typesafe::DEFAULT_ENDPOINT),
+                )
+                .map_err(|_| format!("judge adapter {:?} endpoint is not a URL", adapter.name))?;
+                let api_key =
+                    crate::pipeline::read_secret(None, adapter.bearer_file.as_deref(), "TypeSafe API key")
+                        .map_err(|error| format!("judge adapter {:?}: {error}", adapter.name))?
+                        .ok_or_else(|| format!("judge adapter {:?} needs bearer_file", adapter.name))?;
+                let mut typesafe =
+                    pv_judge::typesafe::TypeSafeJudge::new(pv_judge::typesafe::TypeSafeJudgeConfig {
+                        endpoint,
+                        api_key: zeroize::Zeroizing::new(api_key),
+                        model_name: pin.name.clone(),
+                        model_version: pin.version.clone(),
+                        timeout: adapter.deadline(),
+                    })
+                    .map_err(|error| format!("judge adapter {:?}: {error}", adapter.name))?;
+                if adapter.redact {
+                    let engine = redaction_for(adapter, &redaction)?;
+                    typesafe =
+                        typesafe.with_redactor(Arc::new(move |value: &mut Value| engine.redact_value(value)));
+                }
+                Arc::new(typesafe)
             }
         };
         built.insert(adapter.name.clone(), instance);
