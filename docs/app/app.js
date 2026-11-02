@@ -6706,22 +6706,56 @@
       }
       var bodyEl2 = backdrop.querySelector("#whdBody");
       if (!bodyEl2) return; // closed while loading
+      // Same rule as the server's redeliver route: owners and admins,
+      // an active endpoint, and a delivery that has finished (failed or
+      // delivered); a pending or retrying one is already in flight.
+      var canRetry = !!(ep && ep.isActive) && state.session && state.session.org.role !== "member" &&
+        typeof state.ds.redeliverWebhookDelivery === "function";
+      var statusPill = function (status) {
+        return status === "delivered" ? '<span class="pill ok">delivered</span>' : '<span class="pill neutral">' + esc(status) + '</span>';
+      };
       var whdRows = function (rows) {
         return rows.map(function (d) {
           var ms = d.deliveredAt ? (new Date(d.deliveredAt) - new Date(d.createdAt)) : null;
-          return '<tr>' +
+          var retryable = canRetry && (d.status === "failed" || d.status === "delivered");
+          return '<tr data-delivery="' + esc(d.id) + '">' +
             '<td class="mono" style="font-size:11.5px">' + esc(d.event) + (d.errorMessage ? '<div class="id" title="' + esc(d.errorMessage) + '">' + esc(d.errorMessage) + '</div>' : '') + '</td>' +
-            '<td>' + (d.status === "delivered" ? '<span class="pill ok">delivered</span>' : '<span class="pill neutral">' + esc(d.status) + '</span>') + '</td>' +
-            '<td class="num">' + esc(d.attempt) + '</td>' +
+            '<td class="whd-status">' + statusPill(d.status) + '</td>' +
+            '<td class="num whd-attempt">' + esc(d.attempt) + '</td>' +
             '<td class="num">' + esc(d.responseCode || "—") + '</td>' +
             '<td class="num">' + (ms != null ? (ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : ms + " ms") : "—") + '</td>' +
             '<td>' + timeAgoCell(d.createdAt) + '</td>' +
+            '<td>' + (retryable ? '<button type="button" class="btn" data-redeliver="' + esc(d.id) + '" title="Send this event to the endpoint again">Retry</button>' : '') + '</td>' +
           '</tr>';
         }).join('');
       };
+      backdrop.addEventListener("click", async function (e) {
+        var rb = e.target.closest && e.target.closest("button[data-redeliver]");
+        if (!rb || rb.disabled) return;
+        var deliveryId = rb.getAttribute("data-redeliver");
+        rb.disabled = true;
+        rb.textContent = "Queuing…";
+        try {
+          await state.ds.redeliverWebhookDelivery(id, deliveryId);
+          var tr = rb.closest("tr");
+          var st = tr && tr.querySelector(".whd-status");
+          var at = tr && tr.querySelector(".whd-attempt");
+          if (st) st.innerHTML = statusPill("retrying");
+          if (at) at.textContent = "0";
+          rb.remove();
+          toast("Delivery queued — it is sent again on the next retry sweep");
+        } catch (err) {
+          rb.disabled = false;
+          rb.textContent = "Retry";
+          if (err && err.status === 409) toast("This delivery is already queued for another attempt.");
+          else if (err && err.status === 404) toast("This endpoint is paused or was deleted, so the delivery cannot be retried.", true);
+          else if (err && err.status === 403) toast("Only owners and admins can retry deliveries.", true);
+          else toast((err && err.message) || "Could not retry the delivery", true);
+        }
+      });
       bodyEl2.innerHTML = list.length
         ? '<div class="table-wrap"><table>' +
-            '<thead><tr><th>Event</th><th>Status</th><th class="num">Attempts</th><th class="num">HTTP</th><th class="num">Latency</th><th>When</th></tr></thead>' +
+            '<thead><tr><th>Event</th><th>Status</th><th class="num">Attempts</th><th class="num">HTTP</th><th class="num">Latency</th><th>When</th><th><span class="sr-only">Actions</span></th></tr></thead>' +
             '<tbody id="whdRows">' + whdRows(list) + '</tbody>' +
           '</table></div>' +
           '<div id="whdFooter" style="padding:10px 0 0;' + (whdCursor ? "" : " display:none") + '">' +
