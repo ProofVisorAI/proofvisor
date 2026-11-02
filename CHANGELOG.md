@@ -641,6 +641,12 @@ exercised against release binaries in CI on every push
 
 ### Fixed
 
+- **The audit trail recorded the loop breaker's corrective
+  message as the caller's turn.** With `[breaker] action = "inject"`,
+  the corrective system message is appended after the caller's last
+  message, and the request step's audit capture read the last message.
+  It now records the caller's turn; the model still receives the
+  corrective message.
 - Policy push: the console counted every daemon on the current bundle as
   enforcing every policy, so a policy a daemon had reported unsupported
   still read "Enforced by 1 of 1". `enforcement.applied` now counts the

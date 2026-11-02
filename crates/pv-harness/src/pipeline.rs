@@ -2329,6 +2329,7 @@ impl AppState {
             ));
         }
         session.touch();
+        let mut injected_corrective = false;
         if session.loop_state.state() == BreakerState::Open {
             match session.loop_state.action() {
                 BreakerAction::Reject => {
@@ -2345,6 +2346,7 @@ impl AppState {
                 }
                 BreakerAction::Inject => {
                     inject_corrective_message(&mut payload)?;
+                    injected_corrective = true;
                     session.loop_state.reset();
                 }
                 _ => {
@@ -2579,8 +2581,12 @@ impl AppState {
         self.observe_stage("quota_post_compression", stage);
 
         let stage = Instant::now();
-        let text = last_message_text(&compression.payload);
-        let atif = match atif_capture_from_request(&compression.payload) {
+        // The audit records the caller's turn, not the breaker's
+        // corrective message appended after it.
+        let caller_view = caller_turn_view(&compression.payload, injected_corrective);
+        let captured = caller_view.as_ref().unwrap_or(&compression.payload);
+        let text = last_message_text(captured);
+        let atif = match atif_capture_from_request(captured) {
             Ok(atif) => atif,
             Err(error) => {
                 // Never forwarded — refund the post-compression debit on
@@ -5243,6 +5249,9 @@ pub(crate) fn scope_allows(scopes: &[String], required: &str) -> bool {
     })
 }
 
+/// The system message the loop breaker's `inject` action appends.
+const CORRECTIVE_MESSAGE: &str = "ProofVisor detected a semantic loop. Stop repeating the previous approach, identify new evidence, and choose a materially different next action.";
+
 fn inject_corrective_message(payload: &mut Value) -> Result<(), PipelineError> {
     let messages = payload
         .get_mut("messages")
@@ -5250,9 +5259,28 @@ fn inject_corrective_message(payload: &mut Value) -> Result<(), PipelineError> {
         .ok_or_else(|| PipelineError::bad_request("chat payload has no messages array".to_owned()))?;
     messages.push(serde_json::json!({
         "role": "system",
-        "content": "ProofVisor detected a semantic loop. Stop repeating the previous approach, identify new evidence, and choose a materially different next action."
+        "content": CORRECTIVE_MESSAGE
     }));
     Ok(())
+}
+
+/// The payload whose last message is the caller's turn, for the audit
+/// capture. When the breaker appended its corrective message, the turn
+/// is the message before it: compression keeps the last messages byte
+/// for byte and transforms rewrite in place, so it is still there, with
+/// any transform applied. Both capture functions read only the last
+/// message, so a one-message view is enough.
+fn caller_turn_view(payload: &Value, injected: bool) -> Option<Value> {
+    if !injected {
+        return None;
+    }
+    let messages = payload.get("messages").and_then(Value::as_array)?;
+    let (last, earlier) = messages.split_last()?;
+    if last.get("content").and_then(Value::as_str) != Some(CORRECTIVE_MESSAGE) {
+        return None;
+    }
+    let turn = earlier.last()?;
+    Some(serde_json::json!({ "messages": [turn] }))
 }
 
 pub(crate) fn load_exchange_seed(path: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, String> {
