@@ -2474,8 +2474,16 @@ fn ensure_tool_executions_resolved_with_limit(
         let Some(key) = name.strip_suffix(crate::spool::TOOL_INTENT_SUFFIX) else {
             continue;
         };
-        let bytes = pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES)
-            .map_err(|_| "tool execution intent is unavailable".to_owned())?;
+        let bytes = match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
+            Ok(bytes) => bytes,
+            // Listed, then gone: another session's close archived its own
+            // intent between the listing and this read. That intent is
+            // resolved, and it was not this session's (this session is
+            // closing here). Concurrent closes, such as shutdown's, hit
+            // this; failing would leave the session for recovery.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err("tool execution intent is unavailable".to_owned()),
+        };
         let intent: ToolIntent = crate::journal::open(
             control_key,
             &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
@@ -9603,6 +9611,20 @@ mod tests {
                 std::fs::read(directory.path().join(name)).unwrap(),
                 b"retained evidence"
             );
+        }
+        // An intent listed and then archived by another session's close
+        // (here: a dangling link, which reads as not found) is skipped.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                directory.path().join("archived-elsewhere"),
+                directory.path().join("gone.intent.json"),
+            )
+            .unwrap();
+            let skipped =
+                ensure_tool_executions_resolved_with_limit(directory.path(), "session", &[7; 32], 10);
+            assert!(skipped.is_ok(), "{skipped:?}");
+            std::fs::remove_file(directory.path().join("gone.intent.json")).unwrap();
         }
         let writing_claim = directory.path().join("partial.intent.json");
         std::fs::write(&writing_claim, b"unfinished concurrent claim").unwrap();
