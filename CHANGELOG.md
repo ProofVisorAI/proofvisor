@@ -2,7 +2,7 @@
 
 All notable changes are documented here. The project follows Semantic Versioning.
 
-## Unreleased
+## 0.1.0 - 2026-11-01
 
 Ahead of this release, a comprehensive third-party engineering review
 (August 2026) covered the full codebase, deployment artifacts, and
@@ -780,9 +780,9 @@ exercised against release binaries in CI on every push
   SHA; Python helper dependencies pinned exactly with their transitive
   closure.
 
-## 0.1.0 - 2026-08-10
+### Earlier in this version (first cut, 2026-08-10)
 
-### Added
+#### Added
 
 - OpenAI-compatible Axum proxy and MCP interception routes.
 - Bounded asynchronous workers with loop detection, OCSF emission, Bridge publication, ATIF capture, and signed chains.
