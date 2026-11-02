@@ -1,10 +1,22 @@
 //! WebAssembly policy modules via wasmtime (the sandboxing engine).
 //!
-//! ABI (documented for policy authors):
+//! ABI version 1 (documented for policy authors):
 //! - export `memory` (linear memory) and `alloc(len: i32) -> ptr: i32`;
 //! - export `evaluate(ptr: i32, len: i32) -> code: i32`;
 //! - the host writes the UTF-8 JSON `{"tool": …, "arguments": …}` at `ptr`;
 //! - return `0` to allow, any other code to deny.
+//!
+//! ABI version 2 (opt in by exporting `evaluate_v2` instead of, or as
+//! well as, `evaluate`; version 1 policies are unchanged):
+//! - export `evaluate_v2(ptr: i32, len: i32) -> code: i32`;
+//! - the host writes `{"tool": …, "arguments": …, "judge": [ … ]}`, where
+//!   `judge` holds one semantic-judge outcome per evaluated predicate
+//!   (empty when the tool is not judged): either
+//!   `{"status": "scored", "predicate_id": …, "probs": [{"label": …, "ppm": …}], "model": {…}, "latency_us": …}`
+//!   or `{"status": "failed", "predicate_id": …, "kind": "timeout" | "saturated" | "unavailable" | "malformed" | "model_mismatch", …}`.
+//!   Probabilities are integer parts per million;
+//! - return `0` to allow, `1` to deny, `2` to ask (hold for human
+//!   approval); any other code denies.
 //!
 //! Containment: every evaluation runs in a fresh `Store` with a fuel budget
 //! and a linear-memory cap. Traps, missing exports, fuel exhaustion, and
@@ -12,6 +24,7 @@
 //! neither hang the pipeline nor allow by accident.
 
 use crate::policy::{PolicyDecision, PolicyEngine};
+use pv_judge::JudgeOutcome;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -64,6 +77,7 @@ pub struct WasmPolicy {
     engine: Engine,
     module: Module,
     epoch_stop: Arc<AtomicBool>,
+    abi_v2: bool,
 }
 
 impl WasmPolicy {
@@ -85,6 +99,7 @@ impl WasmPolicy {
         let mut has_memory = false;
         let mut alloc_ok = false;
         let mut evaluate_ok = false;
+        let mut evaluate_v2_ok = false;
         // Check TYPES, not just arity: the runtime calls
         // `get_typed_func::<(i32, i32), i32>` (and `<i32, i32>` for
         // alloc), so a module exporting the right arity with i64/f32
@@ -104,10 +119,13 @@ impl WasmPolicy {
                 ("evaluate", wasmtime::ExternType::Func(f)) => {
                     evaluate_ok = f.params().len() == 2 && f.results().len() == 1 && all_i32(&f);
                 }
+                ("evaluate_v2", wasmtime::ExternType::Func(f)) => {
+                    evaluate_v2_ok = f.params().len() == 2 && f.results().len() == 1 && all_i32(&f);
+                }
                 _ => {}
             }
         }
-        if !has_memory || !alloc_ok || !evaluate_ok {
+        if !has_memory || !alloc_ok || !(evaluate_ok || evaluate_v2_ok) {
             let mut missing = Vec::new();
             if !has_memory {
                 missing.push("`memory` (exported linear memory)");
@@ -115,8 +133,8 @@ impl WasmPolicy {
             if !alloc_ok {
                 missing.push("`alloc(len: i32) -> i32`");
             }
-            if !evaluate_ok {
-                missing.push("`evaluate(ptr: i32, len: i32) -> i32`");
+            if !(evaluate_ok || evaluate_v2_ok) {
+                missing.push("`evaluate(ptr: i32, len: i32) -> i32` (or `evaluate_v2`)");
             }
             return Err(format!(
                 "policy does not export the required ABI: missing {} — see crates/pv-sandbox/src/wasm_policy.rs for the policy-author contract",
@@ -137,7 +155,14 @@ impl WasmPolicy {
             engine,
             module,
             epoch_stop,
+            abi_v2: evaluate_v2_ok,
         })
+    }
+
+    /// True when the policy speaks ABI version 2 (sees judge outcomes
+    /// and can return ask).
+    pub fn is_abi_v2(&self) -> bool {
+        self.abi_v2
     }
 
     fn run(&self, payload: &[u8]) -> Result<i32, String> {
@@ -161,9 +186,10 @@ impl WasmPolicy {
         let alloc = instance
             .get_typed_func::<i32, i32>(&mut store, "alloc")
             .map_err(|e| format!("missing alloc: {e}"))?;
+        let entry = if self.abi_v2 { "evaluate_v2" } else { "evaluate" };
         let evaluate = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "evaluate")
-            .map_err(|e| format!("missing evaluate: {e}"))?;
+            .get_typed_func::<(i32, i32), i32>(&mut store, entry)
+            .map_err(|e| format!("missing {entry}: {e}"))?;
 
         let len = i32::try_from(payload.len()).map_err(|_| "payload too large".to_owned())?;
         let ptr = alloc
@@ -191,7 +217,15 @@ impl PolicyEngine for WasmPolicy {
     }
 
     fn evaluate(&self, tool: &str, arguments: &Value) -> PolicyDecision {
-        let payload = serde_json::json!({ "tool": tool, "arguments": arguments });
+        self.evaluate_with_judge(tool, arguments, &[])
+    }
+
+    fn evaluate_with_judge(&self, tool: &str, arguments: &Value, judge: &[JudgeOutcome]) -> PolicyDecision {
+        let payload = if self.abi_v2 {
+            serde_json::json!({ "tool": tool, "arguments": arguments, "judge": judge })
+        } else {
+            serde_json::json!({ "tool": tool, "arguments": arguments })
+        };
         let bytes = match serde_json::to_vec(&payload) {
             Ok(b) => b,
             Err(e) => {
@@ -202,6 +236,9 @@ impl PolicyEngine for WasmPolicy {
         };
         match self.run(&bytes) {
             Ok(0) => PolicyDecision::Allow,
+            Ok(2) if self.abi_v2 => PolicyDecision::Ask {
+                reason: format!("wasm policy {:?} asks for human approval", self.name),
+            },
             Ok(code) => PolicyDecision::Deny {
                 reason: format!("wasm policy {:?} denied (code {code})", self.name),
             },
@@ -210,6 +247,10 @@ impl PolicyEngine for WasmPolicy {
                 reason: format!("wasm policy {:?} failed closed: {e}", self.name),
             },
         }
+    }
+
+    fn sees_judge(&self) -> bool {
+        self.abi_v2
     }
 }
 
@@ -319,6 +360,7 @@ mod tests {
         match d {
             PolicyDecision::Deny { reason } => assert!(reason.contains("failed closed"), "{reason}"),
             PolicyDecision::Allow => panic!("hostile policy allowed"),
+            PolicyDecision::Ask { reason } => panic!("a version 1 policy cannot ask: {reason}"),
         }
     }
 
@@ -498,6 +540,7 @@ mod tests {
                     "expected memory-cap failure, got {reason}"
                 );
             }
+            PolicyDecision::Ask { reason } => panic!("a version 1 policy cannot ask: {reason}"),
         }
     }
 
@@ -534,6 +577,7 @@ mod tests {
             PolicyDecision::Allow => {
                 panic!("store at 32 MiB succeeded — the memory cap did not hold")
             }
+            PolicyDecision::Ask { reason } => panic!("a version 1 policy cannot ask: {reason}"),
         }
     }
 
@@ -556,5 +600,87 @@ mod tests {
                 "code={code} should deny, got {d:?}"
             );
         }
+    }
+
+    /// ABI v2: deny (1) when the payload mentions `"kind":"timeout"`,
+    /// ask (2) when it mentions `"ppm":9`, allow otherwise. Scans bytes
+    /// for the 9-byte needle starting at the given address.
+    const V2_POLICY: &str = r#"
+    (module
+      (memory (export "memory") 4)
+      (data (i32.const 0) "\"timeout\"")
+      (data (i32.const 16) "\"ppm\":9")
+      (global $next (mut i32) (i32.const 4096))
+      (func (export "alloc") (param $len i32) (result i32)
+        (local $ptr i32)
+        (local.set $ptr (global.get $next))
+        (global.set $next (i32.add (global.get $next) (local.get $len)))
+        (local.get $ptr))
+      (func $contains (param $ptr i32) (param $len i32) (param $needle i32) (param $nlen i32) (result i32)
+        (local $i i32) (local $j i32) (local $end i32)
+        (local.set $end (i32.sub (i32.add (local.get $ptr) (local.get $len)) (local.get $nlen)))
+        (local.set $i (local.get $ptr))
+        (block $done
+          (loop $scan
+            (br_if $done (i32.gt_s (local.get $i) (local.get $end)))
+            (local.set $j (i32.const 0))
+            (block $miss
+              (loop $cmp
+                (br_if $miss (i32.ne
+                  (i32.load8_u (i32.add (local.get $i) (local.get $j)))
+                  (i32.load8_u (i32.add (local.get $needle) (local.get $j)))))
+                (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                (if (i32.eq (local.get $j) (local.get $nlen)) (then (return (i32.const 1))))
+                (br $cmp)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $scan)))
+        (i32.const 0))
+      (func (export "evaluate_v2") (param $ptr i32) (param $len i32) (result i32)
+        (if (call $contains (local.get $ptr) (local.get $len) (i32.const 0) (i32.const 9))
+          (then (return (i32.const 1))))
+        (if (call $contains (local.get $ptr) (local.get $len) (i32.const 16) (i32.const 7))
+          (then (return (i32.const 2))))
+        (i32.const 0)))
+    "#;
+
+    fn outcome(json: Value) -> JudgeOutcome {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn abi_v2_policies_see_judge_outcomes_and_can_ask() {
+        let p = WasmPolicy::from_bytes("v2", V2_POLICY.as_bytes()).unwrap();
+        assert!(p.is_abi_v2());
+        assert!(p.sees_judge());
+        let model = json!({"name": "m", "version": "1", "weights_sha256": "a".repeat(64)});
+        let scored = outcome(json!({
+            "status": "scored", "predicate_id": "arg_matches_task@1",
+            "probs": [{"label": "match", "ppm": 100000}, {"label": "mismatch", "ppm": 900000}],
+            "model": model, "latency_us": 3
+        }));
+        assert!(matches!(
+            p.evaluate_with_judge("t", &json!({}), std::slice::from_ref(&scored)),
+            PolicyDecision::Ask { .. }
+        ));
+        let timeout = outcome(json!({
+            "status": "failed", "predicate_id": "arg_matches_task@1", "model": model,
+            "kind": "timeout", "detail": "judge deadline expired", "latency_us": 150000
+        }));
+        assert!(matches!(
+            p.evaluate_with_judge("t", &json!({}), &[timeout]),
+            PolicyDecision::Deny { .. }
+        ));
+        assert_eq!(p.evaluate("t", &json!({})), PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn abi_v1_policies_never_see_the_judge_and_code_2_still_denies() {
+        let p = WasmPolicy::from_bytes("v1", SUBSTRING_DENY_POLICY.as_bytes()).unwrap();
+        assert!(!p.is_abi_v2());
+        assert!(!p.sees_judge());
+        assert!(matches!(
+            p.evaluate_with_judge("drop_table", &json!({}), &[]),
+            PolicyDecision::Deny { .. }
+        ));
     }
 }

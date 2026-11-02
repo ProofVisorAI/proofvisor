@@ -299,6 +299,7 @@ fn an_invalid_human_subject_pattern_refuses_boot() {
 
 fn agent_mission(id: &str, agent: &str, intents: &[&str]) -> MissionConfig {
     MissionConfig {
+        task: None,
         id: id.into(),
         allowed_intents: intents.iter().map(|intent| (*intent).to_owned()).collect(),
         expires_at: u64::MAX / 2,

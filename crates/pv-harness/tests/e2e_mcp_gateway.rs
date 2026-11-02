@@ -358,6 +358,7 @@ async fn tools_list_aggregates_backends_and_lists_only_callable_tools() {
             config.intent_map.insert("alpha_search".into(), "search".into());
             config.intent_map.insert("beta_lookup".into(), "lookup".into());
             config.mission = Some(MissionConfig {
+                task: None,
                 id: "m1".into(),
                 allowed_intents: vec!["search".into(), "lookup".into()],
                 expires_at: u64::MAX / 2,

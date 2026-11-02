@@ -4,11 +4,19 @@ use serde_json::Value;
 
 /// A policy verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PolicyDecision {
     /// Allow the call.
     Allow,
     /// Deny with a reason (returned to the agent in the authorization error).
     Deny {
+        /// Machine-readable reason.
+        reason: String,
+    },
+    /// Hold the call for human approval. The call does not run; the
+    /// agent receives `APPROVAL_REQUIRED`. Where there is no approval
+    /// concept (chat sanitization) an ask counts as a deny.
+    Ask {
         /// Machine-readable reason.
         reason: String,
     },
@@ -21,6 +29,23 @@ pub trait PolicyEngine: Send + Sync {
     fn name(&self) -> &str;
     /// Evaluate a tool call.
     fn evaluate(&self, tool: &str, arguments: &Value) -> PolicyDecision;
+    /// Evaluate a tool call together with the semantic judge's outcomes
+    /// for it (empty when the tool is not judged). Engines that do not
+    /// read verdicts keep the default, which ignores them.
+    fn evaluate_with_judge(
+        &self,
+        tool: &str,
+        arguments: &Value,
+        judge: &[pv_judge::JudgeOutcome],
+    ) -> PolicyDecision {
+        let _ = judge;
+        self.evaluate(tool, arguments)
+    }
+    /// True when this engine reads judge outcomes (and may therefore
+    /// apply its own thresholds to them).
+    fn sees_judge(&self) -> bool {
+        false
+    }
 }
 
 /// Native policy: closure-based rules (the zero-dependency default).

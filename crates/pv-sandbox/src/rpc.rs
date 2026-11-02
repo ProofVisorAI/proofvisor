@@ -367,6 +367,24 @@ pub fn denial_error(id: Option<&Value>, code: DenialCode, reason: &str) -> Value
     })
 }
 
+/// [`denial_error`] for a refusal that involved the semantic judge:
+/// `error.data.predicate_id` names the predicate behind it, so an agent
+/// (or the person it asks) can see which question failed.
+pub fn judge_denial_error(
+    id: Option<&Value>,
+    code: DenialCode,
+    reason: &str,
+    predicate_id: Option<&str>,
+) -> Value {
+    let mut response = denial_error(id, code, reason);
+    if let (Some(predicate_id), Some(data)) = (predicate_id, response.pointer_mut("/error/data")) {
+        if let Some(map) = data.as_object_mut() {
+            map.insert("predicate_id".to_owned(), Value::String(predicate_id.to_owned()));
+        }
+    }
+    response
+}
+
 /// Recover the request `id` for an error response, per JSON-RPC 2.0 §5:
 /// the response `id` MUST echo the request's when it is detectable, and
 /// be `null` only "if there was an error in detecting the id" (parse
@@ -599,6 +617,20 @@ mod tests {
         assert_eq!(e["id"], 9);
         assert_eq!(e["error"]["code"], -32001);
         assert_eq!(e["error"]["data"]["reason"], "budget exceeded");
+    }
+
+    #[test]
+    fn judge_denial_error_names_the_predicate() {
+        let e = judge_denial_error(
+            Some(&json!(3)),
+            DenialCode::ApprovalRequired,
+            "held",
+            Some("arg_matches_task@1"),
+        );
+        assert_eq!(e["error"]["data"]["code"], "APPROVAL_REQUIRED");
+        assert_eq!(e["error"]["data"]["predicate_id"], "arg_matches_task@1");
+        let plain = judge_denial_error(Some(&json!(3)), DenialCode::PolicyDenied, "no", None);
+        assert!(plain["error"]["data"].get("predicate_id").is_none());
     }
 
     #[test]

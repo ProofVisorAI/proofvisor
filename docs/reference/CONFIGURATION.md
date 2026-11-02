@@ -115,7 +115,7 @@ unset or empty, and a warning on stderr names the variables it copied.
 | `tool_schema_dir` | `config/tool-schemas` | Directory of one JSON Schema per tool, named `<tool>.json`. |
 | `require_tool_schema` | `true` | Reject tool calls with no matching schema (fail closed). `false` skips the schema gate — policy and budget gates still apply. |
 | `payout_field` | `amount_usd` | Tool-call argument field carrying a payout in USD, charged against `max_payout_usd_micros`. Set this to match YOUR tool schema — the cap only fires on calls carrying this exact field. |
-| `wasm_policy_paths` | `["config/policies/payload_limit.wat"]` | WASM/WAT policy modules, evaluated in order. The default path resolves to an embedded built-in when no file exists on disk. |
+| `wasm_policy_paths` | `["config/policies/payload_limit.wat"]` | WASM/WAT policy modules, evaluated in order. The default path resolves to an embedded built-in when no file exists on disk. A module that exports `evaluate_v2` instead of `evaluate` uses policy interface version 2: it also receives the semantic judge's outcomes and may return `2` to ask for human approval (see [Semantic judge](#semantic-judge-judge)). Modules exporting only `evaluate` behave exactly as before. |
 | `tool_upstream_transport` | `json_rpc` | Wire protocol for `tool_upstream_url`: `json_rpc` sends one plain JSON-RPC POST per call (the historical behavior); `mcp` speaks the MCP Streamable HTTP transport described under [Backend routing](#backend-routing). `[[backends]]` entries choose their own `transport` and default to `mcp`. |
 | `mcp_allowed_origins` | `[]` | Browser origins (`scheme://host[:port]`) allowed to call the daemon from a web page. A request to the MCP, chat completions, session lifecycle, token exchange or revocation routes that carries any other `Origin` header is refused with `403` (the MCP transport requires this, and it stops a hostile page from driving a loopback daemon cross-site). Agents run server-side and send no `Origin`, so the empty default refuses only browser pages. |
 
@@ -450,6 +450,7 @@ operator network. Never pass the bearer itself as a command-line argument.
 | `require_intent_mapping` | `false` | When true, every tool call must have a configured intent mapping. |
 | `mission` | none | Active mission constraint for every caller (TOML `[mission]`). Contains `id`, `allowed_intents`, and `expires_at`. Only narrows static policy, never widens. |
 | `missions` | `[]` | Per-agent missions (TOML `[[missions]]`). Each entry has `id`, `allowed_intents`, `expires_at`, and at least one selector: `agents` (token `instance_uid` values), `charters`, or `subjects` (human `sub` values). An entry applies to a caller when every selector it sets matches. A call must satisfy the global `[mission]` and every per-agent mission that applies, so missions only ever narrow. Mission ids must be unique. |
+| `mission.task` / `missions[].task` | none | Optional operator-written statement of the task the mission is for (1 to 4096 characters). The semantic judge reads it, never the agent's prompt, when it decides whether a tool call's arguments fit the task. It has no effect on the allow/deny rules above. |
 | `intent_token_ttl_s` | `60` | TTL in seconds for per-call intent tokens issued by the local PDP. |
 | `authzen` | none | External AuthZEN policy decision point (TOML `[authzen]`), described below. |
 
@@ -498,6 +499,128 @@ validated), `tool`, `intent`, `missions` (the ids of the missions that
 applied, when any), `iat`, `exp`, and a unique `jti`. The token never
 outlives an applicable mission. Backends should check `typ`, `aud`, and
 `exp`, and may reject a repeated `jti`.
+
+## Semantic judge (`[judge]`)
+
+The semantic judge answers questions that schemas and rules cannot,
+such as "do these tool arguments fit the task this agent was given?".
+Each question is a named, versioned **predicate** with a fixed set of
+labels. The judge returns a probability for every label; it never
+decides. Policy turns the probabilities into allow, ask (hold for human
+approval), or deny. The `judge` key is absent by default, and then no
+tool call reaches the judge.
+
+Where it runs: on `/v1/mcp` tool calls whose tool is listed under
+`[[judge.tools]]`, after the parse and schema gates and before the
+policy and budget gates. Untagged tools take the same path as before.
+The judge sees the schema-validated arguments and context the operator
+controls: the tool's intent, the applicable missions (ids, allowed
+intents, and `task` statements), the caller's charter and delegation
+depth, and refusals the harness recorded earlier in the session and
+for the agents above the caller in its delegation chain. Only refusals
+of tools the operator defined (a tool with a schema, or a judged tool)
+are recorded, so a caller cannot plant text through a made-up tool
+name. It never sees the prompt. A judged tool must have a schema in
+`tool_schema_dir`, or the daemon refuses to start; `pvctl
+config-validate` checks the `[judge]` section's structure, while the
+schema and policy checks run when the daemon starts. The judge is
+consulted before the session's admission lock is taken, so a slow
+judge never delays a session close.
+
+Built-in predicates:
+
+| Predicate | Labels | Question |
+| --- | --- | --- |
+| `arg_matches_task@1` | `match`, `mismatch` | Do the arguments fit the task, intent and mission? |
+| `child_uses_parent_entitlement@1` | `independent`, `laundering` | Is a delegated agent using its inherited entitlement to do what an agent above it was refused? |
+| `memory_write_safe@1` | `safe`, `unsafe` | Is this write to a memory or knowledge store safe to persist (governed memory writeback)? |
+
+| `[judge]` key | Default | Notes |
+| --- | --- | --- |
+| `mode` | required | `shadow` scores and records, and never blocks; every record says whether judge-aware policy *would* have blocked. `enforce` lets policy act on the verdicts. |
+| `max_concurrency` | `16` | Judge calls in flight at once (1 to 4096, and at least the number of predicates bound to any one tool). Beyond it a judged call is not attempted and counts as *saturated*. A call that passed its deadline keeps its slot until the model actually finishes. |
+| `adapters` | `[]` | Judge backends (`[[judge.adapters]]`, below). |
+| `tools` | required | Tools tagged for review (`[[judge.tools]]`): `tool`, `predicates` (a list of `{ id = "<predicate>", adapter = "<adapter name>" }`), and `allow_cloud` (default `false`; must be `true` to bind a cloud adapter, because the tool's arguments then leave the harness). |
+| `thresholds` | `[]` | Policy thresholds (`[[judge.thresholds]]`): `predicate`, `label`, and at least one of `deny_above`, `ask_above`, `min_confidence`, written as probabilities. Comparisons are strict: `deny_above = 0.7` denies at 0.700001 and above. `ask_above` must not exceed `deny_above`. `min_confidence` asks when the most probable label is below it. In `enforce` mode every bound predicate needs a threshold or a policy using interface version 2, or the daemon refuses to start. |
+| `on_failure` | see notes | What a failure does (`[judge.on_failure]`): `timeout`, `unavailable` (crash or unreachable), `saturated` default to `deny`; `malformed` (output that does not fit the predicate's labels or is not a probability distribution) defaults to `ask`. Each accepts `deny` or `ask`; `allow` is not accepted. A model that answers with an unpinned identity always denies. |
+| `predicates` | `[]` | Operator-defined predicates (`[[judge.predicates]]`): `id` (`name@version`), `labels` (2 to 16, `[a-z0-9_]`), `positive_label` (the risky label, used by calibration), `description`. |
+| `pilot` | none | `[judge.pilot]` `daily_block_cap`: in `enforce` mode, the most score-based judge blocks per tool per UTC day. Later ones are recorded with `pilot_cap_reached` and let through. A judge failure always keeps its block, and so does any call where a judged predicate is in ask-by-default mode after the calibration drift check. The counters live in the state store, so all instances sharing it share the cap. |
+| `drift` | none | `[judge.drift]`: the runtime calibration check. `state_file` (required): where the band statistics and the ask-by-default switches are saved, atomically, after every review and reset, and loaded at startup, so a switch survives restarts until an operator resets it; a file that cannot be read or parsed stops the boot. `sample_every` (default `20`): one scored verdict in this many gets a `review_id` in its record. `min_reviews_per_band` (default `30`), `tolerance` (default `0.02`), `max_pending` (default `10000`). See [Operations](OPERATIONS.md#semantic-judge). |
+
+| `[[judge.adapters]]` key | Default | Notes |
+| --- | --- | --- |
+| `name` | required | Referenced by `[[judge.tools]]` bindings. |
+| `kind` | required | `local` (an ONNX sequence classifier run in-process; needs the `onnx` cargo feature) or `cloud` (an HTTP endpoint speaking the `proofvisor.judge.v1` contract). |
+| `deadline_ms` | `200` local, `1000` cloud | Hard per-call deadline, 1 to 30 000 ms. Past it the call is a *timeout*. Judge time is recorded as `judge_us`, separate from the sandbox's `decision_us`. |
+| `model_name`, `model_version`, `weights_sha256` | required | The model pin. For `local`, `weights_sha256` must be the SHA-256 of the `.onnx` file: the daemon hashes the bytes it loads and refuses to start on a mismatch. For `cloud`, the endpoint must report exactly this pin in every answer. |
+| `model_path`, `tokenizer_path`, `tokenizer_sha256` | local only | The model, its Hugging Face `tokenizer.json`, and the tokenizer's SHA-256 (checked the same way). |
+| `output_labels` | local only | The label of each output logit, in output order; must be exactly the labels of every predicate bound to the adapter. |
+| `max_input_tokens` | `512` (local) | Longer inputs are truncated by the tokenizer. |
+| `endpoint` | cloud only | `https://…`, or `http://` to a loopback address only. Redirects are not followed. |
+| `bearer_file` | none (cloud) | Owner-only file holding a bearer token for the endpoint. |
+| `redact` | `true` (cloud) | Run the harness redaction engine (`redaction_patterns`, `redaction_paths`, and the built-in patterns) over the arguments and context before they are sent. When the harness has no redaction configured, the built-in patterns alone are applied. |
+
+A local model reads the request rendered as text in a fixed, versioned
+layout (template version 1, `pv_judge::render::render_request`), so it
+must be trained on that layout. The cloud contract is documented in
+`crates/pv-judge/src/cloud.rs`; a vendor is integrated by a small
+translator in front of its API, or by speaking the contract directly.
+
+Refusals use the JSON-RPC error shape of every other policy refusal
+(HTTP 403, `error.code` -32001), with `error.data.code`:
+
+| Code | Meaning |
+| --- | --- |
+| `JUDGE_DENIED` | A verdict crossed a deny threshold. |
+| `APPROVAL_REQUIRED` | Policy holds the call for human approval: a verdict fell in an ask band, the model was not confident enough, its output was malformed, the drift gate is tripped, or a version 2 policy returned `2`. Nothing ran. There is no approval queue in the harness; the agent or its host decides how to ask a person. |
+| `JUDGE_UNAVAILABLE` | The judge produced no usable verdict (timeout, crash, saturation, unpinned model) and policy failed closed. |
+
+Judge refusals name the predicate in `error.data.predicate_id` and the
+policy `judge.thresholds` in the audit record.
+
+The record: every judged call's `agent.tool_call` event payload carries
+a `judge` object, and the ATIF tool call carries the same object in
+`extra.judge`. It holds `mode`, `judge_us`, one entry per predicate in
+`verdicts` (adapter, adapter kind, pinned model, `status` — `scored` or
+the failure class — the full distribution as integer parts per million,
+latency, and `review_id` when sampled), the threshold `decision`,
+`decision_predicate`, `cause` (for example `{"kind": "threshold",
+"label": "mismatch", "ppm": 820000, "threshold_ppm": 700000}`),
+`enforced`, `would_block`, `policy_decision` and `policy` (what the
+whole policy stage decided with the verdicts, including a policy using
+interface version 2, and which policy decided it), and, when they apply,
+`pilot_cap_reached` and `drift_tripped`. Probabilities are integers because the event chain is
+hashed in canonical JSON, where floats are a known source of
+disagreement between implementations. A signed workflow's receipt signs
+the event chain's head, and a retroactive receipt signs the ATIF file's
+digest, so the verdicts are covered by whichever signature the session
+gets; the receipt format itself is unchanged.
+
+```toml
+[judge]
+mode = "shadow"
+
+[[judge.adapters]]
+name = "local-args"
+kind = "local"
+model_path = "/models/judge-args.onnx"
+tokenizer_path = "/models/tokenizer.json"
+tokenizer_sha256 = "<sha256 of tokenizer.json>"
+output_labels = ["match", "mismatch"]
+model_name = "judge-args"
+model_version = "2026-11-01"
+weights_sha256 = "<sha256 of judge-args.onnx>"
+
+[[judge.tools]]
+tool = "refund_order"
+predicates = [{ id = "arg_matches_task@1", adapter = "local-args" }]
+
+[[judge.thresholds]]
+predicate = "arg_matches_task@1"
+label = "mismatch"
+deny_above = 0.7
+ask_above = 0.3
+```
 
 ## Backend routing
 

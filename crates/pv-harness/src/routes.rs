@@ -71,6 +71,21 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/v1/revocations",
             post(crate::token_routes::admin_revoke).options(cors_deny),
         );
+        if state.judge.as_ref().is_some_and(|judge| judge.drift().is_some()) {
+            router = router
+                .route(
+                    "/admin/v1/judge/reviews",
+                    post(crate::token_routes::admin_judge_review).options(cors_deny),
+                )
+                .route(
+                    "/admin/v1/judge/drift",
+                    get(crate::token_routes::admin_judge_drift).options(cors_deny),
+                )
+                .route(
+                    "/admin/v1/judge/drift/reset",
+                    post(crate::token_routes::admin_judge_drift_reset).options(cors_deny),
+                );
+        }
     }
     if dashboard_enabled {
         router = router

@@ -98,3 +98,31 @@ max_total_tool_calls = 100
 [budget.max_tool_calls]
 db_write = 3
 payout = 10
+
+# Semantic judge: scores tagged MCP tools on named predicates with a
+# pinned model; policy thresholds decide. Start in shadow mode. See
+# docs/reference/CONFIGURATION.md#semantic-judge-judge.
+#
+# [judge]
+# mode = "shadow"
+#
+# [[judge.adapters]]
+# name = "local-args"
+# kind = "local"            # needs a build with --features onnx
+# model_path = "/models/judge-args.onnx"
+# tokenizer_path = "/models/tokenizer.json"
+# tokenizer_sha256 = "<sha256 of tokenizer.json>"
+# output_labels = ["match", "mismatch"]
+# model_name = "judge-args"
+# model_version = "2026-11-01"
+# weights_sha256 = "<sha256 of judge-args.onnx>"
+#
+# [[judge.tools]]
+# tool = "refund_order"     # needs config/tool-schemas/refund_order.json
+# predicates = [{ id = "arg_matches_task@1", adapter = "local-args" }]
+#
+# [[judge.thresholds]]
+# predicate = "arg_matches_task@1"
+# label = "mismatch"
+# deny_above = 0.7
+# ask_above = 0.3

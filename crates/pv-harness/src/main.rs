@@ -109,7 +109,7 @@ async fn run(config_override: Option<PathBuf>) -> Result<()> {
     let _spool_lock = acquire_spool_lock(std::path::Path::new(&config.atif_spool_dir))?;
     let bridge = build_bridge(&config, &manifest)?;
 
-    let sandbox = load_sandbox(&config)?;
+    let sandbox = with_judge_policy(&config, load_sandbox(&config)?)?;
     let store = build_store(&config)?;
     let embedder = build_embedder(&config)?;
     let vector_sink = build_vector_sink(&config, embedder.dim()).await?;
@@ -184,6 +184,7 @@ async fn run(config_override: Option<PathBuf>) -> Result<()> {
         Arc::clone(&metrics),
     )
     .map_err(anyhow::Error::new)?;
+    let state = attach_judge(&config, state, &metrics)?;
     // Console-pushed policy (`pvctl console-sync --pull-policies`). It is
     // applied before the listener binds, so after a restart no request
     // runs without the rules that were pushed before it; a bundle file
@@ -1304,6 +1305,79 @@ fn load_sandbox(config: &HarnessConfig) -> Result<Sandbox> {
         policies,
     )
     .map_err(anyhow::Error::msg)
+}
+
+/// Install the `[judge]` thresholds on the sandbox and check that every
+/// judged tool's arguments are schema-validated and every bound
+/// predicate's verdict is read by some policy.
+fn with_judge_policy(config: &HarnessConfig, sandbox: Sandbox) -> Result<Sandbox> {
+    let Some(judge) = &config.judge else {
+        return Ok(sandbox);
+    };
+    let policy = judge.threshold_policy().map_err(anyhow::Error::msg)?;
+    let sandbox = sandbox.with_judge_policy(policy);
+    for tool in &judge.tools {
+        if !sandbox.has_schema(&tool.tool) {
+            anyhow::bail!(
+                "judge tool {:?} has no argument schema in tool_schema_dir; the judge only scores \
+                 schema-validated arguments",
+                tool.tool
+            );
+        }
+    }
+    let judge_aware = sandbox.judge_aware_policies();
+    let unread: Vec<&str> = judge
+        .tools
+        .iter()
+        .flat_map(|tool| tool.predicates.iter().map(|binding| binding.id.as_str()))
+        .filter(|id| !sandbox.judge_policy().covers(id))
+        .collect();
+    if !unread.is_empty() && judge_aware.is_empty() {
+        let message = format!(
+            "judge predicates {unread:?} have no [[judge.thresholds]] and no WASM ABI v2 policy \
+             reads verdicts: their scores can never change a decision"
+        );
+        match judge.mode {
+            pv_harness::judge::JudgeModeConfig::Enforce => anyhow::bail!(message),
+            pv_harness::judge::JudgeModeConfig::Shadow => tracing::warn!("{message}"),
+        }
+    }
+    Ok(sandbox)
+}
+
+/// Build the judge's adapters (verifying every model pin) and attach the
+/// judge to the application state. A pin mismatch stops the boot.
+fn attach_judge(
+    config: &HarnessConfig,
+    state: AppState,
+    metrics: &Arc<pv_core::metrics::Registry>,
+) -> Result<AppState> {
+    let Some(judge) = &config.judge else {
+        return Ok(state);
+    };
+    let adapters = pv_harness::judge::build_adapters(judge, state.redaction.clone()).map_err(|error| {
+        tracing::error!(error = %error, "semantic judge failed to start; refusing to boot");
+        anyhow::Error::msg(error)
+    })?;
+    let service = pv_harness::judge::JudgeService::new(judge, adapters, Arc::clone(metrics))
+        .map_err(anyhow::Error::msg)?;
+    for adapter in &judge.adapters {
+        tracing::info!(
+            adapter = %adapter.name,
+            kind = ?adapter.kind,
+            model = %adapter.model_name,
+            version = %adapter.model_version,
+            weights_sha256 = %adapter.weights_sha256,
+            deadline_ms = u64::try_from(adapter.deadline().as_millis()).unwrap_or(u64::MAX),
+            "semantic judge adapter loaded"
+        );
+    }
+    tracing::info!(
+        mode = ?judge.mode,
+        tools = judge.tools.len(),
+        "semantic judge enabled"
+    );
+    Ok(state.with_judge(Arc::new(service)))
 }
 
 /// Embedded copy of the default payload-limit policy, compiled into the

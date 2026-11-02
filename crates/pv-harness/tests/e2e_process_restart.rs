@@ -948,3 +948,274 @@ shutdown_ready_drain_s = 2
         "graceful SIGTERM shutdown must exit 0, got {status}"
     );
 }
+
+/// A judge speaking `proofvisor.judge.v1` on a background thread. It
+/// scores `mismatch` 0.9 when the arguments mention "danger" and 0.05
+/// otherwise. Clearing `alive` makes it drop every connection without
+/// answering, the way a crashed judge looks from the harness.
+fn spawn_mock_judge(alive: std::sync::Arc<std::sync::atomic::AtomicBool>) -> u16 {
+    use std::sync::atomic::Ordering;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            if !alive.load(Ordering::SeqCst) {
+                drop(stream);
+                continue;
+            }
+            std::thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let header_end = loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            buffer.extend_from_slice(chunk.get(..n).unwrap());
+                            if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break pos + 4;
+                            }
+                        }
+                    }
+                };
+                let headers = String::from_utf8_lossy(buffer.get(..header_end).unwrap()).to_string();
+                let content_length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().ok())?
+                    })
+                    .unwrap_or(0);
+                while buffer.len() < header_end + content_length {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buffer.extend_from_slice(chunk.get(..n).unwrap()),
+                    }
+                }
+                let request =
+                    String::from_utf8_lossy(buffer.get(header_end..).unwrap_or_default()).to_string();
+                let p = if request.contains("danger") { 0.9 } else { 0.05 };
+                let body = format!(
+                    r#"{{"model":{{"name":"proc-judge","version":"1","weights_sha256":"{hash}"}},"probs":[{{"label":"match","p":{m}}},{{"label":"mismatch","p":{p}}}]}}"#,
+                    hash = "cd".repeat(32),
+                    m = 1.0 - p,
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    port
+}
+
+fn http_post_tool(port: u16, session: &str, arguments: &str) -> Option<(u16, String)> {
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"update_ticket","arguments":{arguments}}}}}"#
+    );
+    let mut stream =
+        std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(500))
+            .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok()?;
+    write!(
+        stream,
+        "POST /v1/mcp HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\nx-pv-session: {session}\r\nx-pv-workflow: unsigned\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    let status: u16 = response.split_whitespace().nth(1)?.parse().ok()?;
+    let payload = response.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+    Some((status, payload))
+}
+
+fn judged_config(
+    root: &std::path::Path,
+    listen_port: u16,
+    upstream_port: u16,
+    judge_section: &str,
+) -> std::path::PathBuf {
+    let config_path = root.join("proofvisor.toml");
+    std::fs::create_dir_all(root.join("tool-schemas")).unwrap();
+    std::fs::write(
+        root.join("tool-schemas/update_ticket.json"),
+        r#"{"type":"object","properties":{"note":{"type":"string"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"config_version = 1
+listen = "127.0.0.1:{listen_port}"
+upstream_url = "http://127.0.0.1:{upstream_port}"
+require_identity = false
+default_workflow = "unsigned"
+compression_enabled = false
+dashboard_enabled = false
+atif_spool_dir = "{spool}"
+bridge_data_dir = "{bridge}"
+tool_schema_dir = "{schemas}"
+state_backend = "memory"
+embedder_backend = "hash"
+vector_backend = "memory"
+{judge_section}
+"#,
+            spool = root.join("spool/atif").display(),
+            bridge = root.join("data/bridge").display(),
+            schemas = root.join("tool-schemas").display(),
+        ),
+    )
+    .unwrap();
+    config_path
+}
+
+/// The semantic judge's failure modes in the real binary across
+/// SIGKILL and restart: verdicts are enforced after every boot, and a
+/// judge that stops answering makes judged calls fail closed
+/// (`JUDGE_UNAVAILABLE`) while untagged tools keep working.
+#[test]
+fn judge_enforces_across_kill_and_restart_and_fails_closed_when_it_dies() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let upstream_port = spawn_mock_upstream();
+    let alive = std::sync::Arc::new(AtomicBool::new(true));
+    let judge_port = spawn_mock_judge(std::sync::Arc::clone(&alive));
+    let listen_port = free_port();
+    let judge_section = format!(
+        r#"
+[judge]
+mode = "enforce"
+
+[[judge.adapters]]
+name = "proc"
+kind = "cloud"
+endpoint = "http://127.0.0.1:{judge_port}/score"
+deadline_ms = 2000
+model_name = "proc-judge"
+model_version = "1"
+weights_sha256 = "{hash}"
+
+[[judge.tools]]
+tool = "update_ticket"
+allow_cloud = true
+predicates = [{{ id = "arg_matches_task@1", adapter = "proc" }}]
+
+[[judge.thresholds]]
+predicate = "arg_matches_task@1"
+label = "mismatch"
+deny_above = 0.7
+ask_above = 0.3
+"#,
+        hash = "cd".repeat(32)
+    );
+    let config_path = judged_config(root, listen_port, upstream_port, &judge_section);
+    let seed_path = root.join("signing.seed");
+
+    for boot in 1..=2 {
+        let mut daemon = start_daemon(&config_path, &seed_path);
+        wait_healthy(listen_port, &mut daemon);
+        let (status, body) = http_post_tool(
+            listen_port,
+            &format!("judge-{boot}-a"),
+            r#"{"note":"routine update"}"#,
+        )
+        .unwrap();
+        assert_eq!(status, 200, "boot {boot}: benign call refused: {body}");
+        let (status, body) = http_post_tool(
+            listen_port,
+            &format!("judge-{boot}-b"),
+            r#"{"note":"danger: wipe records"}"#,
+        )
+        .unwrap();
+        assert_eq!(status, 403, "boot {boot}: {body}");
+        assert!(body.contains("JUDGE_DENIED"), "boot {boot}: {body}");
+        assert!(body.contains("arg_matches_task@1"), "boot {boot}: {body}");
+        if boot == 1 {
+            daemon.0.kill().unwrap();
+            daemon.0.wait().unwrap();
+        } else {
+            // The judge dies: judged calls fail closed.
+            alive.store(false, Ordering::SeqCst);
+            let (status, body) =
+                http_post_tool(listen_port, "judge-dead", r#"{"note":"routine update"}"#).unwrap();
+            assert_eq!(status, 403, "{body}");
+            assert!(body.contains("JUDGE_UNAVAILABLE"), "{body}");
+            let (status, _) = http_post_chat(listen_port, "judge-dead-chat").unwrap();
+            assert_eq!(status, 200, "chat must not depend on the judge");
+        }
+        drop(daemon);
+    }
+}
+
+/// A local judge whose model file does not hash to the pinned value
+/// stops the boot (in a build without the `onnx` feature, the local
+/// adapter itself stops the boot). Either way the daemon never serves.
+#[test]
+fn a_local_judge_with_the_wrong_model_refuses_to_boot() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let upstream_port = spawn_mock_upstream();
+    let listen_port = free_port();
+    std::fs::write(root.join("judge.onnx"), b"not the pinned model").unwrap();
+    std::fs::write(root.join("tokenizer.json"), b"{}").unwrap();
+    let judge_section = format!(
+        r#"
+[judge]
+mode = "enforce"
+
+[[judge.adapters]]
+name = "local"
+kind = "local"
+model_path = "{model}"
+tokenizer_path = "{tokenizer}"
+tokenizer_sha256 = "{tokenizer_hash}"
+output_labels = ["match", "mismatch"]
+model_name = "judge"
+model_version = "1"
+weights_sha256 = "{wrong}"
+
+[[judge.tools]]
+tool = "update_ticket"
+predicates = [{{ id = "arg_matches_task@1", adapter = "local" }}]
+
+[[judge.thresholds]]
+predicate = "arg_matches_task@1"
+label = "mismatch"
+deny_above = 0.7
+"#,
+        model = root.join("judge.onnx").display(),
+        tokenizer = root.join("tokenizer.json").display(),
+        tokenizer_hash = pv_core::digest::sha256_hex(b"{}"),
+        wrong = "0".repeat(64),
+    );
+    let config_path = judged_config(root, listen_port, upstream_port, &judge_section);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_proofvisord"))
+        .arg("--config")
+        .arg(&config_path)
+        .current_dir(root)
+        .env("PV_SIGNING_SEED_FILE", root.join("signing.seed"))
+        .env("RUST_LOG", "error")
+        .output()
+        .expect("run proofvisord");
+    assert!(!output.status.success(), "the daemon must refuse to boot");
+    let stderr = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let expected = if cfg!(feature = "onnx") {
+        "hash mismatch"
+    } else {
+        "onnx"
+    };
+    assert!(
+        stderr.contains(expected),
+        "boot error should mention {expected:?}: {stderr}"
+    );
+}

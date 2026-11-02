@@ -123,6 +123,7 @@ impl HarnessConfig {
             otel_tenant_content: TenantContent::Redacted,
             redaction_patterns: Vec::new(),
             redaction_paths: Vec::new(),
+            judge: None,
         }
     }
 }

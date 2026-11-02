@@ -14,6 +14,7 @@ members = [
     "crates/pv-harness",
     "crates/pv-cli",
     "crates/pv-redact",
+    "crates/pv-judge",
 ]
 
 [workspace.package]
@@ -43,6 +44,7 @@ pv-loopdetect = { path = "crates/pv-loopdetect", version = "0.1.0" }
 pv-sandbox = { path = "crates/pv-sandbox", version = "0.1.0" }
 pv-harness = { path = "crates/pv-harness", version = "0.1.0" }
 pv-redact = { path = "crates/pv-redact", version = "0.1.0" }
+pv-judge = { path = "crates/pv-judge", version = "0.1.0", default-features = false }
 
 tokio = { version = "1.47", features = ["full"] }
 axum = { version = "0.8", features = ["macros"] }
