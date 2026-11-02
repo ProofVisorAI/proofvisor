@@ -205,7 +205,7 @@ Bridge OCSF topics map to ingest events as follows:
 | `agent.compression` | `audit` | Body includes metrics including pruned token count when present. |
 | `agent.identity` | `audit` | Identity validation evidence. |
 | `agent.receipt` | skipped | Receipts are uploaded separately from the receipt spool. |
-| `agent.judge` | skipped | Semantic-judge findings are not uploaded; read them from the Bridge (`pvctl event-tail --topic agent.judge`). |
+| `agent.judge` | `audit` | Tag `judge`, with `trace`, `breaker` or `shadow` as the sub-label; never counted as a block. Uploaded only for sessions that first synced with a `pvctl` that knows this topic. A session that was already syncing before keeps its event numbering, so its judge events are not uploaded; read them from the Bridge (`pvctl event-tail --topic agent.judge`). |
 
 `pvctl setup` can create the console config for you. At the end of the
 guided setup, answer yes to "Connect to the hosted console?", accept or

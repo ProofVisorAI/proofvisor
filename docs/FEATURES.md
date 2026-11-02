@@ -362,8 +362,9 @@ with demonstration data, which is what the public site shows by default.
 
     Tests inside the process cover the code involved, but not these
     situations end to end.
-  - The hosted console does not receive `agent.judge` events;
-    `console-sync` skips them.
+  - `console-sync` uploads `agent.judge` events only for sessions that
+    first synced with this `pvctl` version or later; sessions already
+    syncing keep their event numbering and skip them.
   - Standing rules are put back by exact text, not by a judge
     predicate per rule as the build specification proposed, and not
     through the loop breaker's inject path (a rule belongs with the

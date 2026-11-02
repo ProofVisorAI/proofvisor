@@ -314,6 +314,12 @@ exercised against release binaries in CI on every push
   blocks are published on a new OCSF class, `agent.judge` (class_uid
   9907), and recorded as ATIF steps, so receipts cover them. Background
   judging has its own concurrency limit (`background_max_concurrency`).
+  `pvctl console-sync` uploads `agent.judge` events as `audit` events
+  tagged `judge`, numbered under a new scheme (2) over seven topics; a
+  session already numbered under scheme 1 keeps it and skips judge
+  events. **Rollback:** an older `pvctl` would number scheme-2 sessions
+  as scheme 1, and the console would drop some of their later events as
+  duplicates; finish syncing open sessions before downgrading `pvctl`.
   An embedded Bridge created before the topic existed gains it at
   startup when `[judge]` is set. **Rollback:** an earlier build cannot
   finalize a session whose journal contains an `agent.judge` record;
