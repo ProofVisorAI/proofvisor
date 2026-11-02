@@ -255,6 +255,30 @@ jobs:
           SPA_ORIGIN: http://127.0.0.1:8787/app
           API_BASE: http://127.0.0.1:8985
         run: node scripts/quarantine-drill.mjs
+      # The deliveries view's Retry button needs a webhook receiver on
+      # 127.0.0.1 and a quick retry sweeper. Those are test-only
+      # settings, so this drill gets its own API instance (same
+      # database) and console copy instead of loosening the main one.
+      - name: Webhook delivery Retry button (console to receiver)
+        working-directory: server
+        timeout-minutes: 4
+        env:
+          ALLOW_INTERNAL_WEBHOOK_TARGETS: "true"
+          WEBHOOK_SWEEPER_INTERVAL_MS: "1000"
+          SMTP_URL: smtp://ci:ci@127.0.0.1:2525
+        run: |
+          PORT=8986 ALLOWED_ORIGINS=http://127.0.0.1:8788 npx tsx src/index.ts > /tmp/api-redeliver.log 2>&1 &
+          echo $! > /tmp/api-redeliver.pid
+          cp -r /tmp/console-root /tmp/console-redeliver
+          sed -i 's#http://127.0.0.1:8985#http://127.0.0.1:8986#g' /tmp/console-redeliver/app/config.js /tmp/console-redeliver/app/index.html
+          grep -q 'connect-src .self. http://127.0.0.1:8986' /tmp/console-redeliver/app/index.html
+          (cd /tmp/console-redeliver && python3 -m http.server 8788 >/dev/null 2>&1 &)
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8986/healthz > /dev/null && curl -sf http://127.0.0.1:8788/app/config.js > /dev/null; then break; fi
+            sleep 0.5
+          done
+          API_BASE=http://127.0.0.1:8986 SPA_ORIGIN=http://127.0.0.1:8788/app node scripts/webhook-redeliver-drill.mjs || { tail -40 /tmp/api-redeliver.log; exit 1; }
+          kill "$(cat /tmp/api-redeliver.pid)" 2>/dev/null || true
       - name: Real daemon crash evidence reaches the console
         working-directory: server
         env:

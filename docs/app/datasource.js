@@ -988,6 +988,8 @@
   var runtimeAudit = [];
   // Live webhook deliveries (test fires land here; capped at 20).
   var runtimeDeliveries = [];
+  // Status overrides for the canned Northwind deliveries after a retry.
+  var mockRedeliveries = {};
   function recordAudit(event, target, note) {
     runtimeAudit.unshift({
       at: new Date().toISOString(),
@@ -2314,7 +2316,29 @@
         { id: "d1", event: "policy.block", status: "delivered", attempt: 1, responseCode: 200, createdAt: new Date(now - 3 * MIN).toISOString(), deliveredAt: new Date(now - 3 * MIN + 340).toISOString() },
         { id: "d2", event: "policy.block", status: "delivered", attempt: 1, responseCode: 200, createdAt: new Date(now - 47 * MIN).toISOString(), deliveredAt: new Date(now - 47 * MIN + 210).toISOString() },
         { id: "d3", event: "policy.block", status: "delivered", attempt: 2, responseCode: 200, createdAt: new Date(now - 6 * HOUR).toISOString(), deliveredAt: new Date(now - 6 * HOUR + 32_500).toISOString(), errorMessage: "server_error_502 (attempt 1)" },
-      ]), nextCursor: null };
+      ].map(function (d) { return mockRedeliveries[d.id] ? Object.assign(d, mockRedeliveries[d.id]) : d; })), nextCursor: null };
+    },
+    async redeliverWebhookDelivery(id, deliveryId) {
+      await delay(100);
+      // Same rules as the server: only a finished delivery can be sent
+      // again, and the row goes back to `retrying` with attempt 0. The
+      // mock has no sweeper, so it "sends" it a moment later.
+      var row = runtimeDeliveries.find(function (d) { return d.webhookId === id && d.id === deliveryId; });
+      var patch = row || mockRedeliveries[deliveryId] || {};
+      if (patch.status === "retrying" || patch.status === "pending") {
+        var busy = new Error("delivery_already_in_flight");
+        busy.status = 409;
+        throw busy;
+      }
+      var target = row || (mockRedeliveries[deliveryId] = {});
+      Object.assign(target, { status: "retrying", attempt: 0, errorMessage: null, deliveredAt: null });
+      setTimeout(function () {
+        Object.assign(target, { status: "delivered", attempt: 1, responseCode: 200, deliveredAt: new Date().toISOString() });
+      }, 1500);
+      var pool = freshElapsed() != null ? freshRuntime().webhooks : MOCK_WEBHOOKS;
+      var wh = pool.find(function (w) { return w.id === id; });
+      recordAudit("webhook.delivery_redelivered", wh ? wh.name : id);
+      return { ok: true };
     },
     async getRetention() { await delay(80); return { retention: { sessionRetentionDays: 90, auditRetentionDays: 365 } }; },
     async updateRetention(input) {
@@ -3163,6 +3187,12 @@
       } catch (e) {
         throw e;
       }
+    },
+    // Queue one failed or delivered delivery for another attempt. The
+    // server flips it to `retrying` with a fresh attempt counter and the
+    // retry sweeper sends it; 409 means it is already in flight.
+    async redeliverWebhookDelivery(id, deliveryId) {
+      return apiFetch("/api/v1/webhooks/" + encodeURIComponent(id) + "/redeliver/" + encodeURIComponent(deliveryId), { method: "POST" });
     },
     async getRetention() {
       return apiFetch("/api/v1/org/retention");
