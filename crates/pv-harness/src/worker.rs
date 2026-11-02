@@ -1878,14 +1878,47 @@ fn captured_output(job: &WorkerJob) -> Option<crate::judge::CapturedOutput> {
             text: text.to_owned(),
         });
     }
-    if job.analyze_loop && job.class != EventClass::Compression && !job.text.is_empty() {
+    if job.analyze_loop && job.class != EventClass::Compression {
+        // The model's answer (its text and its tool calls), not
+        // `job.text`: for a reasoning model that holds the reasoning,
+        // which the loop breaker analyses, and the answer would never
+        // be judged.
+        let text = job.atif.as_ref().map(answer_text).unwrap_or_default();
+        let text = if text.trim().is_empty() {
+            job.text.clone()
+        } else {
+            text
+        };
+        if text.trim().is_empty() {
+            return None;
+        }
         return Some(crate::judge::CapturedOutput {
             source: crate::judge::TraceSource::Model,
             tool: None,
-            text: job.text.clone(),
+            text,
         });
     }
     None
+}
+
+/// The text and tool calls of a recorded model answer, as one string.
+fn answer_text(capture: &AtifCapture) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match &capture.message {
+        Value::String(text) => parts.push(text.clone()),
+        // Content parts: keep the text ones.
+        Value::Array(items) => parts.extend(
+            items
+                .iter()
+                .filter_map(|item| item.get("text").and_then(Value::as_str).map(str::to_owned)),
+        ),
+        _ => {}
+    }
+    for call in capture.tool_calls.iter().flatten() {
+        parts.push(format!("{}({})", call.function_name, call.arguments));
+    }
+    parts.retain(|part| !part.trim().is_empty());
+    parts.join("\n")
 }
 
 /// The journaled step in content form. Unsigned sessions supply the

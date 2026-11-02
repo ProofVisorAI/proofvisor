@@ -4134,4 +4134,134 @@ mod tests {
         });
         (format!("http://{address}"), tx)
     }
+
+    // ── Edge probes: scheme 2 near the server's seq cap ──────────────
+
+    #[test]
+    fn edge_scheme_2_seq_at_the_server_cap() {
+        let topics = u64::try_from(BRIDGE_TOPICS.len()).unwrap();
+        assert_eq!(topics, 7);
+        // The last offset whose every topic fits under MAX_SEQ.
+        let last_full = (MAX_SEQ - (topics - 1)) / topics;
+        assert_eq!(last_full, 14_285_713);
+        for topic in 0..BRIDGE_TOPICS.len() {
+            let seq = bridge_seq(2, topic, last_full).unwrap();
+            assert!(seq <= MAX_SEQ);
+        }
+        // One offset further, only the topics whose seq stays at or under
+        // the cap get one; MAX_SEQ itself is accepted.
+        let next = last_full + 1;
+        let mapped: Vec<Option<u64>> = (0..BRIDGE_TOPICS.len()).map(|t| bridge_seq(2, t, next)).collect();
+        assert_eq!(
+            mapped,
+            vec![
+                Some(99_999_998),
+                Some(99_999_999),
+                Some(MAX_SEQ),
+                None,
+                None,
+                None,
+                None
+            ]
+        );
+        // No two (topic, offset) pairs near the cap share a seq.
+        let mut seen = std::collections::HashSet::new();
+        for offset in (last_full - 3)..=(last_full + 2) {
+            for topic in 0..BRIDGE_TOPICS.len() {
+                if let Some(seq) = bridge_seq(2, topic, offset) {
+                    assert!(seen.insert(seq), "collision at topic {topic} offset {offset}");
+                }
+            }
+        }
+        // Overflow of the multiplication itself is refused, not wrapped.
+        assert_eq!(bridge_seq(2, 6, u64::MAX / 7 + 1), None);
+        assert_eq!(bridge_seq(2, 7, 0), None);
+        assert_eq!(
+            bridge_seq(3, 0, 1),
+            Some(7),
+            "unknown schemes number like scheme 2"
+        );
+    }
+
+    fn edge_judge_record(offset: u64, session: &str) -> pv_bridge::StoredEvent {
+        stored_bridge_event(
+            "agent.judge",
+            offset,
+            json!({
+                "metadata": {"uid": format!("judge-{session}-{offset}"), "sequence": 0},
+                "class_name": "agent.judge",
+                "time": 1767225600000u64,
+                "time_iso": "2026-01-01T00:00:00.000Z",
+                "status_id": 1,
+                "session_uid": session,
+                "ai_agent": {"version": "1.0.0", "charter": {"name": "agent", "type_id": 1}, "instance_uid": "i"},
+                "payload": {"kind": "trace", "finding": true}
+            }),
+        )
+    }
+
+    #[test]
+    fn edge_a_judge_record_past_the_cap_is_banked_not_uploaded() {
+        let dir = test_tempdir("bridge-judge-cap");
+        write_bridge_manifest(dir.path());
+        let offset = 14_285_714u64;
+        append_bridge_event(dir.path(), "agent.judge", edge_judge_record(offset, "cap-s"));
+        let scan = scan_bridge_candidates(dir.path(), &SyncState::default(), &BTreeSet::new());
+        assert!(scan
+            .candidates
+            .iter()
+            .all(|candidate| candidate.events.iter().all(|event| event.tag != "judge")));
+        assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&offset));
+    }
+
+    #[test]
+    fn edge_a_scheme_1_session_with_only_judge_records() {
+        let dir = test_tempdir("bridge-judge-only");
+        write_bridge_manifest(dir.path());
+        for offset in 0..3u64 {
+            append_bridge_event(
+                dir.path(),
+                "agent.judge",
+                edge_judge_record(offset, "old-judge-only"),
+            );
+        }
+        let mut state = SyncState::default();
+        state.sessions.insert(
+            "old-judge-only".to_owned(),
+            SessionSyncState {
+                last_synced_seq: 0,
+                receipt_synced: false,
+                quarantined: false,
+                synced_any: true,
+                atif_synced: false,
+                bridge_seq_scheme: Some(1),
+            },
+        );
+        let scan = scan_bridge_candidates(dir.path(), &state, &BTreeSet::new());
+        // Every record is read (banked) and none is uploaded.
+        assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&2));
+        let candidate = scan
+            .candidates
+            .iter()
+            .find(|candidate| candidate.session.external_id == "old-judge-only");
+        if let Some(candidate) = candidate {
+            assert!(candidate.events.is_empty());
+        }
+        eprintln!(
+            "candidate for a judge-only scheme 1 session: {}",
+            candidate.is_some()
+        );
+        // The same with no stored scheme but an earlier sync (scheme 0).
+        state
+            .sessions
+            .get_mut("old-judge-only")
+            .unwrap()
+            .bridge_seq_scheme = None;
+        let scan = scan_bridge_candidates(dir.path(), &state, &BTreeSet::new());
+        assert!(scan
+            .candidates
+            .iter()
+            .all(|candidate| candidate.events.iter().all(|event| event.tag != "judge")));
+        assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&2));
+    }
 }
