@@ -89,6 +89,7 @@ fn judge_config(mode: JudgeModeConfig) -> JudgeConfig {
         pilot: None,
         drift: None,
         background_max_concurrency: 8,
+        max_concurrency_per_caller: None,
         trace: None,
         breaker: None,
         standing_rules: Vec::new(),

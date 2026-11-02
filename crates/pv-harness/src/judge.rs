@@ -483,6 +483,12 @@ pub struct JudgeConfig {
     /// admission so background work never starves it (default 8).
     #[serde(default = "default_background_concurrency")]
     pub background_max_concurrency: usize,
+    /// Tool-call judge calls one agent instance may have in flight
+    /// (default: a quarter of `max_concurrency`, at least 1). Beyond it a
+    /// call fails as saturated, so one caller cannot fill the judge and
+    /// make every other agent's judged calls fail.
+    #[serde(default)]
+    pub max_concurrency_per_caller: Option<usize>,
     /// Trace judging.
     #[serde(default)]
     pub trace: Option<JudgeTraceConfig>,
@@ -594,6 +600,14 @@ impl JudgeConfig {
                 "[judge] is set but enables nothing: tag tools under [[judge.tools]], or set \
                  [judge.trace], [judge.breaker] or [[judge.standing_rules]]"
                     .to_owned(),
+            );
+        }
+        if self
+            .max_concurrency_per_caller
+            .is_some_and(|share| share == 0 || share > self.max_concurrency)
+        {
+            errors.push(
+                "judge.max_concurrency_per_caller must be between 1 and judge.max_concurrency".to_owned(),
             );
         }
         if !(1..=MAX_CONCURRENCY_CEILING).contains(&self.background_max_concurrency) {
@@ -1049,6 +1063,9 @@ pub struct JudgeService {
     /// Background judging (traces, the breaker) has its own concurrency
     /// limit, so it can never starve tool-call admission.
     background: JudgeRunner,
+    /// Judge calls in flight per agent instance, and the most one may have.
+    caller_in_flight: parking_lot::Mutex<HashMap<String, usize>>,
+    caller_share: usize,
     trace: Option<JudgeTraceConfig>,
     breaker: Option<JudgeBreakerConfig>,
     standing_rules: Vec<StandingRuleConfig>,
@@ -1179,6 +1196,10 @@ impl JudgeService {
             pilot_cap: config.pilot.map(|pilot| pilot.daily_block_cap),
             denials: parking_lot::Mutex::new(DenialLog::default()),
             shared_denials: std::sync::OnceLock::new(),
+            caller_in_flight: parking_lot::Mutex::new(HashMap::new()),
+            caller_share: config
+                .max_concurrency_per_caller
+                .unwrap_or((config.max_concurrency / 4).max(1)),
             metrics,
         })
     }
@@ -1455,6 +1476,7 @@ impl JudgeService {
         tool: &str,
         arguments: &Value,
         context: SessionContext,
+        caller: &str,
     ) -> (Vec<JudgeOutcome>, u64) {
         let started = std::time::Instant::now();
         let fail_all = |kind: pv_judge::FailureKind, detail: &str| -> Vec<JudgeOutcome> {
@@ -1474,6 +1496,13 @@ impl JudgeService {
                     })
                 })
                 .collect()
+        };
+        let Some(_slot) = CallerSlot::take(self, caller) else {
+            let outcomes = fail_all(
+                pv_judge::FailureKind::Saturated,
+                "this agent already has its share of judge calls in flight",
+            );
+            return (outcomes, micros_since(started));
         };
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             let outcomes = fail_all(
@@ -1589,17 +1618,25 @@ impl JudgeService {
             .set(u64::try_from(tripped).unwrap_or(u64::MAX));
     }
 
-    /// Pilot cap: count one score-based judge block for `tool` today and
-    /// say whether it may be enforced. `true` without a cap. A state
-    /// store failure keeps the block (fail closed).
-    pub(crate) fn pilot_admits_block(&self, store: &dyn pv_state::StateStore, tool: &str) -> bool {
+    /// Pilot cap: count one score-based judge block for `tool` and
+    /// `caller` (the agent instance) today and say whether it may be
+    /// enforced. `true` without a cap. A state store failure keeps the
+    /// block (fail closed). The count is per caller: with one count per
+    /// tool, an agent could use up the day's cap with obviously off-task
+    /// calls and let every other agent's blocked calls through.
+    pub(crate) fn pilot_admits_block(
+        &self,
+        store: &dyn pv_state::StateStore,
+        tool: &str,
+        caller: &str,
+    ) -> bool {
         let Some(cap) = self.pilot_cap else {
             return true;
         };
         let day = pv_core::time::now_ms() / 86_400_000;
         let key = format!(
             "judge:pilot:{day}:{}",
-            pv_core::digest::sha256_hex(tool.as_bytes())
+            pv_core::digest::sha256_hex(format!("{tool}\n{caller}").as_bytes())
         );
         match store.add(&key, 1) {
             Ok(count) => {
@@ -1856,6 +1893,39 @@ pub async fn calibrate_from_config(
 // Background judging: recorded outputs, the breaker's second opinion,
 // and `agent.judge` events.
 // ---------------------------------------------------------------------------
+
+/// One of a caller's judge-call slots, released on drop.
+struct CallerSlot<'a> {
+    service: &'a JudgeService,
+    caller: String,
+}
+
+impl<'a> CallerSlot<'a> {
+    fn take(service: &'a JudgeService, caller: &str) -> Option<Self> {
+        let mut in_flight = service.caller_in_flight.lock();
+        let count = in_flight.entry(caller.to_owned()).or_insert(0);
+        if *count >= service.caller_share {
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            service,
+            caller: caller.to_owned(),
+        })
+    }
+}
+
+impl Drop for CallerSlot<'_> {
+    fn drop(&mut self) {
+        let mut in_flight = self.service.caller_in_flight.lock();
+        if let Some(count) = in_flight.get_mut(&self.caller) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                in_flight.remove(&self.caller);
+            }
+        }
+    }
+}
 
 /// Holds a session open (its background-verdict count) while a
 /// background verdict is on its way, so a close waits for it and the
@@ -2257,22 +2327,26 @@ mod tests {
 
     #[test]
     fn the_pilot_cap_keeps_the_block_when_the_store_is_down() {
-        assert!(service(Some(1)).pilot_admits_block(&DownStore, "t"));
+        assert!(service(Some(1)).pilot_admits_block(&DownStore, "t", "a"));
     }
 
     #[test]
-    fn the_pilot_cap_counts_per_tool() {
+    fn the_pilot_cap_counts_per_tool_and_caller() {
         let judge = service(Some(2));
         let store = pv_state::InMemoryStore::new();
-        assert!(judge.pilot_admits_block(&store, "t"));
-        assert!(judge.pilot_admits_block(&store, "t"));
-        assert!(!judge.pilot_admits_block(&store, "t"));
+        assert!(judge.pilot_admits_block(&store, "t", "a"));
+        assert!(judge.pilot_admits_block(&store, "t", "a"));
+        assert!(!judge.pilot_admits_block(&store, "t", "a"));
         assert!(
-            judge.pilot_admits_block(&store, "other"),
+            judge.pilot_admits_block(&store, "other", "a"),
             "another tool has its own cap"
         );
         assert!(
-            service(None).pilot_admits_block(&DownStore, "t"),
+            judge.pilot_admits_block(&store, "t", "b"),
+            "one agent using up its cap does not let another agent's blocks through"
+        );
+        assert!(
+            service(None).pilot_admits_block(&DownStore, "t", "a"),
             "no cap: always enforce"
         );
     }

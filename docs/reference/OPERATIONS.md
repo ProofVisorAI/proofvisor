@@ -413,7 +413,7 @@ covers running it.
 | Phase | Configuration | What happens |
 | --- | --- | --- |
 | Shadow | `mode = "shadow"` | The judge scores every tagged call and never blocks. Each `agent.tool_call` event's `payload.judge.would_block` says whether judge-aware policy would have blocked a call the rest of policy allowed, and each such call is also published as its own `agent.judge` event (`payload.kind = "shadow"`). Compare that against what actually happened before enforcing. |
-| Capped pilot | `mode = "enforce"` with `[judge.pilot] daily_block_cap` | Policy acts on the verdicts for the tagged tools, but at most `daily_block_cap` score-based blocks per tool per UTC day. Later ones are recorded (`pilot_cap_reached: true`) and let through. Tag only a few tools per design partner. |
+| Capped pilot | `mode = "enforce"` with `[judge.pilot] daily_block_cap` | Policy acts on the verdicts for the tagged tools, but at most `daily_block_cap` score-based blocks per tool and agent instance per UTC day. Later ones are recorded (`pilot_cap_reached: true`) and let through. Tag only a few tools per design partner. |
 | Scale | `mode = "enforce"`, no `[judge.pilot]` | Widen `[[judge.tools]]` once calibration holds. |
 
 ### Failure modes

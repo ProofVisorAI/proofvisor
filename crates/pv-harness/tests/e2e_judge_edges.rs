@@ -90,6 +90,7 @@ fn judge_config(mode: JudgeModeConfig, endpoint: &str) -> JudgeConfig {
         pilot: None,
         drift: None,
         background_max_concurrency: 8,
+        max_concurrency_per_caller: None,
         trace: None,
         breaker: None,
         standing_rules: Vec::new(),
@@ -457,12 +458,111 @@ async fn retries_keep_refusals_refused_and_execute_allowed_calls_once() {
 
 // ── Concurrency ─────────────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn many_judged_calls_at_once_in_one_session() {
+/// A call the session checks will refuse never reaches the judge: the
+/// session of another agent, or a closed session. Its arguments would
+/// otherwise leave for a cloud judge and use judge capacity for nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn calls_the_session_checks_refuse_are_not_judged() {
     let (h, mock) = scripted(
         judge_config(JudgeModeConfig::Enforce, "http://127.0.0.1:9/x"),
-        |_| {},
+        |config| config.require_identity = true,
     );
+    let owner = format!("Bearer {}", token("agent-owner", "jti-owner", None, None));
+    let intruder = format!("Bearer {}", token("agent-intruder", "jti-intruder", None, None));
+    let call_as = |auth: String, session: &'static str| {
+        let h = h.clone();
+        async move {
+            send(
+                &h,
+                rpc(
+                    session,
+                    &tools_call(TOOL, Some(json!({"n": 1}))),
+                    &[("authorization", &auth)],
+                ),
+            )
+            .await
+        }
+    };
+    assert_eq!(call_as(owner.clone(), "owned").await.status, 200);
+    let judged = mock.calls();
+    // Another agent's session.
+    let reply = call_as(intruder, "owned").await;
+    assert_ne!(reply.status, 200, "{}", reply.json);
+    assert_eq!(
+        mock.calls(),
+        judged,
+        "a call on another agent's session was judged"
+    );
+    // A closed session.
+    let session = h.state.sessions.get("owned").unwrap();
+    h.state
+        .finalizer
+        .close_session(session, pv_events::StopReason::SessionClosed)
+        .await
+        .unwrap();
+    let reply = call_as(owner, "owned").await;
+    assert_ne!(reply.status, 200, "{}", reply.json);
+    assert_eq!(mock.calls(), judged, "a call on a closed session was judged");
+}
+
+/// One agent cannot fill the judge: past its share, its own calls fail
+/// as saturated while another agent's calls are still judged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn one_caller_cannot_fill_the_judge_for_everyone() {
+    let mut judge = judge_config(JudgeModeConfig::Enforce, "http://127.0.0.1:9/x");
+    judge.max_concurrency = 4;
+    judge.max_concurrency_per_caller = Some(2);
+    let (h, mock) = scripted(judge, |config| config.require_identity = true);
+    mock.set_scorer(|_| MockBehavior::delayed(Duration::from_millis(600), mismatch(0.05)));
+    let greedy = token("agent-greedy", "jti-greedy", None, None);
+    let auth = format!("Bearer {greedy}");
+    let mut handles = Vec::new();
+    for n in 0..4 {
+        let h = h.clone();
+        let auth = auth.clone();
+        handles.push(tokio::spawn(async move {
+            send(
+                &h,
+                rpc(
+                    &format!("g-{n}"),
+                    &tools_call(TOOL, Some(json!({"n": n}))),
+                    &[("authorization", &auth)],
+                ),
+            )
+            .await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let other = token("agent-other", "jti-other", None, None);
+    let reply = send(
+        &h,
+        rpc(
+            "o-1",
+            &tools_call(TOOL, Some(json!({"n": 0}))),
+            &[("authorization", &format!("Bearer {other}"))],
+        ),
+    )
+    .await;
+    assert_eq!(reply.status, 200, "another agent is still judged: {}", reply.json);
+    let mut saturated = 0;
+    for handle in handles {
+        let reply = handle.await.unwrap();
+        if reply.code() == "JUDGE_UNAVAILABLE" {
+            saturated += 1;
+        } else {
+            assert_eq!(reply.status, 200, "{}", reply.json);
+        }
+    }
+    assert_eq!(saturated, 2, "the greedy agent gets its share of 2, no more");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn many_judged_calls_at_once_in_one_session() {
+    let mut judge = judge_config(JudgeModeConfig::Enforce, "http://127.0.0.1:9/x");
+    // One caller sends all 60 at once; this test is about concurrency,
+    // so it lifts the per-caller share.
+    judge.max_concurrency_per_caller = Some(64);
+    let (h, mock) = scripted(judge, |_| {});
     mock.set_scorer(|request| {
         let risky = request.validated_args["n"].as_i64().unwrap_or(0) % 2 == 1;
         MockBehavior::delayed(
