@@ -3325,7 +3325,9 @@
           '<td style="color: var(--fg-2)">' + timeAgoCell(d.lastSeenAt) + "</td>" +
           '<td>' +
             '<button class="btn" data-action="edit" title="Rename or change environment — the ID, token, and receipts stay put">Edit</button> ' +
-            '<button class="btn" data-action="rotate">Rotate</button> ' +
+            // The demo deployment's ingest token is never revealed and the
+            // API refuses to rotate it, so it gets no Rotate button.
+            (d.isDemo ? "" : '<button class="btn" data-action="rotate">Rotate</button> ') +
             '<button class="btn danger" data-action="delete">Delete</button>' +
           "</td>" +
         "</tr>";
@@ -3374,7 +3376,7 @@
                     notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
                   });
                 })
-                  .catch(function (err) { toast(err.message || "Rotation failed", true); });
+                  .catch(function (err) { toast(rotateErrorText(err), true); });
               },
             });
           } else if (btn.getAttribute("data-action") === "delete") {
@@ -3452,7 +3454,7 @@
           '<dt style="color:var(--fg-3)">Ingest token</dt><dd class="mono">' + esc(d.ingestTokenHint) + ' <span style="color:var(--fg-3);font-size:11px">(full token shown once at create/rotate)</span></dd>' +
         "</dl>" +
         '<div style="margin-top: 12px; display:flex; gap:8px">' +
-          '<button class="btn" id="depRotate">Rotate token</button>' +
+          (d.isDemo ? "" : '<button class="btn" id="depRotate">Rotate token</button>') +
           '<button class="btn danger" id="depDelete">Delete</button>' +
         "</div>" +
       "</div>" +
@@ -3500,7 +3502,7 @@
               notice: "The previous ingest token is invalidated immediately; every daemon using it will fail to connect until you swap the value.",
             });
           })
-            .catch(function (err) { toast(err.message, true); });
+            .catch(function (err) { toast(rotateErrorText(err), true); });
         },
       });
     });
@@ -3624,6 +3626,12 @@
     setTimeout(function () { backdrop.querySelector("#ed_name").focus(); }, 20);
   }
 
+  function rotateErrorText(err) {
+    var code = (err && (err.errorCode || (err.data && (err.data.errorCode || err.data.error)))) || "";
+    if (code === "demo_deployment") return "The demo deployment has no real ingest token to rotate. Remove the demo data from the Overview when you are done with it.";
+    if (err && err.status === 403) return "Members can't rotate tokens — ask an owner or admin.";
+    return (err && err.message) || "Rotation failed";
+  }
   function openDeleteDeploymentModal(depId, onSuccess) {
     confirmModal({
       title: "Delete deployment?",
@@ -6755,7 +6763,7 @@
       });
       bodyEl2.innerHTML = list.length
         ? '<div class="table-wrap"><table>' +
-            '<thead><tr><th>Event</th><th>Status</th><th class="num">Attempts</th><th class="num">HTTP</th><th class="num">Latency</th><th>When</th><th><span class="sr-only">Actions</span></th></tr></thead>' +
+            '<thead><tr><th>Event</th><th>Status</th><th class="num">Attempts</th><th class="num">HTTP</th><th class="num" title="Time from the event to the successful delivery, retries included">Delivered after</th><th>When</th><th><span class="sr-only">Actions</span></th></tr></thead>' +
             '<tbody id="whdRows">' + whdRows(list) + '</tbody>' +
           '</table></div>' +
           '<div id="whdFooter" style="padding:10px 0 0;' + (whdCursor ? "" : " display:none") + '">' +
