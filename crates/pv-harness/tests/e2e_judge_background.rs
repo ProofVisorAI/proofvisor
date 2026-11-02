@@ -147,6 +147,42 @@ struct Harness {
 }
 
 fn build(judge: JudgeConfig, mock: &Arc<MockJudge>, tweak: impl FnOnce(&mut HarnessConfig)) -> Harness {
+    build_with(judge, Arc::clone(mock) as _, tweak)
+}
+
+/// A judge that answers only after the test lets it: the order of the
+/// reply and the verdict is then fixed by the test, not by timing.
+struct GatedJudge {
+    inner: Arc<MockJudge>,
+    gate: Arc<tokio::sync::Semaphore>,
+}
+
+impl pv_judge::JudgeAdapter for GatedJudge {
+    fn id(&self) -> &ModelPin {
+        self.inner.id()
+    }
+
+    fn kind(&self) -> pv_judge::AdapterKind {
+        self.inner.kind()
+    }
+
+    fn score<'a>(
+        &'a self,
+        request: &'a pv_judge::JudgeRequest,
+        predicate: &'a pv_judge::PredicateDef,
+    ) -> pv_judge::adapter::BoxFuture<'a, Result<pv_judge::RawScores, pv_judge::JudgeError>> {
+        Box::pin(async move {
+            let _permit = self.gate.acquire().await.expect("gate open");
+            self.inner.score(request, predicate).await
+        })
+    }
+}
+
+fn build_with(
+    judge: JudgeConfig,
+    adapter: Arc<dyn pv_judge::JudgeAdapter>,
+    tweak: impl FnOnce(&mut HarnessConfig),
+) -> Harness {
     let mut config = common::leaked_test_config();
     tweak(&mut config);
     config.judge = Some(judge.clone());
@@ -168,9 +204,9 @@ fn build(judge: JudgeConfig, mock: &Arc<MockJudge>, tweak: impl FnOnce(&mut Harn
     let bus = Arc::new(common::RecordingBus::default());
     let state = common::app_state(config, sandbox, Arc::clone(&bus) as _, 11);
     let mut adapters: BTreeMap<String, Arc<dyn pv_judge::JudgeAdapter>> = BTreeMap::new();
-    adapters.insert("bg".into(), Arc::clone(mock) as _);
+    adapters.insert("bg".into(), Arc::clone(&adapter));
     if judge.adapters.iter().any(|adapter| adapter.name == "bg-breaker") {
-        adapters.insert("bg-breaker".into(), Arc::clone(mock) as _);
+        adapters.insert("bg-breaker".into(), adapter);
     }
     let service = JudgeService::new(&judge, adapters, Arc::clone(&state.metrics)).unwrap();
     Harness {
@@ -240,6 +276,31 @@ fn judge_events(bus: &common::RecordingBus, session: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Wait until `turns` model answers of `session` are recorded, so the
+/// loop breaker has observed them before the next request. The breaker
+/// records an answer in the audit worker after the reply is sent; a
+/// fixed pause raced that under load.
+async fn settle(h: &Harness, session: &str, turns: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let recorded = h
+            .bus
+            .payloads
+            .lock()
+            .iter()
+            .filter(|event| event["class_name"] == "agent.stop_reason" && event["session_uid"] == session)
+            .count();
+        if recorded >= turns {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "only {recorded} answers recorded for {session}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 async fn wait_judge_events(bus: &common::RecordingBus, session: &str, count: usize) -> Vec<Value> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -300,35 +361,38 @@ async fn a_slow_trace_verdict_does_not_delay_the_tool_reply() {
     let url = backend(INJECTED).await;
     let mut judge = base_judge();
     judge.trace = Some(trace());
-    let mock = scripted(Arc::default(), Duration::from_millis(1_800));
-    let h = build(judge, &mock, |config| {
+    // The judge answers only once the reply is back. A reply that waited
+    // for the verdict would wait until the deadline, and the verdict would
+    // then be recorded as a timeout instead of a score.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let adapter = Arc::new(GatedJudge {
+        inner: scripted(Arc::default(), Duration::ZERO),
+        gate: Arc::clone(&gate),
+    });
+    let h = build_with(judge, adapter, |config| {
         config.tool_upstream_url = Some(url);
         config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
     });
-    let started = Instant::now();
     let reply = tool(&h, "t-fast", "unsigned", "read_ticket").await;
-    let elapsed = started.elapsed();
     assert_eq!(reply.status, 200, "{}", reply.json);
-    // Had the reply waited for the verdict, the verdict would be recorded
-    // by now. This holds however busy the machine is, unless the reply
-    // alone took longer than the judge's 1.8 s.
     let session = h.state.sessions.get("t-fast").unwrap();
-    assert_eq!(
-        session.background_jobs_count(),
-        1,
-        "the tool reply waited for the background verdict ({elapsed:?})"
-    );
     assert!(
         judge_events(&h.bus, "t-fast").is_empty(),
-        "the tool reply came after the verdict ({elapsed:?})"
+        "the tool reply came after the verdict"
     );
-    // The verdict still lands, and the close waits for it.
+    gate.add_permits(1);
+    // The verdict still lands, scored, and the close waits for it.
     h.state
         .finalizer
         .close_session(session, pv_events::StopReason::SessionClosed)
         .await
         .unwrap();
-    assert_eq!(judge_events(&h.bus, "t-fast").len(), 1);
+    let events = judge_events(&h.bus, "t-fast");
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]["payload"]["verdict"]["status"], "scored",
+        "the verdict timed out: the reply waited for it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -554,7 +618,7 @@ async fn the_judge_can_spare_repetition_that_is_progress() {
         )
         .await;
         assert_eq!(reply.status, 200, "turn {turn}: {}", reply.json);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settle(&h, "b-spare", turn + 1).await;
     }
     let events = wait_judge_events(&h.bus, "b-spare", 3).await;
     assert!(events.iter().all(|event| event["payload"]["kind"] == "breaker"));
@@ -592,7 +656,7 @@ async fn a_failing_judge_stops_being_asked_for_a_while() {
         )
         .await;
         assert_eq!(reply.status, 200, "turn {turn}: {}", reply.json);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settle(&h, "b-down", turn + 1).await;
     }
     // Three failures in a row, then no more calls during the pause.
     assert_eq!(
@@ -628,7 +692,7 @@ async fn the_judge_can_trip_the_breaker_on_paraphrased_loops() {
             refused = Some((turn, reply.status));
             break;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        settle(&h, "b-trip", turn + 1).await;
     }
     let (turn, status) = refused.expect("the breaker must trip");
     assert!(turn <= 5, "tripped late, at turn {turn}");
