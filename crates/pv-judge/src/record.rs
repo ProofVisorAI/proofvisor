@@ -217,6 +217,99 @@ mod tests {
         assert_eq!(back, record);
     }
 
+    /// The record's fields, as the configuration reference documents them.
+    /// The receipt signs the record through the event chain, so this list
+    /// is the record's own whitelist: a field added, renamed or removed
+    /// fails this test until the list and the documentation are updated.
+    const RECORD_FIELDS: &[&str] = &[
+        "mode",
+        "judge_us",
+        "verdicts",
+        "decision",
+        "enforced",
+        "would_block",
+        "policy_decision",
+        "policy",
+        "decision_predicate",
+        "cause",
+        "pilot_cap_reached",
+        "drift_tripped",
+    ];
+    const VERDICT_FIELDS: &[&str] = &[
+        "predicate_id",
+        "adapter",
+        "adapter_kind",
+        "model",
+        "status",
+        "probs",
+        "detail",
+        "latency_us",
+        "review_id",
+    ];
+
+    #[test]
+    fn record_fields_are_exactly_the_documented_ones() {
+        let scored = JudgeOutcome::Scored(Verdict {
+            predicate_id: "arg_matches_task@1".into(),
+            probs: vec![LabelProb {
+                label: "mismatch".into(),
+                ppm: 820_000,
+            }],
+            model: ModelPin::new("judge", "7", "d".repeat(64)).unwrap(),
+            latency_us: 1,
+        });
+        let failed = JudgeOutcome::Failed(crate::JudgeFailure {
+            predicate_id: "arg_matches_task@1".into(),
+            model: ModelPin::new("judge", "7", "d".repeat(64)).unwrap(),
+            kind: crate::FailureKind::Timeout,
+            detail: "late".into(),
+            latency_us: 1,
+        });
+        let decision = JudgeDecision {
+            action: JudgeAction::Deny,
+            predicate_id: Some("arg_matches_task@1".into()),
+            cause: DecisionCause::Threshold {
+                label: "mismatch".into(),
+                ppm: 820_000,
+                threshold_ppm: 700_000,
+            },
+            reason: "r".into(),
+        };
+        let mut verdicts = vec![
+            OutcomeRecord::from_outcome(&scored, "local", AdapterKind::Local),
+            OutcomeRecord::from_outcome(&failed, "local", AdapterKind::Local),
+        ];
+        if let Some(first) = verdicts.first_mut() {
+            first.review_id = Some("r-1".into());
+        }
+        let mut record = JudgeRecord::new(JudgeMode::Enforce, 1, verdicts, &decision, true);
+        record.policy = Some("p".into());
+        record.pilot_cap_reached = true;
+        record.drift_tripped = vec!["arg_matches_task@1".into()];
+        let value = serde_json::to_value(&record).unwrap();
+        let keys = |object: &serde_json::Value| -> std::collections::BTreeSet<String> {
+            object.as_object().unwrap().keys().cloned().collect()
+        };
+        let expected = |fields: &[&str]| fields.iter().map(|field| (*field).to_owned()).collect();
+        assert_eq!(keys(&value), expected(RECORD_FIELDS));
+        let mut seen = std::collections::BTreeSet::new();
+        for verdict in value
+            .get("verdicts")
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+        {
+            seen.extend(keys(verdict));
+        }
+        assert_eq!(seen, expected(VERDICT_FIELDS));
+        let reference = include_str!("../../../docs/reference/CONFIGURATION.md");
+        for field in RECORD_FIELDS {
+            assert!(
+                reference.contains(&format!("`{field}`")),
+                "CONFIGURATION.md does not document `{field}`"
+            );
+        }
+    }
+
     #[test]
     fn failure_detail_is_bounded() {
         let outcome = JudgeOutcome::Failed(JudgeFailure {

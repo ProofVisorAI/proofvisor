@@ -406,6 +406,7 @@ async fn tool_outputs_are_judged_and_the_finding_is_in_the_unsigned_trajectory()
     assert_eq!(payload["source"], "tool");
     assert_eq!(payload["tool"], "read_ticket");
     assert_eq!(payload["finding"], true);
+    assert_eq!(event["severity_id"], 4, "a finding is a high-severity event");
     assert_eq!(payload["risk_ppm"], 950000);
     assert_eq!(payload["verdict"]["status"], "scored");
     assert_eq!(
@@ -819,6 +820,10 @@ async fn shadow_would_blocks_are_their_own_events() {
     let events = wait_judge_events(&h.bus, "sh-1", 1).await;
     let payload = &events[0]["payload"];
     assert_eq!(payload["kind"], "shadow");
+    assert_eq!(
+        events[0]["severity_id"], 3,
+        "a would-be block is a medium-severity event"
+    );
     assert_eq!(payload["tool"], "update_ticket");
     assert_eq!(payload["record"]["would_block"], true);
     // Not a would-be block: no extra event.

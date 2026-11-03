@@ -57,10 +57,14 @@ const SHARED_DENIAL_MAX_AGE_MS: u64 = 24 * 3_600_000;
 /// A refusal of a kind this instance already shared within this time is
 /// not written again: repeating one refusal cannot fill a shared list.
 const SHARED_DENIAL_REPEAT_MS: u64 = 3_600_000;
+/// Longest wait for room in the audit queue for a semantic judge event.
+const JUDGE_EVENT_WAIT: Duration = Duration::from_secs(2);
 /// Shared refusal reads background judging may have in flight.
 const SHARED_DENIAL_READS_AT_ONCE: usize = 4;
 /// Longest wait for the shared refusal log in background judging.
 const SHARED_DENIAL_READ_WAIT: Duration = Duration::from_millis(200);
+/// `min_confidence` of a threshold rule that does not set one.
+pub const DEFAULT_MIN_CONFIDENCE: f64 = 0.6;
 /// Longest mission `task` statement.
 pub const MAX_TASK_CHARS: usize = 4_096;
 /// Default concurrency limit for background judging.
@@ -335,7 +339,10 @@ pub struct JudgeThresholdConfig {
     /// Ask above this probability.
     #[serde(default)]
     pub ask_above: Option<f64>,
-    /// Ask when the most probable label is below this.
+    /// Ask when the most probable label is below this (default
+    /// [`DEFAULT_MIN_CONFIDENCE`]; 0 turns the check off). The
+    /// specification treats low-confidence output like the uncertain
+    /// band: a near-even verdict asks instead of being allowed.
     #[serde(default)]
     pub min_confidence: Option<f64>,
 }
@@ -578,7 +585,10 @@ impl JudgeConfig {
                     label: threshold.label.clone(),
                     deny_above_ppm: ppm(threshold.deny_above, "deny_above")?,
                     ask_above_ppm: ppm(threshold.ask_above, "ask_above")?,
-                    min_confidence_ppm: ppm(threshold.min_confidence, "min_confidence")?,
+                    min_confidence_ppm: ppm(
+                        Some(threshold.min_confidence.unwrap_or(DEFAULT_MIN_CONFIDENCE)),
+                        "min_confidence",
+                    )?,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -2637,49 +2647,75 @@ impl JudgeHooks {
     }
 
     /// Publish an `agent.judge` event (and, for unsigned sessions, an ATIF
-    /// step) for `session`. A full audit queue drops it and counts the drop.
+    /// step) for `session`. When the audit queue is full, the event waits
+    /// up to [`JUDGE_EVENT_WAIT`] for room, and the session's close waits
+    /// with it. An event that still finds no room is not dropped quietly:
+    /// the session is marked as having lost part of its record, as a lost
+    /// response capture is.
     pub(crate) fn emit(&self, session: &Arc<crate::session::Session>, payload: Value) {
         let kind = payload
             .get("kind")
             .and_then(Value::as_str)
             .unwrap_or("finding")
             .to_owned();
-        match self.worker.try_reserve(&session.id) {
-            Ok(permit) => permit.submit(crate::worker::WorkerJob {
-                session: Arc::clone(session),
-                identity: session.current_identity(),
-                class: pv_events::EventClass::Judge,
-                atif: Some(crate::worker::AtifCapture {
-                    source: pv_atif::Source::System,
-                    message: Value::String(format!("semantic judge {kind}: {payload}")),
-                    reasoning_content: None,
-                    model_name: None,
-                    tool_calls: None,
-                    observation: None,
-                    llm_call_count: Some(0),
-                }),
-                payload,
-                text: String::new(),
-                analyze_loop: false,
-                status: pv_events::StatusId::Success,
-                stop_reason: None,
-                native_stop_reason: None,
-                metrics: pv_events::EventMetrics::default(),
-                cost_usd_micros: 0,
-                prompt_token_correction: 0,
-                response_marker: None,
-                response_attempt: None,
+        let job = crate::worker::WorkerJob {
+            session: Arc::clone(session),
+            identity: session.current_identity(),
+            class: pv_events::EventClass::Judge,
+            atif: Some(crate::worker::AtifCapture {
+                source: pv_atif::Source::System,
+                message: Value::String(format!("semantic judge {kind}: {payload}")),
+                reasoning_content: None,
+                model_name: None,
+                tool_calls: None,
+                observation: None,
+                llm_call_count: Some(0),
             }),
-            Err(error) => {
-                tracing::warn!(session = %session.id, %error, kind, "semantic judge event dropped: audit queue full");
-                self.metrics
+            payload,
+            text: String::new(),
+            analyze_loop: false,
+            status: pv_events::StatusId::Success,
+            stop_reason: None,
+            native_stop_reason: None,
+            metrics: pv_events::EventMetrics::default(),
+            cost_usd_micros: 0,
+            prompt_token_correction: 0,
+            response_marker: None,
+            response_attempt: None,
+        };
+        if let Ok(permit) = self.worker.try_reserve(&session.id) {
+            permit.submit(job);
+            return;
+        }
+        let lost = {
+            let (metrics, session, kind) = (Arc::clone(&self.metrics), Arc::clone(session), kind.clone());
+            move |error: &str| {
+                tracing::error!(
+                    session = %session.id,
+                    error,
+                    kind,
+                    "semantic judge event lost: the audit queue stayed full; the session's record is incomplete"
+                );
+                metrics
                     .counter(
                         &format!("pv_judge_events_dropped_total{{kind=\"{kind}\"}}"),
-                        "Semantic judge events dropped because the audit queue was full",
+                        "Semantic judge events the audit queue had no room for",
                     )
                     .inc();
+                session.mark_capture_failed();
             }
-        }
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            lost("no async runtime to wait on");
+            return;
+        };
+        let (worker, guard) = (self.worker.clone(), PendingGuard::new(Arc::clone(session)));
+        runtime.spawn(async move {
+            let _guard = guard;
+            if let Err(error) = worker.submit_within(job, JUDGE_EVENT_WAIT).await {
+                lost(&error);
+            }
+        });
     }
 
     /// Judge a durable recorded output in the background, when trace
@@ -3670,6 +3706,66 @@ mod tests {
         assert!(refused("/output/x"));
         assert!(!refused("/outputs"));
         assert!(!refused("/password"));
+    }
+
+    /// Low-confidence output asks, as the specification's failure table
+    /// says, even when the rule sets no `min_confidence`; `0` turns the
+    /// check off.
+    #[test]
+    fn a_near_even_verdict_asks_by_default() {
+        let policy = |min_confidence: &str| {
+            let config: JudgeConfig = toml::from_str(&format!(
+                r#"
+                mode = "enforce"
+                [[adapters]]
+                name = "a"
+                kind = "cloud"
+                endpoint = "http://127.0.0.1:9/x"
+                model_name = "m"
+                model_version = "1"
+                weights_sha256 = "{}"
+                [[thresholds]]
+                predicate = "arg_matches_task@1"
+                label = "mismatch"
+                deny_above = 0.7
+                ask_above = 0.55
+                {min_confidence}
+                "#,
+                "a".repeat(64)
+            ))
+            .unwrap();
+            config.threshold_policy().unwrap()
+        };
+        let verdict = |mismatch: u32| {
+            [JudgeOutcome::Scored(pv_judge::Verdict {
+                predicate_id: "arg_matches_task@1".into(),
+                probs: vec![
+                    pv_judge::LabelProb {
+                        label: "match".into(),
+                        ppm: 1_000_000 - mismatch,
+                    },
+                    pv_judge::LabelProb {
+                        label: "mismatch".into(),
+                        ppm: mismatch,
+                    },
+                ],
+                model: pv_judge::ModelPin::new("m", "1", "a".repeat(64)).unwrap(),
+                latency_us: 1,
+            })]
+        };
+        let never = |_: &str| false;
+        // 0.49 mismatch: below ask_above, but the top label (0.51) is
+        // under the default floor of 0.6.
+        assert_eq!(
+            policy("").decide(&verdict(490_000), &never).action,
+            JudgeAction::Ask
+        );
+        assert_eq!(
+            policy("").decide(&verdict(100_000), &never).action,
+            JudgeAction::Allow
+        );
+        let off = policy("min_confidence = 0.0");
+        assert_eq!(off.decide(&verdict(490_000), &never).action, JudgeAction::Allow);
     }
 
     #[test]

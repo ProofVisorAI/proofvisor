@@ -591,8 +591,11 @@ async fn a_rule_split_across_two_messages_is_not_detected() {
         ]),
     )
     .await;
-    eprintln!(
-        "split rule present after compression: {}",
-        forwarded.to_string().contains(RULE)
+    // The known limit, asserted so a change in behaviour is noticed: a
+    // rule the application never sent whole is not recognized, so it is
+    // not put back (docs/FEATURES.md, "what is not proven or not built").
+    assert!(
+        !forwarded.to_string().contains(RULE),
+        "a split rule is now pinned back: update this test and the documented limit"
     );
 }

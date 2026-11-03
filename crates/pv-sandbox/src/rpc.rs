@@ -385,6 +385,35 @@ pub fn judge_denial_error(
     response
 }
 
+/// [`denial_error`] for a refusal by a policy that read the semantic
+/// judge's verdicts (WASM interface version 2): `error.data.predicate_ids`
+/// names the predicates the policy saw, and `error.data.predicate_id` the
+/// predicate when there was only one.
+pub fn judged_policy_error(
+    id: Option<&Value>,
+    code: DenialCode,
+    reason: &str,
+    predicate_ids: &[&str],
+) -> Value {
+    let only = match predicate_ids {
+        [only] => Some(*only),
+        _ => None,
+    };
+    let mut response = judge_denial_error(id, code, reason, only);
+    if let Some(map) = response.pointer_mut("/error/data").and_then(Value::as_object_mut) {
+        map.insert(
+            "predicate_ids".to_owned(),
+            Value::Array(
+                predicate_ids
+                    .iter()
+                    .map(|id| Value::String((*id).to_owned()))
+                    .collect(),
+            ),
+        );
+    }
+    response
+}
+
 /// Recover the request `id` for an error response, per JSON-RPC 2.0 §5:
 /// the response `id` MUST echo the request's when it is detectable, and
 /// be `null` only "if there was an error in detecting the id" (parse
@@ -645,6 +674,17 @@ mod tests {
         assert_eq!(e["error"]["code"], -32001);
         assert_eq!(e["error"]["data"]["reason"], "budget exceeded");
         assert_eq!(e["error"]["data"]["code"], "BUDGET_EXCEEDED");
+    }
+
+    #[test]
+    fn a_judged_policy_refusal_names_its_predicates() {
+        let one = judged_policy_error(Some(&json!(1)), DenialCode::PolicyDenied, "r", &["p@1"]);
+        assert_eq!(one["error"]["data"]["predicate_id"], "p@1");
+        assert_eq!(one["error"]["data"]["predicate_ids"], json!(["p@1"]));
+        let two = judged_policy_error(None, DenialCode::ApprovalRequired, "r", &["p@1", "q@1"]);
+        assert!(two["error"]["data"].get("predicate_id").is_none());
+        assert_eq!(two["error"]["data"]["predicate_ids"], json!(["p@1", "q@1"]));
+        assert_eq!(two["error"]["data"]["code"], "APPROVAL_REQUIRED");
     }
 
     #[test]

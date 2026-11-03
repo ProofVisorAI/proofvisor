@@ -563,6 +563,45 @@ impl WorkerHandle {
         }
     }
 
+    /// Submit, waiting up to `wait` for queue capacity, without waiting for
+    /// the job to be processed. For background work that must not be lost
+    /// to a moment of backpressure (the semantic judge's events).
+    pub async fn submit_within(&self, job: WorkerJob, wait: std::time::Duration) -> Result<(), String> {
+        let sender_for_session = self
+            .sender_for(&job.session.id)
+            .cloned()
+            .ok_or_else(|| "worker queue is closed".to_owned())?;
+        let capacity_permit = tokio::time::timeout(wait, Arc::clone(&self.capacity).acquire_owned())
+            .await
+            .map_err(|_| "worker queue stayed full".to_owned())?
+            .map_err(|_| "worker capacity semaphore is closed".to_owned())?;
+        let session = Arc::clone(&job.session);
+        session.worker_job_started();
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        let span = worker_span(&job);
+        let envelope = Envelope {
+            job,
+            completion: None,
+            span,
+            _capacity_permit: capacity_permit,
+        };
+        match tokio::time::timeout(wait, sender_for_session.send(envelope)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                error.0.job.session.worker_job_finished();
+                self.worker_job_finished();
+                Err("worker queue is closed".to_owned())
+            }
+            Err(_) => {
+                // The envelope was dropped with the send: its session and
+                // pending counts are released here.
+                session.worker_job_finished();
+                self.worker_job_finished();
+                Err("worker queue stayed full".to_owned())
+            }
+        }
+    }
+
     /// Submit and wait for completion. Intended for lifecycle operations and
     /// deterministic integration tests, never streaming hot paths.
     pub async fn submit_and_wait(&self, job: WorkerJob) -> Result<(), String> {
@@ -1714,12 +1753,14 @@ async fn persist_job(
 
     // Kept for the content sink: the event builder consumes it.
     let native_finish_reason = job.native_stop_reason.clone();
+    let severity = judge_event_severity(class, &payload);
     let mut builder = OcsfEventBuilder::new(
         class,
         job.session.id.clone(),
         job.identity.clone(),
         job.session.next_seq(),
     )
+    .severity(severity)
     .status(status)
     .payload(payload)
     .metrics(job.metrics);
@@ -1861,6 +1902,20 @@ async fn persist_job(
         response_marker,
         content,
     }))
+}
+
+/// OCSF severity of an event: a semantic-judge finding on a recorded
+/// output is high (4), a block shadow mode would have made is medium (3),
+/// and everything else informational (1).
+fn judge_event_severity(class: EventClass, payload: &Value) -> u8 {
+    if class != EventClass::Judge {
+        return 1;
+    }
+    match payload.get("kind").and_then(Value::as_str) {
+        Some("trace") if payload.get("finding") == Some(&Value::Bool(true)) => 4,
+        Some("shadow") => 3,
+        _ => 1,
+    }
 }
 
 /// The recorded output a job carries, for trace judging: a tool's
@@ -4040,6 +4095,39 @@ mod tests {
         drop(hog_a);
         drop(hog_b);
         worker.wait_idle().await;
+    }
+
+    /// A job submitted while the queue is full waits for room within the
+    /// limit and is then recorded; past the limit it fails, and the
+    /// session's pending count is released either way.
+    #[tokio::test]
+    async fn submit_within_waits_for_room_then_gives_up() {
+        let bridge = Arc::new(RecordingBus::default());
+        let worker = spawn_worker(
+            1,
+            bridge.clone(),
+            Arc::new(HashEmbedder::default()),
+            Arc::new(Registry::new()),
+        );
+        let hog = worker.try_reserve("hog").expect("hog");
+        let waiting = session(Workflow::Signed);
+        let failed = worker
+            .submit_within(job(Arc::clone(&waiting)), std::time::Duration::from_millis(50))
+            .await;
+        assert!(failed.is_err(), "the only slot is held");
+        let submit = {
+            let (worker, waiting) = (worker.clone(), Arc::clone(&waiting));
+            tokio::spawn(async move {
+                worker
+                    .submit_within(job(waiting), std::time::Duration::from_secs(5))
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drop(hog);
+        submit.await.unwrap().expect("room freed within the limit");
+        worker.wait_idle().await;
+        assert_eq!(bridge.events.lock().len(), 1, "the waiting job was recorded");
     }
 
     #[tokio::test]
