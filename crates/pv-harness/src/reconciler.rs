@@ -3599,7 +3599,9 @@ impl Finalizer {
                 });
             match outcome {
                 Ok(_) => {
-                    session.judged_promotion_done();
+                    if !session.judged_promotion_done() {
+                        continue;
+                    }
                     promoted += 1;
                     self.metrics
                         .counter(

@@ -884,9 +884,10 @@ impl Session {
             .is_ok_and(|left| left <= 1)
     }
 
-    /// The automatic promotion is no longer owed.
-    pub(crate) fn judged_promotion_done(&self) {
-        self.judged_promotion.store(0, Ordering::Release);
+    /// The automatic promotion is no longer owed. Returns true for the one
+    /// caller that settled it (two passes at once count it once).
+    pub(crate) fn judged_promotion_done(&self) -> bool {
+        self.judged_promotion.swap(0, Ordering::AcqRel) > 0
     }
 
     /// Refresh token-derived fields after successful validation.

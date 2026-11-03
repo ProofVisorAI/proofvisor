@@ -13,21 +13,32 @@
 ;; The verdicts are read only after the payload's last `"judge":[`. The
 ;; agent writes `arguments`, which come before `judge`, so text it puts
 ;; there cannot be taken for a verdict; inside a JSON string a quote is
-;; always escaped, so no string can hold the pattern either. A payload
-;; without a `mismatch` verdict is allowed (the harness itself refuses
-;; judge failures), and a probability with more digits than one in
-;; parts per million can have is denied. With several predicates that
-;; use a `mismatch` label, read `predicate_id` before the label as well.
+;; always escaped, so no string can hold the pattern either. Within the
+;; verdicts, only the entry of `arg_matches_task@1` is read, up to the
+;; next entry (each starts with `{"status":`). A payload without that
+;; verdict is allowed (the harness itself refuses judge failures), and a
+;; probability with more digits than one in parts per million can have
+;; is denied. Memory grows to fit any payload the host writes.
 ;; Memory: the patterns at 0, the payload from 4096 (see `alloc`).
 (module
   (memory (export "memory") 4)
   (data (i32.const 0) "\"label\":\"mismatch\",\"ppm\":")
   (data (i32.const 32) "\"judge\":[")
+  (data (i32.const 48) "\"predicate_id\":\"arg_matches_task@1\"")
+  (data (i32.const 96) "{\"status\":")
   (global $next (mut i32) (i32.const 4096))
   (func (export "alloc") (param $len i32) (result i32)
-    (local $ptr i32)
+    (local $ptr i32) (local $pages i32)
     (local.set $ptr (global.get $next))
     (global.set $next (i32.add (global.get $next) (local.get $len)))
+    ;; Grow to fit; if the host's cap refuses, its write fails and the
+    ;; call is denied.
+    (local.set $pages
+      (i32.sub
+        (i32.shr_u (i32.add (global.get $next) (i32.const 65535)) (i32.const 16))
+        (memory.size)))
+    (if (i32.gt_s (local.get $pages) (i32.const 0))
+      (then (drop (memory.grow (local.get $pages)))))
     (local.get $ptr))
   ;; 1 when the `nlen` bytes at `at` equal the pattern at `noff`.
   (func $matches (param $at i32) (param $noff i32) (param $nlen i32) (result i32)
@@ -70,10 +81,17 @@
         (br $scan)))
     (i32.const -1))
   (func (export "evaluate_v2") (param $ptr i32) (param $len i32) (result i32)
-    (local $end i32) (local $at i32) (local $ppm i32) (local $digit i32) (local $digits i32)
+    (local $end i32) (local $at i32) (local $next i32) (local $ppm i32) (local $digit i32) (local $digits i32)
     (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+    ;; The verdicts.
     (local.set $at (call $after_last (local.get $ptr) (local.get $len) (i32.const 32) (i32.const 9)))
     (if (i32.lt_s (local.get $at) (i32.const 0)) (then (return (i32.const 0))))
+    ;; The entry of arg_matches_task@1, up to the next entry.
+    (local.set $at (call $after_first (local.get $at) (local.get $end) (i32.const 48) (i32.const 35)))
+    (if (i32.lt_s (local.get $at) (i32.const 0)) (then (return (i32.const 0))))
+    (local.set $next (call $after_first (local.get $at) (local.get $end) (i32.const 96) (i32.const 10)))
+    (if (i32.ge_s (local.get $next) (i32.const 0))
+      (then (local.set $end (i32.sub (local.get $next) (i32.const 10)))))
     (local.set $at (call $after_first (local.get $at) (local.get $end) (i32.const 0) (i32.const 25)))
     (if (i32.lt_s (local.get $at) (i32.const 0)) (then (return (i32.const 0))))
     (block $number

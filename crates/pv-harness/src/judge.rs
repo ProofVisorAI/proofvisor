@@ -1628,16 +1628,28 @@ impl JudgeService {
             }
             return Err(pv_judge::DriftError::UnknownReview);
         }
-        // A store failure while counting gives the claim (and any count
-        // already made) back, so the review can be sent again.
-        let reviewed = drift_key(&predicate, &format!("band:{band}:reviewed"));
-        if let Err(error) = store.add(&reviewed, 1) {
-            store.refund(&claim, 1);
-            return Err(unavailable(error));
-        }
+        // Both counts in one atomic step (one Cluster slot), so another
+        // instance never reads a review counted as reviewed but not yet as
+        // correct; a failure gives the claim back, so the review can be
+        // sent again.
+        let count = |name: &str| pv_state::Spend {
+            key: drift_key(&predicate, &format!("band:{band}:{name}")),
+            amount: 1,
+            limit: u64::from(u32::MAX),
+        };
+        let mut spends = vec![count("reviewed")];
         if correct {
-            if let Err(error) = store.add(&drift_key(&predicate, &format!("band:{band}:correct")), 1) {
-                store.refund(&reviewed, 1);
+            spends.push(count("correct"));
+        }
+        match store.try_spend_many(&spends) {
+            Ok(pv_state::TrySpendOutcome::Committed { .. }) => {}
+            Ok(_) => {
+                store.refund(&claim, 1);
+                return Err(pv_judge::DriftError::Unavailable(
+                    "review counts are full".to_owned(),
+                ));
+            }
+            Err(error) => {
                 store.refund(&claim, 1);
                 return Err(unavailable(error));
             }
@@ -1670,21 +1682,26 @@ impl JudgeService {
     /// Operator reset of a predicate's drift switch and statistics, here
     /// and, with a shared store, on every instance. Returns whether it was
     /// tripped.
-    pub(crate) fn reset_drift(&self, predicate_id: &str) -> bool {
+    pub(crate) fn reset_drift(&self, predicate_id: &str) -> Result<bool, pv_judge::DriftError> {
         let Some(monitor) = &self.drift else {
-            return false;
+            return Ok(false);
         };
-        let mut was = monitor.reset(predicate_id);
+        let mut was = false;
         if let Some(store) = self.shared_drift.get() {
+            // The reset must reach the store, or the other instances (and
+            // this one, which writes its switch back) keep the switch.
+            let unavailable =
+                |error: pv_state::StateError| pv_judge::DriftError::Unavailable(error.to_string());
             let tripped_key = drift_key(predicate_id, "tripped");
-            was |= store.get(&tripped_key).unwrap_or(0) > 0;
+            was |= store.get(&tripped_key).map_err(unavailable)? > 0;
             // Every instance clears its own switch when this count moves;
             // a switch that merely vanished from the store is kept.
-            if let Ok(generation) = store.add(&drift_key(predicate_id, "reset"), 1) {
-                self.drift_reset_seen
-                    .lock()
-                    .insert(predicate_id.to_owned(), generation);
-            }
+            let generation = store
+                .add(&drift_key(predicate_id, "reset"), 1)
+                .map_err(unavailable)?;
+            self.drift_reset_seen
+                .lock()
+                .insert(predicate_id.to_owned(), generation);
             store.remove(&tripped_key);
             for band in 0..pv_judge::drift::BAND_LOWER_PPM.len() {
                 store.remove(&drift_key(predicate_id, &format!("band:{band}:reviewed")));
@@ -1692,35 +1709,67 @@ impl JudgeService {
             }
             self.shared_tripped.lock().0 = None;
         }
-        was
+        was |= monitor.reset(predicate_id);
+        Ok(was)
     }
 
     /// The drift check's state for operators: with a shared store, the
     /// shared statistics and switches.
     pub(crate) fn drift_snapshot(&self) -> Option<pv_judge::DriftSnapshot> {
         let monitor = self.drift.as_ref()?;
-        let mut snapshot = monitor.snapshot();
         let Some(store) = self.shared_drift.get() else {
-            return Some(snapshot);
+            return Some(monitor.snapshot());
         };
         let tripped = self.drift_tripped();
-        snapshot.predicates = self
+        // Reviews this instance sampled but another one recorded are no
+        // longer pending.
+        for id in monitor.pending_ids() {
+            let still_issued = parse_review_id(&id)
+                .and_then(|(predicate, _)| store.get(&drift_key(&predicate, &format!("review:{id}"))).ok())
+                .is_none_or(|issued| issued == 1);
+            if !still_issued {
+                monitor.forget_review(&id);
+            }
+        }
+        let mut snapshot = monitor.snapshot();
+        let shared: Result<Vec<_>, pv_state::StateError> = self
             .runner
             .registry()
             .iter()
             .map(|def| def.id.as_str())
-            .filter_map(|id| {
-                let bands = self.shared_bands(store.as_ref(), id).ok()?;
+            .map(|id| {
+                let bands = self.shared_bands(store.as_ref(), id)?;
                 let tripped = tripped.iter().any(|t| t == id);
-                (tripped || bands.iter().any(|band| band.reviewed > 0)).then(|| {
+                Ok((tripped || bands.iter().any(|band| band.reviewed > 0)).then(|| {
                     pv_judge::drift::PredicateDrift {
                         predicate_id: id.to_owned(),
                         bands,
                         tripped,
                     }
-                })
+                }))
             })
             .collect();
+        match shared {
+            Ok(predicates) => snapshot.predicates = predicates.into_iter().flatten().collect(),
+            // The store cannot be read: this instance's view, with the
+            // switches that apply (never hiding one).
+            Err(_) => {
+                for id in &tripped {
+                    match snapshot
+                        .predicates
+                        .iter_mut()
+                        .find(|drift| &drift.predicate_id == id)
+                    {
+                        Some(drift) => drift.tripped = true,
+                        None => snapshot.predicates.push(pv_judge::drift::PredicateDrift {
+                            predicate_id: id.clone(),
+                            bands: pv_judge::drift::empty_bands(),
+                            tripped: true,
+                        }),
+                    }
+                }
+            }
+        }
         Some(snapshot)
     }
 
@@ -2154,16 +2203,26 @@ impl JudgeService {
         outcomes
             .iter()
             .filter_map(|outcome| match outcome {
-                JudgeOutcome::Scored(verdict) => drift
-                    .maybe_sample(verdict, |predicate, band| {
+                JudgeOutcome::Scored(verdict) => {
+                    let mut issued = true;
+                    let id = drift.maybe_sample(verdict, |predicate, band| {
                         let id = review_id(predicate, band);
                         if let Some(store) = self.shared_drift.get() {
                             // Issued: any instance can record its review once.
-                            let _ = store.add(&drift_key(predicate, &format!("review:{id}")), 1);
+                            issued = store
+                                .add(&drift_key(predicate, &format!("review:{id}")), 1)
+                                .is_ok();
                         }
                         id
-                    })
-                    .map(|id| (verdict.predicate_id.clone(), id)),
+                    })?;
+                    // A review the store could not register could never be
+                    // recorded: it is not handed out.
+                    if !issued {
+                        drift.forget_review(&id);
+                        return None;
+                    }
+                    Some((verdict.predicate_id.clone(), id))
+                }
                 JudgeOutcome::Failed(_) => None,
             })
             .collect()
@@ -2271,13 +2330,19 @@ pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -
             continue;
         };
         let start = length.saturating_sub(tail_bytes);
+        // Starting mid-file, the first line is a fragment unless the byte
+        // before the start ends a line.
+        let mut before = [0u8; 1];
+        let mid_line = start > 0
+            && (file.seek(std::io::SeekFrom::Start(start - 1)).is_err()
+                || file.read_exact(&mut before).is_err()
+                || before[0] != b'\n');
         if file.seek(std::io::SeekFrom::Start(start)).is_err() {
             continue;
         }
         let mut reader = std::io::BufReader::new(file.take(tail_bytes));
         let mut line = Vec::new();
-        // Starting mid-file: the first line is a fragment.
-        if start > 0 && reader.read_until(b'\n', &mut line).is_err() {
+        if mid_line && reader.read_until(b'\n', &mut line).is_err() {
             continue;
         }
         loop {
@@ -4452,7 +4517,7 @@ mod tests {
         );
         // An operator's reset on A clears it everywhere.
         assert!(b.drift_tripped().contains(&"arg_matches_task@1".to_owned()));
-        assert!(a.reset_drift("arg_matches_task@1"));
+        assert!(a.reset_drift("arg_matches_task@1").unwrap());
         b.shared_tripped.lock().0 = None; // as after the refresh interval
         assert!(b.drift_tripped().is_empty());
         assert!(
@@ -4554,7 +4619,7 @@ mod tests {
         flaky.down.store(false, std::sync::atomic::Ordering::SeqCst);
 
         // An operator reset on A clears the switch on B as well.
-        assert!(a.reset_drift(P));
+        assert!(a.reset_drift(P).unwrap());
         b.shared_tripped.lock().0 = None;
         assert!(b.drift_tripped().is_empty());
         assert!(b.drift.as_ref().unwrap().tripped().is_empty());
@@ -4716,3 +4781,7 @@ mod tests {
 #[cfg(test)]
 #[path = "judge_decoding_edge_tests.rs"]
 mod judge_decoding_edge_tests;
+
+#[cfg(test)]
+#[path = "judge_restore_drift_edge_tests.rs"]
+mod judge_restore_drift_edge_tests;

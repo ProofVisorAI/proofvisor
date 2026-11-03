@@ -727,3 +727,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "wasm_policy_example_edge_tests.rs"]
+mod wasm_policy_example_edge_tests;

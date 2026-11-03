@@ -281,6 +281,11 @@ impl DriftMonitor {
         }
     }
 
+    /// Ids of the reviews waiting on this instance.
+    pub fn pending_ids(&self) -> Vec<String> {
+        self.pending.lock().1.iter().cloned().collect()
+    }
+
     /// The monitor's settings.
     pub fn config(&self) -> DriftConfig {
         self.config

@@ -444,3 +444,219 @@ fn judge_replay_checks_recorded_decisions_and_tries_other_thresholds() {
     );
     assert!(text(&output).contains("do not follow"), "{}", text(&output));
 }
+
+// ── judge-export edge cases ─────────────────────────────────────────
+
+/// A Bridge directory with one `agent.tool_call` partition holding
+/// `lines`, and the threshold policy of the standard test config.
+fn export_bridge(dir: &Path, lines: &[String]) -> (String, pv_judge::ThresholdPolicy) {
+    let config = write_config(dir, 9, TOOL_WITH_OPT_IN, "cloud");
+    let policy = pv_harness::HarnessConfig::from_toml(&std::fs::read_to_string(&config).unwrap())
+        .unwrap()
+        .judge
+        .unwrap()
+        .threshold_policy()
+        .unwrap();
+    let bridge = dir.join("export-edges");
+    std::fs::create_dir_all(bridge.join("topics/agent.tool_call")).unwrap();
+    std::fs::write(
+        bridge.join("manifest.yaml"),
+        "manifest_version: 1\nname: export\ntopics:\n  - name: agent.tool_call\n    partitions: 1\n    retention: {hot_hours: 24}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        bridge.join("topics/agent.tool_call/p0.jsonl"),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+    (bridge.to_string_lossy().into_owned(), policy)
+}
+
+fn test_policy(dir: &Path) -> pv_judge::ThresholdPolicy {
+    export_bridge(dir, &[]).1
+}
+
+fn inputs(arguments_json: String) -> impl FnOnce(&mut pv_judge::JudgeRecord) {
+    move |record: &mut pv_judge::JudgeRecord| {
+        record.inputs = Some(pv_judge::JudgeInputs {
+            tool: "refund_order".into(),
+            arguments_json,
+            context: pv_judge::SessionContext {
+                task: Some("Rembourser la commande 1001 — 返金".into()),
+                charter: "billing-agent".into(),
+                ..pv_judge::SessionContext::default()
+            },
+        });
+    }
+}
+
+fn exported(output: &Output) -> Vec<Value> {
+    String::from_utf8(output.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// Expected to pass: floats, unicode and very large numbers in the
+/// arguments survive the export; a record judged on two predicates gives
+/// one example per predicate and `--predicate` keeps one; a failed
+/// verdict is exported with its status as the hint; `--would-block-only`
+/// keeps only the would-be blocks; and once labelled, the file loads with
+/// `pv_judge::calibration::load_jsonl`.
+#[test]
+fn judge_export_keeps_odd_arguments_and_several_predicates() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = test_policy(dir.path());
+    let arguments = json!({
+        "amount": 0.1, "tiny": 5e-324, "huge": 1.7976931348623157e308, "neg_zero": -0.0,
+        "big": u64::MAX, "small": i64::MIN,
+        "note": "café 🚀 \u{202e}evil\u{202c} \u{2028} \"quoted\" \\ back",
+        "нюанс": ["日本", {"deep": [[[1]]]}]
+    });
+    let failed: pv_judge::JudgeOutcome = serde_json::from_value(json!({
+        "status": "failed", "predicate_id": "arg_matches_task@1", "kind": "timeout",
+        "detail": "slow", "model": {"name": "cli-judge", "version": "1", "weights_sha256": PIN},
+        "latency_us": 3
+    }))
+    .unwrap();
+    let second = pv_judge::OutcomeRecord::from_outcome(
+        &pv_judge::JudgeOutcome::Scored(pv_judge::Verdict {
+            predicate_id: "memory_write_safe@1".into(),
+            probs: vec![
+                pv_judge::LabelProb {
+                    label: "safe".into(),
+                    ppm: 400_000,
+                },
+                pv_judge::LabelProb {
+                    label: "unsafe".into(),
+                    ppm: 600_000,
+                },
+            ],
+            model: pv_judge::ModelPin::new("cli-judge", "1", PIN).unwrap(),
+            latency_us: 10,
+        }),
+        "vendor",
+        pv_judge::AdapterKind::Cloud,
+    );
+    let arguments_text = arguments.to_string();
+    let lines = vec![
+        judged_event(&policy, 0, mismatch_verdict(100_000), |record| {
+            inputs(arguments_text.clone())(record);
+            record.verdicts.push(second);
+        }),
+        judged_event(&policy, 1, failed, inputs("{}".into())),
+        judged_event(&policy, 2, mismatch_verdict(900_000), inputs("{\"x\":1}".into())),
+    ];
+    let (data_dir, _) = export_bridge(dir.path(), &lines);
+
+    let all = pvctl(&["judge-export", "--data-dir", &data_dir]);
+    assert!(all.status.success(), "{}", text(&all));
+    let examples = exported(&all);
+    assert_eq!(examples.len(), 4, "{}", text(&all));
+    assert_eq!(examples[0]["arguments"], arguments);
+    assert_eq!(
+        examples[0]["context"]["task"],
+        "Rembourser la commande 1001 — 返金"
+    );
+    assert_eq!(examples[1]["predicate_id"], "memory_write_safe@1");
+    assert!(examples[1]["source"]
+        .as_str()
+        .unwrap()
+        .contains("judge said unsafe at 0.6"));
+    assert!(
+        examples[2]["source"].as_str().unwrap().contains("judge timeout"),
+        "{}",
+        examples[2]
+    );
+
+    let one = pvctl(&[
+        "judge-export",
+        "--data-dir",
+        &data_dir,
+        "--predicate",
+        "memory_write_safe@1",
+    ]);
+    assert_eq!(exported(&one).len(), 1);
+    let none = pvctl(&[
+        "judge-export",
+        "--data-dir",
+        &data_dir,
+        "--predicate",
+        "no_such@1",
+    ]);
+    assert!(none.status.success());
+    assert!(exported(&none).is_empty());
+
+    let blocked = pvctl(&["judge-export", "--data-dir", &data_dir, "--would-block-only"]);
+    let blocked = exported(&blocked);
+    let sources: Vec<&str> = blocked.iter().map(|e| e["source"].as_str().unwrap()).collect();
+    assert_eq!(blocked.len(), 2, "{sources:?}");
+    assert!(sources.iter().any(|s| s.contains("evt-1")) && sources.iter().any(|s| s.contains("evt-2")));
+
+    let labelled: String = examples
+        .iter()
+        .map(|example| {
+            let mut example = example.clone();
+            example["label"] = json!("match");
+            format!("{example}\n")
+        })
+        .collect();
+    let loaded = pv_judge::calibration::load_jsonl(&labelled).unwrap();
+    assert_eq!(loaded.len(), 4);
+    assert_eq!(loaded[0].arguments, arguments);
+}
+
+/// Recorded arguments that are no longer JSON (audit redaction replaced
+/// a whole number inside the JSON text, leaving `{"card":[REDACTED]}`)
+/// must not become an example whose arguments are silently `null`: the
+/// example would ask a reviewer to label a call nobody can see, and
+/// calibration would score the judge on empty arguments.
+#[test]
+fn judge_export_does_not_turn_unreadable_arguments_into_null() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = test_policy(dir.path());
+    let lines = vec![judged_event(
+        &policy,
+        0,
+        mismatch_verdict(900_000),
+        inputs("{\"order\":\"1001\",\"card\":[REDACTED]}".into()),
+    )];
+    let (data_dir, _) = export_bridge(dir.path(), &lines);
+    let output = pvctl(&["judge-export", "--data-dir", &data_dir]);
+    assert!(output.status.success(), "{}", text(&output));
+    let examples = exported(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        examples.iter().all(|example| !example["arguments"].is_null()),
+        "an example was exported with \"arguments\": null and the summary says only: {stderr}"
+    );
+}
+
+/// A judged record the exporter cannot read (here, its `inputs.context`
+/// was replaced by a string, as a `redaction_paths` entry would) is
+/// skipped, and the summary accounts for it.
+#[test]
+fn judge_export_reports_records_it_could_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = test_policy(dir.path());
+    let mut event: Value = serde_json::from_str(&judged_event(
+        &policy,
+        0,
+        mismatch_verdict(900_000),
+        inputs("{}".into()),
+    ))
+    .unwrap();
+    event["value"]["payload"]["judge"]["inputs"]["context"] = json!("[REDACTED]");
+    let (data_dir, _) = export_bridge(dir.path(), &[event.to_string()]);
+    let output = pvctl(&["judge-export", "--data-dir", &data_dir]);
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(exported(&output).is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        ["unreadable", "could not", "skipped", "malformed", "not read"]
+            .iter()
+            .any(|word| stderr.contains(word)),
+        "the summary does not mention the record it skipped: {stderr}"
+    );
+}
