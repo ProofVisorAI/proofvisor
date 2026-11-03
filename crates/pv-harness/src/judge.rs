@@ -2240,10 +2240,12 @@ impl JudgeService {
     }
 }
 
-/// The recorded events at the end of each partition of the embedded
-/// Bridge's `agent.tool_call` topic under `data_dir`: at most `tail_bytes`
-/// per partition, newest last within a partition. Missing files, a
-/// missing topic and unreadable lines yield nothing.
+/// The policy-stage refusals recorded at the end of each partition of the
+/// embedded Bridge's `agent.tool_call` topic under `data_dir`: at most
+/// `tail_bytes` read per partition segment (a regular file named
+/// `p<N>.jsonl`), newest last within a partition. Only refused calls are
+/// kept while reading, so memory follows the refusals, not the traffic.
+/// Missing files, a missing topic and unreadable lines yield nothing.
 pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -> Vec<Value> {
     use std::io::{BufRead as _, Read as _, Seek as _};
     let directory = data_dir.join("topics").join("agent.tool_call");
@@ -2256,8 +2258,10 @@ pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -
         let is_segment = path
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|name| name.starts_with('p') && name.ends_with(".jsonl"));
-        if !is_segment {
+            .and_then(|name| name.strip_prefix('p')?.strip_suffix(".jsonl"))
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()));
+        let regular = entry.file_type().is_ok_and(|kind| kind.is_file());
+        if !is_segment || !regular {
             continue;
         }
         let Ok(mut file) = std::fs::File::open(&path) else {
@@ -2284,9 +2288,18 @@ pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -
                 Ok(_) if line.last() != Some(&b'\n') => break,
                 Ok(_) => {}
             }
-            if let Ok(stored) = serde_json::from_slice::<Value>(&line) {
-                if let Some(event) = stored.get("value") {
-                    events.push(event.clone());
+            // Most lines are not refusals: skip them before parsing.
+            if !line.windows(6).any(|window| window == b"policy") {
+                continue;
+            }
+            let Ok(mut stored) = serde_json::from_slice::<Value>(&line) else {
+                continue;
+            };
+            let refused = stored.pointer("/value/payload/allowed") == Some(&Value::Bool(false))
+                && stored.pointer("/value/payload/stage").and_then(Value::as_str) == Some("policy");
+            if refused {
+                if let Some(event) = stored.get_mut("value") {
+                    events.push(event.take());
                 }
             }
         }
@@ -4280,16 +4293,36 @@ mod tests {
         assert!(recorded_tool_calls(dir.path(), 1_000).is_empty());
         let topic = dir.path().join("topics/agent.tool_call");
         std::fs::create_dir_all(&topic).unwrap();
-        let line = |n: u64| format!("{}\n", serde_json::json!({"offset": n, "value": {"n": n}}));
+        let refusal = |n: u64| serde_json::json!({"offset": n, "value": {"n": n, "payload": {"allowed": false, "stage": "policy"}}});
+        let line = |n: u64| format!("{}\n", refusal(n));
         let mut text: String = (0..100).map(line).collect();
+        // Allowed calls and other refusals are not kept.
+        text.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"value": {"payload": {"allowed": true, "stage": "policy"}}})
+        ));
+        text.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"value": {"payload": {"allowed": false, "stage": "schema"}}})
+        ));
         text.push_str("{\"offset\": 100, \"value\""); // an append in flight
         std::fs::write(topic.join("p0.jsonl"), &text).unwrap();
         std::fs::write(topic.join("notes.txt"), "not a segment").unwrap();
+        // The Bridge's id sidecar is not a segment either.
+        std::fs::write(topic.join("p0.event-uids.jsonl"), line(500)).unwrap();
         let all = recorded_tool_calls(dir.path(), 1_000_000);
         assert_eq!(all.len(), 100);
-        let tail = recorded_tool_calls(dir.path(), u64::try_from(line(99).len() * 3).unwrap());
+        let tail = recorded_tool_calls(dir.path(), u64::try_from(line(99).len() * 5).unwrap());
         assert!(!tail.is_empty() && tail.len() < 4, "{tail:?}");
         assert_eq!(tail.last().unwrap()["n"], 99);
+        // A partition past p9 is read; a symbolic link is not.
+        std::fs::write(topic.join("p10.jsonl"), line(1_000)).unwrap();
+        assert_eq!(recorded_tool_calls(dir.path(), 1_000_000).len(), 101);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(topic.join("p10.jsonl"), topic.join("p11.jsonl")).unwrap();
+            assert_eq!(recorded_tool_calls(dir.path(), 1_000_000).len(), 101);
+        }
     }
 
     /// An in-memory store that says it is shared between instances, so
