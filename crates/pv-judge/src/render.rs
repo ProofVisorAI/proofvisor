@@ -17,15 +17,21 @@ use serde_json::Value;
 use std::fmt::Write as _;
 
 /// Version of the layout below. Bump it on any change.
-pub const INPUT_TEMPLATE_VERSION: u32 = 1;
+pub const INPUT_TEMPLATE_VERSION: u32 = 2;
 
 /// Longest rendered arguments, in characters.
 pub const MAX_ARGUMENT_CHARS: usize = 8_192;
 
+/// Longest rendered task, in characters: the tasks of every applicable
+/// mission, joined. A longer task is not cut, the request fails instead
+/// ([`request_too_long`]), since a restriction stated late in it would
+/// otherwise go unread.
+pub const MAX_TASK_CHARS: usize = 8_192;
+
 /// Most prior denials rendered.
 pub const MAX_RENDERED_DENIALS: usize = 16;
 
-/// Render a request as classifier input (template version 1):
+/// Render a request as classifier input (template version 2):
 ///
 /// ```text
 /// predicate: arg_matches_task@1
@@ -55,7 +61,10 @@ pub fn render_request(request: &JudgeRequest) -> String {
     let _ = writeln!(
         text,
         "task: {}",
-        context.task.as_deref().map_or("-".to_owned(), one_line)
+        context
+            .task
+            .as_deref()
+            .map_or("-".to_owned(), |task| truncate(&flatten(task), MAX_TASK_CHARS))
     );
     let _ = writeln!(text, "missions: {}", list(&context.mission_ids));
     let _ = writeln!(text, "allowed intents: {}", list(&context.allowed_intents));
@@ -103,12 +112,34 @@ fn breaks_line(c: char) -> bool {
     c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
 }
 
-fn one_line(value: &str) -> String {
-    let flat: String = value
+fn flatten(value: &str) -> String {
+    value
         .chars()
         .map(|c| if breaks_line(c) { ' ' } else { c })
-        .collect();
-    truncate(&flat, 1_024)
+        .collect()
+}
+
+fn one_line(value: &str) -> String {
+    truncate(&flatten(value), 1_024)
+}
+
+/// When the request is longer than the rendering keeps, a failure to
+/// report instead of a verdict: the arguments ([`arguments_too_long`]) or
+/// the task ([`MAX_TASK_CHARS`]).
+pub fn request_too_long(request: &JudgeRequest) -> Option<crate::adapter::JudgeError> {
+    arguments_too_long(request).or_else(|| {
+        let length = request
+            .context
+            .task
+            .as_deref()
+            .map_or(0, |task| task.chars().count());
+        (length > MAX_TASK_CHARS).then(|| {
+            crate::adapter::JudgeError::Malformed(format!(
+                "the task ({length} characters) is longer than this judge reads ({MAX_TASK_CHARS}); \
+                 the call cannot be judged against all of it"
+            ))
+        })
+    })
 }
 
 /// When the arguments are longer than the rendering keeps
@@ -210,6 +241,28 @@ mod tests {
             serde_json::from_str::<Value>(arguments).unwrap(),
             request.validated_args
         );
+    }
+
+    /// A restriction at the end of a long task is rendered, and a task
+    /// longer than the rendering keeps fails the request instead of
+    /// being cut.
+    #[test]
+    fn a_long_task_is_rendered_whole_or_refused() {
+        let request = |task: String| JudgeRequest {
+            predicate_id: "p@1".into(),
+            tool: "t".into(),
+            validated_args: json!({}),
+            context: SessionContext {
+                task: Some(task),
+                ..SessionContext::default()
+            },
+        };
+        let task = format!("{} Never refund more than 50 EUR.", "x".repeat(4_000));
+        let text = render_request(&request(task.clone()));
+        assert!(text.contains(&format!("task: {task}\n")));
+        assert!(request_too_long(&request(task)).is_none());
+        assert!(request_too_long(&request("é".repeat(MAX_TASK_CHARS))).is_none());
+        assert!(request_too_long(&request("é".repeat(MAX_TASK_CHARS + 1))).is_some());
     }
 
     #[test]

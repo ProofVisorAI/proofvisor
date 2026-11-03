@@ -174,6 +174,17 @@ impl JudgeAdapter for CloudJudge {
         &self.pin
     }
 
+    fn redact_text(&self, text: &mut String) {
+        if let Some(redact) = &self.redactor {
+            let mut value = Value::String(std::mem::take(text));
+            redact(&mut value, RedactionTarget::Arguments);
+            *text = match value {
+                Value::String(redacted) => redacted,
+                other => other.to_string(),
+            };
+        }
+    }
+
     fn kind(&self) -> AdapterKind {
         AdapterKind::Cloud
     }

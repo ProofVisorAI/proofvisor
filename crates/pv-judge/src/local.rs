@@ -40,7 +40,7 @@ pub struct LocalOnnxConfig {
     pub tokenizer_sha256: String,
     /// Label of each output logit, in output order.
     pub output_labels: Vec<String>,
-    /// Token limit; longer inputs are truncated by the tokenizer.
+    /// Token limit; a longer input is not scored, it fails as malformed.
     pub max_input_tokens: usize,
 }
 
@@ -149,7 +149,7 @@ impl JudgeAdapter for LocalOnnxJudge {
         request: &'a JudgeRequest,
         predicate: &'a PredicateDef,
     ) -> BoxFuture<'a, Result<RawScores, JudgeError>> {
-        let too_long = crate::render::arguments_too_long(request);
+        let too_long = crate::render::request_too_long(request);
         let text = render_request(request);
         let model = Arc::clone(&self.model);
         let tokenizer = Arc::clone(&self.tokenizer);

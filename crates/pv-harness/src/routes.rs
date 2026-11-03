@@ -2471,7 +2471,7 @@ fn ensure_tool_executions_resolved_with_limit(
         let Some(key) = name.strip_suffix(crate::spool::TOOL_INTENT_SUFFIX) else {
             continue;
         };
-        let bytes = match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
+        let bytes = match crate::spool::read_tool_intent(&path) {
             Ok(bytes) => bytes,
             // Listed, then gone: another session's close archived its own
             // intent between the listing and this read. That intent is
@@ -2621,30 +2621,29 @@ pub(crate) async fn unresolved_tool_sessions(
             // Cap-class failures (oversize, non-regular file) route to
             // the same quarantine arm as a torn MAC so the scan keeps
             // making progress; only genuine IO faults abort.
-            let intent_check: Result<ToolIntent, String> =
-                match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
-                    Ok(intent_bytes) => crate::journal::open(
-                        &control_key,
-                        &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
-                        0,
-                        &intent_bytes,
-                    ),
-                    // The session's close legitimately removes its tool-execution
-                    // files between the directory listing and this read.
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        intent_keys.remove(key);
-                        continue;
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
-                        ) =>
-                    {
-                        Err(error.to_string())
-                    }
-                    Err(error) => return Err(error.to_string()),
-                };
+            let intent_check: Result<ToolIntent, String> = match crate::spool::read_tool_intent(&path) {
+                Ok(intent_bytes) => crate::journal::open(
+                    &control_key,
+                    &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
+                    0,
+                    &intent_bytes,
+                ),
+                // The session's close legitimately removes its tool-execution
+                // files between the directory listing and this read.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    intent_keys.remove(key);
+                    continue;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
+                    ) =>
+                {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             let intent: ToolIntent = match intent_check {
                 Ok(intent) => intent,
                 Err(error) => {
@@ -3093,11 +3092,6 @@ impl ToolExecution {
             use std::os::unix::fs::OpenOptionsExt as _;
             open_options.mode(0o600);
         }
-        let mut file = crate::spool::change_tool_executions(|| open_options.open(&self.intent_path))
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::AlreadyExists => ClaimError::Race,
-                _ => ClaimError::Backend(format!("tool execution intent unavailable: {error}")),
-            })?;
         let intent = crate::journal::seal(
             &self.control_key,
             &format!("{}:{}", crate::journal::TOOL_INTENT_DOMAIN, self.key),
@@ -3105,8 +3099,21 @@ impl ToolExecution {
             &self.intent(),
         )
         .map_err(ClaimError::Backend)?;
-        file.write_all(&intent)
-            .map_err(|error| ClaimError::Backend(error.to_string()))?;
+        // Created and written in one turn: a scan reads intents in turns
+        // too, so it never finds this one empty and takes it for one a
+        // crash left torn (it would move it aside, and a retry could then
+        // run the tool again). The sync runs after, outside the turn.
+        let file = crate::spool::change_tool_executions(|| {
+            let mut file = open_options
+                .open(&self.intent_path)
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::AlreadyExists => ClaimError::Race,
+                    _ => ClaimError::Backend(format!("tool execution intent unavailable: {error}")),
+                })?;
+            file.write_all(&intent)
+                .map_err(|error| ClaimError::Backend(error.to_string()))?;
+            Ok::<_, ClaimError>(file)
+        })?;
         file.sync_all()
             .map_err(|error| ClaimError::Backend(error.to_string()))?;
         pv_core::fsutil::sync_directory(directory).map_err(|error| ClaimError::Backend(error.to_string()))
@@ -5621,6 +5628,15 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
                 message.push_str(content);
                 choice_delta.content.push_str(content);
             }
+            // A refusal is model output the client shows, like content.
+            let refusal = choice
+                .pointer("/delta/refusal")
+                .or_else(|| choice.pointer("/message/refusal"))
+                .and_then(Value::as_str);
+            if let Some(refusal) = refusal {
+                message.push_str(refusal);
+                choice_delta.content.push_str(refusal);
+            }
             let reasoning_content = choice
                 .pointer("/delta/reasoning_content")
                 .or_else(|| choice.pointer("/message/reasoning_content"))
@@ -6065,21 +6081,29 @@ impl Drop for AbortFinalizingStream {
     }
 }
 
-/// The text of a message's `content`: a string, or the `text` of each
-/// text part when it is an array of content parts.
+/// The text of a message's `content`: a string, or, when it is an array
+/// of content parts, the `text` or `refusal` of each part whatever its
+/// type (a part the client shows must not escape the judge).
 fn content_text(content: &Value) -> Option<std::borrow::Cow<'_, str>> {
     match content {
         Value::String(text) => Some(std::borrow::Cow::Borrowed(text)),
         Value::Array(parts) => Some(std::borrow::Cow::Owned(
             parts
                 .iter()
-                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .filter_map(|part| {
+                    part.get("text")
+                        .or_else(|| part.get("refusal"))
+                        .and_then(Value::as_str)
+                })
                 .collect(),
         )),
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "routes_edge_extra_tests.rs"]
+mod routes_edge_extra_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8941,6 +8965,40 @@ mod tests {
         );
         tool_server.abort();
         provider.abort();
+    }
+
+    /// A claim creates and writes its intent in one turn of the folder,
+    /// so a scan (which reads intents in turns) never finds it empty and
+    /// moves it aside as torn while the call is still running.
+    #[test]
+    fn a_claimed_intent_is_never_seen_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-pv-session", HeaderValue::from_static("claim-turn"));
+        let body =
+            br#"{"jsonrpc":"2.0","id":"c","method":"tools/call","params":{"name":"read","arguments":{}}}"#;
+        let mut execution =
+            ToolExecution::from_request(&directory.path().to_string_lossy(), &headers, body, [7; 32])
+                .unwrap();
+        execution
+            .bind_principal(&pv_events::AgentIdentity {
+                version: "dev".to_owned(),
+                charter: "anonymous".into(),
+                instance_uid: "anonymous".to_owned(),
+                ttl_remaining_s: None,
+            })
+            .unwrap();
+        std::fs::create_dir_all(execution.intent_path.parent().unwrap()).unwrap();
+        let intent_path = execution.intent_path.clone();
+        let claim = crate::spool::change_tool_executions(|| {
+            let claim = std::thread::spawn(move || execution.claim_sync());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!intent_path.exists(), "the claim waits for the turn");
+            claim
+        });
+        assert!(claim.join().unwrap().is_ok());
+        let bytes = crate::spool::read_tool_intent(&intent_path).unwrap();
+        assert!(!bytes.is_empty(), "complete when it appears");
     }
 
     #[tokio::test]

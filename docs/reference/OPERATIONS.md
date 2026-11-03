@@ -529,7 +529,8 @@ cheap policy refusals cannot push the judge's out. Each list keeps the
 newest 32 refusals and expires 24 hours after its last refusal. An
 instance does not write a refusal again if it shared one of the same
 kind (same tool, code, predicate and agent) within the last hour, so
-repeating one refusal cannot fill a list. An entry read back from
+repeating one refusal cannot fill a list; a refusal whose write failed
+is written again with the next one. An entry read back from
 Redis is used only if it has the shape the harness writes: a known
 denial code and predicate, plain tool and agent names, the agent the
 list belongs to, and a time within the last 24 hours and not after now;

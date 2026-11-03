@@ -53,6 +53,15 @@ pub trait JudgeAdapter: Send + Sync {
         request: &'a JudgeRequest,
         predicate: &'a PredicateDef,
     ) -> BoxFuture<'a, Result<RawScores, JudgeError>>;
+
+    /// Redact `text` as this adapter redacts arguments before they leave
+    /// (nothing, for an adapter that sends nothing out). A caller that
+    /// splits a long text into several requests redacts it whole first,
+    /// so a secret cut in two cannot slip past patterns that see only
+    /// one piece.
+    fn redact_text(&self, text: &mut String) {
+        let _ = text;
+    }
 }
 
 /// Why a judge call produced no usable verdict.

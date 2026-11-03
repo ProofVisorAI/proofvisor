@@ -206,7 +206,7 @@ impl TypeSafeJudge {
         }
         // Measured on what is rendered and sent: redaction can lengthen
         // the arguments (a short address becomes "[REDACTED]").
-        if let Some(error) = crate::render::arguments_too_long(&redacted) {
+        if let Some(error) = crate::render::request_too_long(&redacted) {
             return Err(error);
         }
         let criteria: serde_json::Map<String, Value> = predicate
@@ -296,6 +296,17 @@ impl TypeSafeJudge {
 impl JudgeAdapter for TypeSafeJudge {
     fn id(&self) -> &ModelPin {
         &self.pin
+    }
+
+    fn redact_text(&self, text: &mut String) {
+        if let Some(redact) = &self.redactor {
+            let mut value = Value::String(std::mem::take(text));
+            redact(&mut value, RedactionTarget::Arguments);
+            *text = match value {
+                Value::String(redacted) => redacted,
+                other => other.to_string(),
+            };
+        }
     }
 
     /// Recorded as `cloud`: TypeSafe is a cloud judge, and the record

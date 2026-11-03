@@ -31,8 +31,16 @@ pub(crate) fn list_tool_executions(
         .collect()
 }
 
-/// Run `change`, which removes or renames files in the tool-execution
-/// folder, while no listing of it runs.
+/// Read the tool intent at `path` (at most `MAX_CONTROL_BYTES`) in a
+/// turn: a claim creates and writes an intent in one turn, so this never
+/// reads one that is still empty.
+pub(crate) fn read_tool_intent(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let _turn = TOOL_EXECUTIONS_TURNS.lock();
+    pv_core::fsutil::read_capped(path, pv_core::fsutil::MAX_CONTROL_BYTES)
+}
+
+/// Run `change`, which creates, removes or renames files in the
+/// tool-execution folder, while no listing or intent read runs.
 pub(crate) fn change_tool_executions<T>(change: impl FnOnce() -> T) -> T {
     let _turn = TOOL_EXECUTIONS_TURNS.lock();
     change()

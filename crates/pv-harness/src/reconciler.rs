@@ -3386,33 +3386,32 @@ impl Finalizer {
                 let Some(key) = name.strip_suffix(crate::spool::TOOL_INTENT_SUFFIX) else {
                     continue;
                 };
-                let intent_bytes =
-                    match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
-                        Ok(bytes) => bytes,
-                        // Concurrent removal or a torn intent already
-                        // quarantined by the recovery scan: skip and
-                        // continue rather than aborting the cleanup pass
-                        // over unrelated files.
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                        // Oversize or non-regular file (`read_capped`, same
-                        // bound as the recovery scan): a real MAC-sealed
-                        // intent is tiny, so this is a plant or corruption.
-                        // Skip it — an uncapped `std::fs::read` here let one
-                        // planted multi-GiB `.intent.json` stall or OOM
-                        // every close of every session.
-                        Err(error)
-                            if error.kind() == std::io::ErrorKind::InvalidData
-                                || error.kind() == std::io::ErrorKind::InvalidInput =>
-                        {
-                            tracing::warn!(
-                                file = %pv_core::fsutil::basename(&path),
-                                %error,
-                                "skipping oversize or non-regular tool-intent file during close cleanup"
-                            );
-                            continue;
-                        }
-                        Err(error) => return Err(FinalizeError::atif_source(error)),
-                    };
+                let intent_bytes = match crate::spool::read_tool_intent(&path) {
+                    Ok(bytes) => bytes,
+                    // Concurrent removal or a torn intent already
+                    // quarantined by the recovery scan: skip and
+                    // continue rather than aborting the cleanup pass
+                    // over unrelated files.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    // Oversize or non-regular file (`read_capped`, same
+                    // bound as the recovery scan): a real MAC-sealed
+                    // intent is tiny, so this is a plant or corruption.
+                    // Skip it — an uncapped `std::fs::read` here let one
+                    // planted multi-GiB `.intent.json` stall or OOM
+                    // every close of every session.
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::InvalidData
+                            || error.kind() == std::io::ErrorKind::InvalidInput =>
+                    {
+                        tracing::warn!(
+                            file = %pv_core::fsutil::basename(&path),
+                            %error,
+                            "skipping oversize or non-regular tool-intent file during close cleanup"
+                        );
+                        continue;
+                    }
+                    Err(error) => return Err(FinalizeError::atif_source(error)),
+                };
                 let intent_session_id = crate::journal::open::<serde_json::Value>(
                     &control_key,
                     &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
@@ -3502,11 +3501,10 @@ impl Finalizer {
                 // here before MAC verification. Oversize/unreadable
                 // intents are skipped (they cannot name this session
                 // authentically anyway).
-                let intent_bytes =
-                    match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
-                        Ok(bytes) => bytes,
-                        Err(_) => continue,
-                    };
+                let intent_bytes = match crate::spool::read_tool_intent(&path) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
                 let intent_session_id = crate::journal::open::<serde_json::Value>(
                     &control_key,
                     &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
