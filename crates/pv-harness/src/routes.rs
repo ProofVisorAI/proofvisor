@@ -2795,7 +2795,10 @@ pub(crate) async fn unresolved_tool_sessions(
                 continue;
             };
             if let Some(key) = name.strip_suffix(crate::spool::TOOL_OUTCOME_SUFFIX) {
-                if !intent_keys.contains(key) {
+                // Checked again in a turn: a call that claimed its intent
+                // after the first listing has a live outcome, not an orphan.
+                let intent = directory.join(format!("{key}{}", crate::spool::TOOL_INTENT_SUFFIX));
+                if !intent_keys.contains(key) && !crate::spool::change_tool_executions(|| intent.exists()) {
                     // An orphan outcome must not
                     // return Err — that turns the recovery tick into a
                     // permanent brick, especially at boot where
@@ -6092,8 +6095,8 @@ fn content_text(content: &Value) -> Option<std::borrow::Cow<'_, str>> {
                 .iter()
                 .filter_map(|part| {
                     part.get("text")
-                        .or_else(|| part.get("refusal"))
                         .and_then(Value::as_str)
+                        .or_else(|| part.get("refusal").and_then(Value::as_str))
                 })
                 .collect(),
         )),
@@ -12468,3 +12471,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "routes_refusal_edge_tests.rs"]
+mod routes_refusal_edge_tests;

@@ -428,7 +428,7 @@ covers running it.
 | Model answers with an unpinned identity (cloud) | Deny, and an error log line. | `JUDGE_UNAVAILABLE` |
 | Local model or tokenizer file does not hash to its pin | The daemon refuses to start and logs the hash it found. | none (boot error) |
 | Local adapter configured in a build without the `onnx` feature | The daemon refuses to start; `pvctl config-validate` reports it. | none (boot error) |
-| Background judge (`[judge.trace]`) fails, times out, or is saturated (`background_max_concurrency` verdicts in flight) | Nothing is blocked. The `agent.judge` event records the failure in its `verdict.status`, with no finding. | none |
+| Background judge (`[judge.trace]`) fails, times out, or is saturated (`background_max_concurrency` verdicts in flight) | Nothing is blocked. When every window fails, the `agent.judge` event records the failure in its `verdict.status`, with no finding. When only some fail, `verdict` is the riskiest window that scored, and `failed_windows` and `complete: false` show that the output was not judged in full: alert on them. | none |
 | Breaker second opinion fails | The loop breaker keeps its own decision for that step. | none |
 | Audit queue full when a finding is published | The finding is dropped and counted in `pv_judge_events_dropped_total`. | none |
 

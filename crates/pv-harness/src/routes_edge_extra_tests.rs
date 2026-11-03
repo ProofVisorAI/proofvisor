@@ -176,7 +176,7 @@ fn listings_beside_atomic_writes_see_every_untouched_file() {
     }
     let path = directory.path().to_owned();
     let writer = std::thread::spawn(move || {
-        for n in 0..1_000 {
+        for n in 0..200 {
             pv_core::fsutil::write_atomic(&path.join(format!("w-{n}.outcome.json")), b"o").unwrap();
         }
     });

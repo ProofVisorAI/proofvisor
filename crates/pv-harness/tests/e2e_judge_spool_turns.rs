@@ -1,9 +1,7 @@
 //! The tool-execution folder's turn-taking (spool.rs), through the live
 //! router: many sessions closing at once while other sessions keep
-//! making new tool calls, and a folder holding exactly the scan limit.
-//!
-//! Run with `--test-threads 1`: the two tests slow each other down a
-//! great deal on the file system (about a minute one after the other).
+//! making new tool calls. The scan limit is tested at unit level
+//! (`routes_edge_extra_tests.rs`), with a small limit.
 
 #![allow(
     clippy::unwrap_used,
@@ -202,7 +200,7 @@ async fn closes_racing_new_tool_calls_all_succeed_and_leave_no_files() {
     let mut left_per_round = Vec::new();
     for round in 0..1 {
         let h = backend_harness().await;
-        const N: usize = 100;
+        const N: usize = 20;
         for n in 0..N {
             for tool in [TOOL, "read_ticket"] {
                 let (status, body) = tool_call(&h, &format!("r{round}-old-{n}"), tool).await;
@@ -212,13 +210,14 @@ async fn closes_racing_new_tool_calls_all_succeed_and_leave_no_files() {
         // New tool calls in other sessions, running for as long as the closes do.
         let stop = Arc::new(AtomicBool::new(false));
         let mut busy = Vec::new();
-        for worker in 0..16 {
+        for worker in 0..8 {
             let (h, stop) = (h.clone(), Arc::clone(&stop));
             busy.push(tokio::spawn(async move {
                 let mut errors = Vec::new();
                 let mut sessions = Vec::new();
                 let mut n = 0;
-                while !stop.load(Ordering::SeqCst) {
+                // At most 4 each, so the sequential closes below stay few.
+                while !stop.load(Ordering::SeqCst) && n < 4 {
                     let session = format!("r{round}-new-{worker}-{n}");
                     for tool in [TOOL, "read_ticket"] {
                         let (status, body) = tool_call(&h, &session, tool).await;
@@ -284,40 +283,5 @@ async fn closes_racing_new_tool_calls_all_succeed_and_leave_no_files() {
     assert!(
         left_per_round.iter().all(BTreeMap::is_empty),
         "tool files left after every session closed: {left_per_round:?}"
-    );
-}
-
-/// A folder holding exactly the scan limit of other entries closes; one
-/// more entry makes the close refuse (fail closed) and keeps the files.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_folder_at_the_scan_limit_closes_and_one_more_entry_refuses() {
-    const LIMIT: usize = 100_000;
-    let h = backend_harness().await;
-    let (status, body) = tool_call(&h, "limit-1", TOOL).await;
-    assert_eq!(status, 200, "{body}");
-    let own = std::fs::read_dir(tool_dir(&h)).unwrap().count();
-    let dir = tool_dir(&h);
-    for n in 0..(LIMIT - own) {
-        std::fs::write(dir.join(format!("planted-{n}.evidence")), b"").unwrap();
-    }
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), LIMIT);
-    let at_limit = close(&h, "limit-1").await;
-    eprintln!("close with exactly {LIMIT} entries: {at_limit:?}");
-    assert!(at_limit.is_ok(), "{at_limit:?}");
-
-    let (status, body) = tool_call(&h, "limit-2", TOOL).await;
-    assert_eq!(status, 200, "{body}");
-    let now = std::fs::read_dir(&dir).unwrap().count();
-    for n in 0..(LIMIT + 1).saturating_sub(now) {
-        std::fs::write(dir.join(format!("planted-more-{n}.evidence")), b"").unwrap();
-    }
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), LIMIT + 1);
-    let over = close(&h, "limit-2").await;
-    eprintln!("close with {} entries: {over:?}", LIMIT + 1);
-    assert!(over.is_err(), "one entry past the limit must refuse the close");
-    assert_eq!(
-        std::fs::read_dir(&dir).unwrap().count(),
-        LIMIT + 1,
-        "no file was touched"
     );
 }

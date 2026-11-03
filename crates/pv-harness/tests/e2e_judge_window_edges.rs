@@ -587,6 +587,50 @@ async fn windows_past_the_time_budget_are_skipped_and_reported() {
     assert_eq!(p["complete"], false, "{p}");
 }
 
+/// A judge that refuses as malformed any piece longer than 2,000
+/// characters, as a local model refuses one with too many tokens: padding
+/// would make every window holding the injection fail. A failed window
+/// is split and its halves judged, so the injection is still found.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_window_too_long_for_the_judge_is_split_and_judged() {
+    let text = format!("{} {MARK} {}", "!".repeat(5_000), "!".repeat(5_000));
+    let url = raw_backend(envelope(&text).into_bytes()).await;
+    let mut judge = base_judge(DEFAULT_BACKGROUND_CONCURRENCY);
+    judge.trace = Some(trace(vec![TraceSource::Tool], 16_384));
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mock = Arc::new(MockJudge::new(
+        pin(),
+        MockBehavior::scores(&[("safe", 1.0), ("unsafe", 0.0)]),
+    ));
+    let recorded = Arc::clone(&seen);
+    mock.set_scorer(move |request| {
+        let output = request.validated_args["output"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        recorded.lock().push(output.clone());
+        if output.chars().count() > 2_000 {
+            return MockBehavior::Fail(JudgeError::Malformed("too many tokens".into()));
+        }
+        let p = if output.contains(MARK) { 0.95 } else { 0.02 };
+        MockBehavior::scores(&[("safe", 1.0 - p), ("unsafe", p)])
+    });
+    let h = build(judge, mock_adapters(mock), |config| {
+        config.tool_upstream_url = Some(url);
+        config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
+    });
+    let reply = tool(&h, "split-pieces", "read_ticket").await;
+    assert_eq!(reply.status, 200, "{}", reply.text);
+    let p = wait_judge_events(&h.bus, "split-pieces", 1).await[0]["payload"].clone();
+    close(&h, "split-pieces").await;
+    assert_eq!(p["finding"], true, "{p}");
+    assert_eq!(p["failed_windows"], 0, "every window was judged in pieces: {p}");
+    assert!(seen
+        .lock()
+        .iter()
+        .all(|piece| piece.chars().count() <= TRACE_WINDOW_CHARS));
+}
+
 // ── A redaction pattern that lengthens a window ─────────────────────
 
 /// A stand-in TypeSafe endpoint that flags states holding `MARK` and

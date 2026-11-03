@@ -2464,6 +2464,45 @@ impl HarnessConfig {
                  enough of these missions has every judged call fail as malformed"
             );
         }
+        // Trace windows reach a remote judge as {"source", "output"} and
+        // the breaker's texts as {"previous", "current"}: a redaction path
+        // naming one would hide every one of them from the judge.
+        if let Some(judge) = &self.judge {
+            let redacting = |name: &str| {
+                judge.adapters.iter().any(|adapter| {
+                    adapter.name == name
+                        && adapter.redact
+                        && adapter.kind != crate::judge::JudgeAdapterKind::Local
+                })
+            };
+            let mut hidden: Vec<&str> = Vec::new();
+            if judge
+                .trace
+                .as_ref()
+                .is_some_and(|trace| redacting(&trace.adapter))
+            {
+                hidden.extend(["/source", "/output"]);
+            }
+            if judge
+                .breaker
+                .as_ref()
+                .is_some_and(|breaker| redacting(&breaker.adapter))
+            {
+                hidden.extend(["/previous", "/current"]);
+            }
+            for path in &self.redaction_paths {
+                if hidden
+                    .iter()
+                    .any(|name| path == name || path.starts_with(&format!("{name}/")))
+                {
+                    errors.push(format!(
+                        "redaction_paths entry {path:?} would hide what the judge reads in \
+                         [judge.trace] or [judge.breaker]; remove it (the judge's adapter already \
+                         redacts that text with the patterns)"
+                    ));
+                }
+            }
+        }
         if let Some(judge) = &self.judge {
             judge.collect_errors(errors);
             if let Some(range) = &judge.breaker {
