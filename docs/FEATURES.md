@@ -412,8 +412,9 @@ with demonstration data, which is what the public site shows by default.
     - An unsigned session holding a trace verdict is promoted once it
       closes, on the reconciler's next tick (every 5 seconds by
       default), so a receipt covers the verdict without anyone asking.
-      A crash between the close and that tick loses the automatic
-      promotion; the session can still be promoted on demand.
+      A restart between the close and that tick loses the automatic
+      promotion (it is kept in memory); the session can still be
+      promoted on demand.
     - With Redis, the drift check (reviews, statistics and the switch
       to ask-by-default) is shared by every instance.
     - With `record_inputs = true`, records keep what the judge was

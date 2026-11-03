@@ -568,11 +568,15 @@ With Redis, the drift check is shared: a review sampled on one instance
 can be recorded on any instance, once; the band statistics and the
 switch to ask-by-default are shared counters, so a predicate switched on
 one instance asks on every instance within 5 seconds, and a reset on
-one clears it on all. Each instance still saves the switches to its own
-`state_file` and publishes a switch the file holds when it starts (the
-shared keys expire a day after their last write, and any running
-instance keeps refreshing them). An unreachable store makes a review
-answer 503. Without Redis, the drift check is per instance as before:
+one clears it on all. The switch fails closed: a switch the store no
+longer holds (its keys expire a day after their last write, or Redis
+lost them) is written back by any instance that has it, only an
+operator reset clears it, and while the store cannot be read each
+instance applies its own switches. Each instance saves the switches to
+its own `state_file` and publishes a switch the file holds when it
+starts; a reset made while an instance was down is undone when it
+rejoins, so reset again if that happens. An unreachable store makes a
+review answer 503, and a review it interrupted can be sent again. Without Redis, the drift check is per instance as before:
 send each review to the instance that sampled the verdict (a review of
 a verdict sampled before a restart answers `unknown_review_id`), and
 reset a switch on every instance where it tripped. The pilot cap
@@ -580,7 +584,9 @@ counters live in the state store and are shared.
 
 An unsigned session that holds a trace verdict is promoted once it
 closes, on the reconciler's next tick (`reconcile_tick_s`, 5 seconds
-by default), so a signed receipt covers the verdict.
+by default), so a signed receipt covers the verdict. At most 32
+sessions are promoted a tick, each within 30 seconds; the rest wait for
+the next ticks.
 `pv_judge_auto_promotions_total{outcome="failed"}` counts sessions
 whose promotion still failed after five ticks; promote them with
 `pvctl session-promote`.
