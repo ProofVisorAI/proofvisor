@@ -2456,26 +2456,31 @@ fn ensure_tool_executions_resolved_with_limit(
     control_key: &[u8; 32],
     max_dirents: usize,
 ) -> Result<(), String> {
-    let entries = match std::fs::read_dir(directory) {
+    let entries = match crate::spool::list_tool_executions(directory, max_dirents) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => return Err("tool evidence directory is unavailable".to_owned()),
     };
-    for (index, entry) in entries.enumerate() {
-        if index >= max_dirents {
-            return Err("tool evidence directory exceeds the bounded scan limit".to_owned());
-        }
-        let path = entry
-            .map_err(|_| "tool evidence entry is unavailable".to_owned())?
-            .path();
+    if entries.len() > max_dirents {
+        return Err("tool evidence directory exceeds the bounded scan limit".to_owned());
+    }
+    for path in entries {
         let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
             continue;
         };
         let Some(key) = name.strip_suffix(crate::spool::TOOL_INTENT_SUFFIX) else {
             continue;
         };
-        let bytes = pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES)
-            .map_err(|_| "tool execution intent is unavailable".to_owned())?;
+        let bytes = match crate::spool::read_tool_intent(&path) {
+            Ok(bytes) => bytes,
+            // Listed, then gone: another session's close archived its own
+            // intent between the listing and this read. That intent is
+            // resolved, and it was not this session's (this session is
+            // closing here). Concurrent closes, such as shutdown's, hit
+            // this; failing would leave the session for recovery.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err("tool execution intent is unavailable".to_owned()),
+        };
         let intent: ToolIntent = crate::journal::open(
             control_key,
             &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
@@ -2559,7 +2564,10 @@ pub(crate) async fn unresolved_tool_sessions(
     let directory = spool.join(crate::spool::TOOL_EXECUTIONS);
     let control_key = *control_key;
     tokio::task::spawn_blocking(move || {
-        let entries = match std::fs::read_dir(&directory) {
+        let entries = match crate::spool::list_tool_executions(
+            &directory,
+            crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK,
+        ) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(std::collections::HashSet::new());
@@ -2569,7 +2577,7 @@ pub(crate) async fn unresolved_tool_sessions(
         let mut intent_keys = std::collections::HashSet::new();
         let mut unresolved_sessions = std::collections::HashSet::new();
         let mut dirents_seen = 0usize;
-        for entry in entries {
+        for path in entries {
             // Dirent cap: every other spool scan bounds its directory
             // walk (MAX_RECOVERY_DIRENTS_PER_TICK); this one also
             // accumulates one HashSet key per `*.intent.json` name
@@ -2590,7 +2598,6 @@ pub(crate) async fn unresolved_tool_sessions(
                     crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK
                 ));
             }
-            let path = entry.map_err(|error| error.to_string())?.path();
             let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                 continue;
             };
@@ -2614,30 +2621,29 @@ pub(crate) async fn unresolved_tool_sessions(
             // Cap-class failures (oversize, non-regular file) route to
             // the same quarantine arm as a torn MAC so the scan keeps
             // making progress; only genuine IO faults abort.
-            let intent_check: Result<ToolIntent, String> =
-                match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
-                    Ok(intent_bytes) => crate::journal::open(
-                        &control_key,
-                        &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
-                        0,
-                        &intent_bytes,
-                    ),
-                    // The session's close legitimately removes its tool-execution
-                    // files between the directory listing and this read.
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        intent_keys.remove(key);
-                        continue;
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
-                        ) =>
-                    {
-                        Err(error.to_string())
-                    }
-                    Err(error) => return Err(error.to_string()),
-                };
+            let intent_check: Result<ToolIntent, String> = match crate::spool::read_tool_intent(&path) {
+                Ok(intent_bytes) => crate::journal::open(
+                    &control_key,
+                    &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
+                    0,
+                    &intent_bytes,
+                ),
+                // The session's close legitimately removes its tool-execution
+                // files between the directory listing and this read.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    intent_keys.remove(key);
+                    continue;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
+                    ) =>
+                {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             let intent: ToolIntent = match intent_check {
                 Ok(intent) => intent,
                 Err(error) => {
@@ -2666,7 +2672,9 @@ pub(crate) async fn unresolved_tool_sessions(
                         quarantine = %pv_core::fsutil::basename(&quarantine),
                         "torn tool-execution intent quarantined so recovery can proceed"
                     );
-                    if let Err(rename_err) = std::fs::rename(&path, &quarantine) {
+                    if let Err(rename_err) = crate::spool::change_tool_executions(&directory, || {
+                        std::fs::rename(&path, &quarantine)
+                    }) {
                         tracing::warn!(%rename_err, "failed to quarantine torn intent — leaving in place");
                     }
                     // Also quarantine the outcome
@@ -2770,7 +2778,10 @@ pub(crate) async fn unresolved_tool_sessions(
             };
         }
         let mut orphan_dirents = 0usize;
-        for entry in std::fs::read_dir(&directory).map_err(|error| error.to_string())? {
+        let orphan_entries =
+            crate::spool::list_tool_executions(&directory, crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK)
+                .map_err(|error| error.to_string())?;
+        for path in orphan_entries {
             // Same fail-closed dirent cap as the intent pass above.
             orphan_dirents = orphan_dirents.saturating_add(1);
             if orphan_dirents > crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK {
@@ -2780,12 +2791,16 @@ pub(crate) async fn unresolved_tool_sessions(
                     crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK
                 ));
             }
-            let path = entry.map_err(|error| error.to_string())?.path();
             let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                 continue;
             };
             if let Some(key) = name.strip_suffix(crate::spool::TOOL_OUTCOME_SUFFIX) {
-                if !intent_keys.contains(key) {
+                // Checked again in a turn: a call that claimed its intent
+                // after the first listing has a live outcome, not an orphan.
+                let intent = directory.join(format!("{key}{}", crate::spool::TOOL_INTENT_SUFFIX));
+                if !intent_keys.contains(key)
+                    && !crate::spool::change_tool_executions(&directory, || intent.exists())
+                {
                     // An orphan outcome must not
                     // return Err — that turns the recovery tick into a
                     // permanent brick, especially at boot where
@@ -2817,7 +2832,9 @@ fn quarantine_orphan_sibling(directory: &std::path::Path, key: &str, suffix: &st
     }
     let uid = pv_core::new_event_uid();
     let quarantine = directory.join(format!("{key}{suffix}.corrupt-{uid}"));
-    if let Err(rename_err) = std::fs::rename(&path, &quarantine) {
+    if let Err(rename_err) =
+        crate::spool::change_tool_executions(directory, || std::fs::rename(&path, &quarantine))
+    {
         tracing::warn!(
             %rename_err,
             role = %role,
@@ -2848,6 +2865,11 @@ struct ToolExecution {
 }
 
 impl ToolExecution {
+    /// The tool-execution folder this execution's files are in.
+    fn directory(&self) -> &std::path::Path {
+        self.intent_path.parent().unwrap_or(std::path::Path::new(""))
+    }
+
     fn from_request(
         spool: &str,
         headers: &HeaderMap,
@@ -3017,7 +3039,9 @@ impl ToolExecution {
     async fn release_unexecuted(&self) -> Result<(), String> {
         let execution = self.clone();
         tokio::task::spawn_blocking(move || {
-            match std::fs::remove_file(&execution.intent_path) {
+            match crate::spool::change_tool_executions(execution.directory(), || {
+                std::fs::remove_file(&execution.intent_path)
+            }) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error.to_string()),
@@ -3082,12 +3106,6 @@ impl ToolExecution {
             use std::os::unix::fs::OpenOptionsExt as _;
             open_options.mode(0o600);
         }
-        let mut file = open_options
-            .open(&self.intent_path)
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::AlreadyExists => ClaimError::Race,
-                _ => ClaimError::Backend(format!("tool execution intent unavailable: {error}")),
-            })?;
         let intent = crate::journal::seal(
             &self.control_key,
             &format!("{}:{}", crate::journal::TOOL_INTENT_DOMAIN, self.key),
@@ -3095,8 +3113,21 @@ impl ToolExecution {
             &self.intent(),
         )
         .map_err(ClaimError::Backend)?;
-        file.write_all(&intent)
-            .map_err(|error| ClaimError::Backend(error.to_string()))?;
+        // Created and written in one turn: a scan reads intents in turns
+        // too, so it never finds this one empty and takes it for one a
+        // crash left torn (it would move it aside, and a retry could then
+        // run the tool again). The sync runs after, outside the turn.
+        let file = crate::spool::change_tool_executions(self.directory(), || {
+            let mut file = open_options
+                .open(&self.intent_path)
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::AlreadyExists => ClaimError::Race,
+                    _ => ClaimError::Backend(format!("tool execution intent unavailable: {error}")),
+                })?;
+            file.write_all(&intent)
+                .map_err(|error| ClaimError::Backend(error.to_string()))?;
+            Ok::<_, ClaimError>(file)
+        })?;
         file.sync_all()
             .map_err(|error| ClaimError::Backend(error.to_string()))?;
         pv_core::fsutil::sync_directory(directory).map_err(|error| ClaimError::Backend(error.to_string()))
@@ -5606,10 +5637,19 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
             let content = choice
                 .pointer("/delta/content")
                 .or_else(|| choice.pointer("/message/content"))
-                .and_then(Value::as_str);
-            if let Some(content) = content {
+                .and_then(content_text);
+            if let Some(content) = content.as_deref() {
                 message.push_str(content);
                 choice_delta.content.push_str(content);
+            }
+            // A refusal is model output the client shows, like content.
+            let refusal = choice
+                .pointer("/delta/refusal")
+                .or_else(|| choice.pointer("/message/refusal"))
+                .and_then(Value::as_str);
+            if let Some(refusal) = refusal {
+                message.push_str(refusal);
+                choice_delta.content.push_str(refusal);
             }
             let reasoning_content = choice
                 .pointer("/delta/reasoning_content")
@@ -6054,6 +6094,30 @@ impl Drop for AbortFinalizingStream {
         }
     }
 }
+
+/// The text of a message's `content`: a string, or, when it is an array
+/// of content parts, the `text` or `refusal` of each part whatever its
+/// type (a part the client shows must not escape the judge).
+fn content_text(content: &Value) -> Option<std::borrow::Cow<'_, str>> {
+    match content {
+        Value::String(text) => Some(std::borrow::Cow::Borrowed(text)),
+        Value::Array(parts) => Some(std::borrow::Cow::Owned(
+            parts
+                .iter()
+                .filter_map(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .or_else(|| part.get("refusal").and_then(Value::as_str))
+                })
+                .collect(),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "routes_edge_extra_tests.rs"]
+mod routes_edge_extra_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8917,6 +8981,40 @@ mod tests {
         provider.abort();
     }
 
+    /// A claim creates and writes its intent in one turn of the folder,
+    /// so a scan (which reads intents in turns) never finds it empty and
+    /// moves it aside as torn while the call is still running.
+    #[test]
+    fn a_claimed_intent_is_never_seen_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-pv-session", HeaderValue::from_static("claim-turn"));
+        let body =
+            br#"{"jsonrpc":"2.0","id":"c","method":"tools/call","params":{"name":"read","arguments":{}}}"#;
+        let mut execution =
+            ToolExecution::from_request(&directory.path().to_string_lossy(), &headers, body, [7; 32])
+                .unwrap();
+        execution
+            .bind_principal(&pv_events::AgentIdentity {
+                version: "dev".to_owned(),
+                charter: "anonymous".into(),
+                instance_uid: "anonymous".to_owned(),
+                ttl_remaining_s: None,
+            })
+            .unwrap();
+        std::fs::create_dir_all(execution.intent_path.parent().unwrap()).unwrap();
+        let intent_path = execution.intent_path.clone();
+        let claim = crate::spool::change_tool_executions(intent_path.parent().unwrap(), || {
+            let claim = std::thread::spawn(move || execution.claim_sync());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!intent_path.exists(), "the claim waits for the turn");
+            claim
+        });
+        assert!(claim.join().unwrap().is_ok());
+        let bytes = crate::spool::read_tool_intent(&intent_path).unwrap();
+        assert!(!bytes.is_empty(), "complete when it appears");
+    }
+
     #[tokio::test]
     async fn startup_refuses_pending_and_unaudited_tool_effects() {
         let directory = tempfile::tempdir().unwrap();
@@ -9603,6 +9701,20 @@ mod tests {
                 std::fs::read(directory.path().join(name)).unwrap(),
                 b"retained evidence"
             );
+        }
+        // An intent listed and then archived by another session's close
+        // (here: a dangling link, which reads as not found) is skipped.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                directory.path().join("archived-elsewhere"),
+                directory.path().join("gone.intent.json"),
+            )
+            .unwrap();
+            let skipped =
+                ensure_tool_executions_resolved_with_limit(directory.path(), "session", &[7; 32], 10);
+            assert!(skipped.is_ok(), "{skipped:?}");
+            std::fs::remove_file(directory.path().join("gone.intent.json")).unwrap();
         }
         let writing_claim = directory.path().join("partial.intent.json");
         std::fs::write(&writing_claim, b"unfinished concurrent claim").unwrap();
@@ -12370,3 +12482,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "routes_refusal_edge_tests.rs"]
+mod routes_refusal_edge_tests;

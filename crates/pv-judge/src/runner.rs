@@ -43,6 +43,9 @@ pub struct JudgeRunner {
     registry: Arc<PredicateRegistry>,
     permits: Arc<Semaphore>,
     max_concurrency: usize,
+    /// Wait for a permit (within the adapter's deadline) instead of
+    /// failing as saturated at once.
+    wait_for_permits: bool,
 }
 
 impl JudgeRunner {
@@ -68,7 +71,18 @@ impl JudgeRunner {
             registry,
             permits: Arc::new(Semaphore::new(max_concurrency)),
             max_concurrency,
+            wait_for_permits: false,
         })
+    }
+
+    /// Make a task wait for a free permit instead of failing as saturated
+    /// at once. The wait counts against the adapter's deadline, so a task
+    /// still ends within it. Meant for background judging, where nobody
+    /// waits on the answer but every part of a long output should be read.
+    #[must_use]
+    pub fn waiting_for_permits(mut self) -> Self {
+        self.wait_for_permits = true;
+        self
     }
 
     /// The predicate registry.
@@ -99,7 +113,7 @@ impl JudgeRunner {
     ) -> Vec<JudgeOutcome> {
         let mut pending = Vec::with_capacity(tasks.len());
         for task in tasks {
-            pending.push(self.start(task, tool, validated_args, context));
+            pending.push(self.start(task, tool, validated_args, context).await);
         }
         let mut outcomes = Vec::with_capacity(pending.len());
         for started in pending {
@@ -117,7 +131,7 @@ impl JudgeRunner {
         outcomes
     }
 
-    fn start(
+    async fn start(
         &self,
         task: &JudgeTask,
         tool: &str,
@@ -136,7 +150,16 @@ impl JudgeRunner {
                 started,
             ));
         };
-        let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
+        let deadline_at = tokio::time::Instant::from_std(started) + slot.deadline;
+        let permit = if self.wait_for_permits {
+            match tokio::time::timeout_at(deadline_at, Arc::clone(&self.permits).acquire_owned()).await {
+                Ok(Ok(permit)) => Some(permit),
+                Ok(Err(_)) | Err(_) => None,
+            }
+        } else {
+            Arc::clone(&self.permits).try_acquire_owned().ok()
+        };
+        let Some(permit) = permit else {
             return Started::Done(failure(&predicate.id, &slot, JudgeError::Saturated, started));
         };
         let request = JudgeRequest {
@@ -154,7 +177,7 @@ impl JudgeRunner {
         });
         Started::Running {
             handle,
-            deadline_at: tokio::time::Instant::from_std(started) + slot.deadline,
+            deadline_at,
             started,
             predicate,
             slot,
@@ -199,9 +222,17 @@ async fn finish(
 
 fn failure(predicate_id: &str, slot: &AdapterSlot, error: JudgeError, started: Instant) -> JudgeOutcome {
     if matches!(error, JudgeError::ModelMismatch { .. }) {
+        // The reported model name comes from the backend: bound it, and
+        // flatten line breaks, before it reaches the log.
+        let shown: String = error
+            .to_string()
+            .chars()
+            .take(512)
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
         tracing::error!(
             predicate = predicate_id,
-            error = %error,
+            error = %shown,
             "judge answered with an unpinned model; the call is refused"
         );
     }
@@ -374,6 +405,47 @@ mod tests {
             .evaluate(&[task()], "t", &json!({}), &SessionContext::default())
             .await;
         assert!(matches!(&outcomes[0], JudgeOutcome::Failed(f) if f.kind == FailureKind::Malformed));
+    }
+
+    /// A runner that waits for permits scores a task that arrives while
+    /// the only permit is taken, once it frees within the deadline; one
+    /// that does not wait fails it as saturated.
+    #[tokio::test]
+    async fn a_waiting_runner_waits_for_a_permit_within_the_deadline() {
+        let behavior = || {
+            MockBehavior::delayed(
+                Duration::from_millis(50),
+                MockBehavior::scores(&[("match", 1.0), ("mismatch", 0.0)]),
+            )
+        };
+        let both = |runner: Arc<JudgeRunner>| async move {
+            let first = {
+                let runner = Arc::clone(&runner);
+                tokio::spawn(async move {
+                    runner
+                        .evaluate(&[task()], "t", &json!({}), &SessionContext::default())
+                        .await
+                })
+            };
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let second = runner
+                .evaluate(&[task()], "t", &json!({}), &SessionContext::default())
+                .await;
+            (first.await.unwrap(), second)
+        };
+        let waiting =
+            Arc::new(runner(Arc::new(MockJudge::new(pin(), behavior())), 500, 1).waiting_for_permits());
+        let (first, second) = both(waiting).await;
+        assert!(matches!(&first[0], JudgeOutcome::Scored(_)));
+        assert!(matches!(&second[0], JudgeOutcome::Scored(_)), "{second:?}");
+        let failing = Arc::new(runner(Arc::new(MockJudge::new(pin(), behavior())), 500, 1));
+        let (_, second) = both(failing).await;
+        assert!(matches!(&second[0], JudgeOutcome::Failed(f) if f.kind == FailureKind::Saturated));
+        // The wait counts against the deadline: past it, saturated.
+        let short =
+            Arc::new(runner(Arc::new(MockJudge::new(pin(), behavior())), 20, 1).waiting_for_permits());
+        let (_, second) = both(short).await;
+        assert!(matches!(&second[0], JudgeOutcome::Failed(_)), "{second:?}");
     }
 
     #[tokio::test]

@@ -50,7 +50,7 @@ fn runner(endpoint: &str, deadline: Duration, redact: bool) -> JudgeRunner {
     })
     .unwrap();
     if redact {
-        judge = judge.with_redactor(Arc::new(|value: &mut Value| {
+        judge = judge.with_redactor(Arc::new(|value: &mut Value, _| {
             if let Some(map) = value.as_object_mut() {
                 if map.contains_key("secret") {
                     map.insert("secret".into(), json!("[REDACTED]"));

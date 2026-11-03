@@ -75,6 +75,7 @@ fn base_judge() -> JudgeConfig {
         pilot: None,
         drift: None,
         background_max_concurrency: 8,
+        max_concurrency_per_caller: None,
         trace: None,
         breaker: None,
         standing_rules: Vec::new(),
@@ -511,12 +512,15 @@ async fn background_judging_never_starves_admission() {
     judge.thresholds = vec![threshold];
     judge.trace = Some(trace());
     judge.background_max_concurrency = 1;
-    let mock = scripted(Arc::default(), Duration::from_millis(600));
+    // A trace waits for the one background slot within its 2 s deadline:
+    // with each verdict taking 1.5 s, the outputs past the second cannot
+    // get the slot in time and are recorded as saturated.
+    let mock = scripted(Arc::default(), Duration::from_millis(1_500));
     let h = build(judge, &mock, |config| {
         config.tool_upstream_url = Some(url);
         config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
     });
-    // Six outputs at once: one background slot, five saturated.
+    // Six outputs at once: one background slot.
     let mut calls = Vec::new();
     for n in 0..6 {
         let h = h.clone();

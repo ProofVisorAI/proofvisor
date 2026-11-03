@@ -28,7 +28,7 @@
 //! the runner's deadline bounds each call.
 
 use crate::adapter::{AdapterKind, BoxFuture, JudgeAdapter, JudgeError};
-use crate::cloud::{validate_endpoint, Redactor, MAX_RESPONSE_BYTES};
+use crate::cloud::{validate_endpoint, RedactionTarget, Redactor, MAX_RESPONSE_BYTES};
 use crate::model::{sha256_hex, JudgeRequest, ModelPin, RawScores, SessionContext};
 use crate::predicate::PredicateDef;
 use crate::render::render_request;
@@ -94,7 +94,7 @@ pub struct TypeSafeJudge {
 #[derive(Deserialize)]
 struct WireResponse {
     model: String,
-    answers: BTreeMap<String, WireAnswer>,
+    answers: UniqueMap<WireAnswer>,
 }
 
 #[derive(Deserialize)]
@@ -102,7 +102,34 @@ struct WireAnswer {
     #[serde(rename = "type")]
     kind: String,
     #[serde(default)]
-    probabilities: Option<BTreeMap<String, f64>>,
+    probabilities: Option<UniqueMap<f64>>,
+}
+
+/// A JSON object read without letting a repeated key overwrite an
+/// earlier one: `{"mismatch":0.95,"match":0.05,"mismatch":0.05,...}`
+/// must be malformed, not read as its last values.
+struct UniqueMap<V>(BTreeMap<String, V>);
+
+impl<'de, V: Deserialize<'de>> Deserialize<'de> for UniqueMap<V> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<V>(std::marker::PhantomData<V>);
+        impl<'de, V: Deserialize<'de>> serde::de::Visitor<'de> for Visitor<V> {
+            type Value = UniqueMap<V>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an object without repeated keys")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+                let mut map = BTreeMap::new();
+                while let Some((key, value)) = access.next_entry::<String, V>()? {
+                    if map.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("repeated key"));
+                    }
+                }
+                Ok(UniqueMap(map))
+            }
+        }
+        deserializer.deserialize_map(Visitor(std::marker::PhantomData))
+    }
 }
 
 impl TypeSafeJudge {
@@ -170,12 +197,17 @@ impl TypeSafeJudge {
     fn body(&self, request: &JudgeRequest, predicate: &PredicateDef) -> Result<Value, JudgeError> {
         let mut redacted = request.clone();
         if let Some(redact) = &self.redactor {
-            redact(&mut redacted.validated_args);
+            redact(&mut redacted.validated_args, RedactionTarget::Arguments);
             let mut context = serde_json::to_value(&redacted.context)
                 .map_err(|_| JudgeError::Unavailable("judge context is not serializable".to_owned()))?;
-            redact(&mut context);
+            redact(&mut context, RedactionTarget::Context);
             redacted.context = serde_json::from_value::<SessionContext>(context)
                 .map_err(|_| JudgeError::Unavailable("redacted judge context is invalid".to_owned()))?;
+        }
+        // Measured on what is rendered and sent: redaction can lengthen
+        // the arguments (a short address becomes "[REDACTED]").
+        if let Some(error) = crate::render::request_too_long(&redacted) {
+            return Err(error);
         }
         let criteria: serde_json::Map<String, Value> = predicate
             .labels
@@ -212,7 +244,9 @@ impl TypeSafeJudge {
             .await
             .map_err(transport_error)?;
         let status = response.status();
-        if !status.is_success() {
+        // Only 200 carries an answer (TypeSafe's reference documents no
+        // other success status); 201, 204 and the rest are a failed call.
+        if status != reqwest::StatusCode::OK {
             // 401 (key), 429 (rate limit), 529 (overload), 4xx, 5xx: all
             // are an unavailable judge. The body may echo input; it is
             // not read.
@@ -224,7 +258,7 @@ impl TypeSafeJudge {
         let bytes = read_limited(response).await?;
         let wire: WireResponse = serde_json::from_slice(&bytes)
             .map_err(|_| JudgeError::Malformed("TypeSafe response is not a System One answer".to_owned()))?;
-        let answer = wire.answers.get(QUESTION).ok_or_else(|| {
+        let answer = wire.answers.0.get(QUESTION).ok_or_else(|| {
             JudgeError::Malformed("TypeSafe response has no answer to the question".to_owned())
         })?;
         if answer.kind != "choice" {
@@ -233,10 +267,10 @@ impl TypeSafeJudge {
                 answer.kind
             )));
         }
-        let probabilities = answer
-            .probabilities
-            .as_ref()
-            .ok_or_else(|| JudgeError::Malformed("TypeSafe choice answer has no probabilities".to_owned()))?;
+        let probabilities =
+            answer.probabilities.as_ref().map(|map| &map.0).ok_or_else(|| {
+                JudgeError::Malformed("TypeSafe choice answer has no probabilities".to_owned())
+            })?;
         // Every reported label, in the predicate's order first, so the
         // shared validation sees missing and extra labels alike.
         let mut probs: Vec<(String, f64)> = predicate
@@ -262,6 +296,17 @@ impl TypeSafeJudge {
 impl JudgeAdapter for TypeSafeJudge {
     fn id(&self) -> &ModelPin {
         &self.pin
+    }
+
+    fn redact_text(&self, text: &mut String) {
+        if let Some(redact) = &self.redactor {
+            let mut value = Value::String(std::mem::take(text));
+            redact(&mut value, RedactionTarget::Arguments);
+            *text = match value {
+                Value::String(redacted) => redacted,
+                other => other.to_string(),
+            };
+        }
     }
 
     /// Recorded as `cloud`: TypeSafe is a cloud judge, and the record

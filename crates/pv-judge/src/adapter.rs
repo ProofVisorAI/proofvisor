@@ -53,6 +53,15 @@ pub trait JudgeAdapter: Send + Sync {
         request: &'a JudgeRequest,
         predicate: &'a PredicateDef,
     ) -> BoxFuture<'a, Result<RawScores, JudgeError>>;
+
+    /// Redact `text` as this adapter redacts arguments before they leave
+    /// (nothing, for an adapter that sends nothing out). A caller that
+    /// splits a long text into several requests redacts it whole first,
+    /// so a secret cut in two cannot slip past patterns that see only
+    /// one piece.
+    fn redact_text(&self, text: &mut String) {
+        let _ = text;
+    }
 }
 
 /// Why a judge call produced no usable verdict.
@@ -70,6 +79,10 @@ pub enum JudgeError {
     /// The backend answered with output that does not fit the predicate.
     #[error("judge output malformed: {0}")]
     Malformed(String),
+    /// The request is longer than the judge reads in full, so it was not
+    /// judged. Recorded as malformed; a caller can split the text.
+    #[error("judge input too long: {0}")]
+    TooLong(String),
     /// The backend answered with a model other than the pinned one.
     #[error("judge model mismatch: expected {expected}, got {got}")]
     ModelMismatch {
@@ -87,7 +100,7 @@ impl JudgeError {
             Self::Timeout => FailureKind::Timeout,
             Self::Saturated => FailureKind::Saturated,
             Self::Unavailable(_) => FailureKind::Unavailable,
-            Self::Malformed(_) => FailureKind::Malformed,
+            Self::Malformed(_) | Self::TooLong(_) => FailureKind::Malformed,
             Self::ModelMismatch { .. } => FailureKind::ModelMismatch,
         }
     }
@@ -136,6 +149,10 @@ impl FailureKind {
     }
 }
 
+/// How the detail of a failure for input that is too long begins
+/// ([`JudgeError::TooLong`]).
+pub const TOO_LONG_DETAIL: &str = "judge input too long:";
+
 /// A predicate the judge could not score.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -150,6 +167,13 @@ pub struct JudgeFailure {
     pub detail: String,
     /// Time spent before the failure, microseconds.
     pub latency_us: u64,
+}
+
+impl JudgeFailure {
+    /// True when the request was longer than the judge reads in full.
+    pub fn is_too_long(&self) -> bool {
+        self.kind == FailureKind::Malformed && self.detail.starts_with(TOO_LONG_DETAIL)
+    }
 }
 
 /// The result of asking the judge about one predicate.
@@ -196,6 +220,12 @@ impl JudgeOutcome {
     }
 }
 
+/// A label from a backend as shown in an error: at most 64 characters,
+/// since the backend chooses it.
+fn shown_label(label: &str) -> String {
+    label.chars().take(64).collect()
+}
+
 /// Check raw adapter output against the predicate and the pin, and
 /// convert it to a [`Verdict`] in the predicate's label order.
 ///
@@ -226,12 +256,16 @@ pub fn validate_scores(
     for (index, (label, p)) in raw.probs.iter().enumerate() {
         if !predicate.has_label(label) {
             return Err(JudgeError::Malformed(format!(
-                "label {label:?} is not a label of {}",
+                "label {:?} is not a label of {}",
+                shown_label(label),
                 predicate.id
             )));
         }
         if raw.probs.iter().take(index).any(|(earlier, _)| earlier == label) {
-            return Err(JudgeError::Malformed(format!("label {label:?} appears twice")));
+            return Err(JudgeError::Malformed(format!(
+                "label {:?} appears twice",
+                shown_label(label)
+            )));
         }
         if !p.is_finite() || *p < 0.0 || *p > 1.0 {
             return Err(JudgeError::Malformed(format!(

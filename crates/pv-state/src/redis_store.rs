@@ -803,15 +803,18 @@ impl StateStore for RedisStore {
         }
     }
 
-    fn recent(&self, key: &str) -> Result<Vec<String>, StateError> {
+    fn recent(&self, key: &str, max: usize) -> Result<Vec<String>, StateError> {
+        let last = isize::try_from(max.max(1)).unwrap_or(isize::MAX) - 1;
         match &self.backend {
             RedisBackend::Single(pool) => recent_on(
                 &mut pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
                 key,
+                last,
             ),
             RedisBackend::Cluster(pool) => recent_on(
                 &mut *pool.get().map_err(|e| StateError::Backend(e.to_string()))?,
                 key,
+                last,
             ),
         }
     }
@@ -832,8 +835,12 @@ fn push_recent_on<C: redis::ConnectionLike>(
     Ok(())
 }
 
-fn recent_on<C: redis::ConnectionLike>(conn: &mut C, key: &str) -> Result<Vec<String>, StateError> {
-    conn.lrange(key, 0, -1)
+fn recent_on<C: redis::ConnectionLike>(
+    conn: &mut C,
+    key: &str,
+    last: isize,
+) -> Result<Vec<String>, StateError> {
+    conn.lrange(key, 0, last)
         .map_err(|e| StateError::Backend(e.to_string()))
 }
 

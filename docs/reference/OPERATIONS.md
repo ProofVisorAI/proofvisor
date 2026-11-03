@@ -413,7 +413,7 @@ covers running it.
 | Phase | Configuration | What happens |
 | --- | --- | --- |
 | Shadow | `mode = "shadow"` | The judge scores every tagged call and never blocks. Each `agent.tool_call` event's `payload.judge.would_block` says whether judge-aware policy would have blocked a call the rest of policy allowed, and each such call is also published as its own `agent.judge` event (`payload.kind = "shadow"`). Compare that against what actually happened before enforcing. |
-| Capped pilot | `mode = "enforce"` with `[judge.pilot] daily_block_cap` | Policy acts on the verdicts for the tagged tools, but at most `daily_block_cap` score-based blocks per tool per UTC day. Later ones are recorded (`pilot_cap_reached: true`) and let through. Tag only a few tools per design partner. |
+| Capped pilot | `mode = "enforce"` with `[judge.pilot] daily_block_cap` | Policy acts on the verdicts for the tagged tools, but at most `daily_block_cap` score-based blocks per tool and agent instance per UTC day. Later ones are recorded (`pilot_cap_reached: true`) and let through. Tag only a few tools per design partner. |
 | Scale | `mode = "enforce"`, no `[judge.pilot]` | Widen `[[judge.tools]]` once calibration holds. |
 
 ### Failure modes
@@ -428,7 +428,7 @@ covers running it.
 | Model answers with an unpinned identity (cloud) | Deny, and an error log line. | `JUDGE_UNAVAILABLE` |
 | Local model or tokenizer file does not hash to its pin | The daemon refuses to start and logs the hash it found. | none (boot error) |
 | Local adapter configured in a build without the `onnx` feature | The daemon refuses to start; `pvctl config-validate` reports it. | none (boot error) |
-| Background judge (`[judge.trace]`) fails, times out, or is saturated (`background_max_concurrency` verdicts in flight) | Nothing is blocked. The `agent.judge` event records the failure in its `verdict.status`, with no finding. | none |
+| Background judge (`[judge.trace]`) fails, times out, or is saturated (`background_max_concurrency` verdicts in flight) | Nothing is blocked. When every window fails, the `agent.judge` event records the failure in its `verdict.status`, with no finding. When only some fail, `verdict` is the riskiest window that scored, and `failed_windows` and `complete: false` show that the output was not judged in full: alert on them. | none |
 | Breaker second opinion fails | The loop breaker keeps its own decision for that step. | none |
 | Audit queue full when a finding is published | The finding is dropped and counted in `pv_judge_events_dropped_total`. | none |
 
@@ -465,7 +465,11 @@ policy would have blocked and the calls the harness actually refused.
 It replays the thresholds only. A WASM policy (interface version 2)
 that reads verdicts is not replayed. It does not detect tampering
 either: verify the receipts that cover the records first
-(`pvctl receipt-verify`).
+(`pvctl receipt-verify`). Two more limits: a Bridge line that does not
+parse is skipped with a warning in the log rather than counted in the
+report, so compare `records_read` with what you expect; and a record
+written by a later build with fields this build does not know is
+counted as unreadable.
 
 ### Calibration
 
@@ -519,8 +523,22 @@ exist only when `operator_tokens` and `[judge.drift]` are both set.
 The prior-denial log holds the refusals the judge sees as context. With
 `state_backend = "redis"` it is kept in Redis as well as in each
 process, so a delegated agent served by another instance sees the
-refusals of the agents above it. Each list keeps the newest 16 refusals
-and expires 24 hours after its last refusal. If Redis cannot be read,
+refusals of the agents above it. Each session and agent has two shared
+lists, one for the judge's refusals and one for the others, so that
+cheap policy refusals cannot push the judge's out. Each list keeps the
+newest 32 refusals and expires 24 hours after its last refusal. An
+instance does not write a refusal again if it shared one of the same
+kind (same tool, code, predicate and agent) within the last hour, so
+repeating one refusal cannot fill a list; a refusal whose write failed
+is written again with the next one. An entry read back from
+Redis is used only if it has the shape the harness writes: a known
+denial code and predicate, plain tool and agent names, the agent the
+list belongs to, and a time within the last 24 hours and not after now;
+at most 32 entries are read from each list. The judge sees at most 16: this
+instance's own refusals first, then the shared ones, and when there are
+more, refusals that did not come from the judge are dropped first. In each
+process, the log evicts the least recently used session or agent first.
+If Redis cannot be read,
 the judge uses the instance's own entries and counts the failure in
 `pv_judge_shared_denials_errors_total`. With the in-memory backend the
 log lives only in the process. The sampled verdicts waiting for review

@@ -2446,6 +2446,66 @@ impl HarnessConfig {
                 }
             }
         }
+        // The judge reads the tasks of every mission that applies to an
+        // agent, joined; past what it reads, every judged call of that
+        // agent fails as malformed (held, by default).
+        let tasks_chars: usize = self
+            .mission
+            .iter()
+            .chain(&self.missions)
+            .filter_map(|mission| mission.task.as_deref())
+            .map(|task| task.chars().count() + 1)
+            .sum();
+        if self.judge.is_some() && tasks_chars > pv_judge::render::MAX_TASK_CHARS + 1 {
+            tracing::warn!(
+                tasks_chars,
+                limit = pv_judge::render::MAX_TASK_CHARS,
+                "the mission tasks together are longer than the judge reads; an agent covered by \
+                 enough of these missions has every judged call fail as malformed"
+            );
+        }
+        // Trace windows reach a remote judge as {"source", "output"} and
+        // the breaker's texts as {"previous", "current"}: a redaction path
+        // naming one would hide every one of them from the judge.
+        if let Some(judge) = &self.judge {
+            let redacting = |name: &str| {
+                judge.adapters.iter().any(|adapter| {
+                    adapter.name == name
+                        && adapter.redact
+                        && adapter.kind != crate::judge::JudgeAdapterKind::Local
+                })
+            };
+            let trace = judge
+                .trace
+                .as_ref()
+                .is_some_and(|trace| redacting(&trace.adapter));
+            let breaker = judge
+                .breaker
+                .as_ref()
+                .is_some_and(|breaker| redacting(&breaker.adapter));
+            let mut hidden: Vec<&str> = Vec::new();
+            if trace {
+                hidden.extend(["/source", "/output"]);
+            }
+            if breaker {
+                hidden.extend(["/previous", "/current"]);
+            }
+            for path in &self.redaction_paths {
+                // The empty pointer is the whole value.
+                let whole = path.is_empty() && (trace || breaker);
+                if whole
+                    || hidden
+                        .iter()
+                        .any(|name| path == name || path.starts_with(&format!("{name}/")))
+                {
+                    errors.push(format!(
+                        "redaction_paths entry {path:?} would hide what the judge reads in \
+                         [judge.trace] or [judge.breaker]; remove it (the judge's adapter already \
+                         redacts that text with the patterns)"
+                    ));
+                }
+            }
+        }
         if let Some(judge) = &self.judge {
             judge.collect_errors(errors);
             if let Some(range) = &judge.breaker {

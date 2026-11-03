@@ -3605,8 +3605,23 @@ impl AppState {
         // Ask the semantic judge before taking the session's admission
         // lock: its wait (up to the adapter deadline) must not hold up a
         // concurrent session close or the session's other calls.
+        // The session checks below run under the admission lock, after the
+        // judge. Read them here first, so a call they will refuse (another
+        // identity's session, a closed or broken session, an open loop
+        // breaker) never reaches the judge: its arguments would leave for
+        // a cloud judge and use judge capacity for nothing.
+        let session_admits = self.sessions.get(&session_id).is_none_or(|existing| {
+            validate_session_binding(&existing, workflow, &identity).is_ok()
+                && !existing.is_closed()
+                && !existing.capture_failed()
+                && !(existing.loop_state.state() == BreakerState::Open
+                    && matches!(
+                        existing.loop_state.action(),
+                        BreakerAction::Reject | BreakerAction::Abort
+                    ))
+        });
         let mut prejudged = self.prejudge(
-            preflight_denial.is_none(),
+            preflight_denial.is_none() && session_admits,
             parsed_call.as_ref(),
             workflow,
             raw,
@@ -3719,6 +3734,7 @@ impl AppState {
                         judge_us,
                         &session_id,
                         principal_ref,
+                        &principal_id_for_budget(&identity),
                     );
                     (verdict, Some(record))
                 }
@@ -3875,8 +3891,12 @@ impl AppState {
             // Parse and protocol refusals say nothing about intent, and a
             // tool name the operator never defined (no schema, no judge
             // tag) is caller-chosen text that must not reach the judge.
+            // Only policy refusals (thresholds, WASM policies, allow
+            // lists, the judge) say what an agent was refused. Schema and
+            // budget refusals are free for a caller to provoke, and would
+            // otherwise push a real refusal out of the judge's view.
             let known_tool = self.sandbox.has_schema(tool) || judge.tasks_for(tool).is_some();
-            if !matches!(*stage, "parse" | "passthrough") && known_tool {
+            if *stage == "policy" && known_tool {
                 let predicate = (policy.as_deref() == Some(pv_sandbox::JUDGE_POLICY_NAME))
                     .then(|| {
                         judge_record
@@ -4096,13 +4116,27 @@ impl AppState {
         let validated = caller.validated.as_ref();
         let context = judge.context(&crate::judge::ContextInputs {
             session_id,
+            instance_uid: &identity.instance_uid,
+            tool,
             intent: self.pdp.intent_for(tool),
             missions: self.pdp.applicable_missions(&facts),
             charter: &identity.charter.name,
             delegation_depth: validated.map_or(0, |validated| validated.total_delegation_depth),
             parents: validated.map(delegation_parents).unwrap_or_default(),
         });
-        judge.evaluate_blocking(tasks, tool, &call.request.arguments, context)
+        judge.evaluate_blocking(
+            tasks,
+            tool,
+            &call.request.arguments,
+            context,
+            // Only a validated identity tells callers apart; anonymous
+            // callers share just the overall limit.
+            if validated.is_some() {
+                &identity.instance_uid
+            } else {
+                ""
+            },
+        )
     }
 
     /// Run the policy and budget gates on a judged call with its verdicts.
@@ -4123,6 +4157,7 @@ impl AppState {
         judge_us: u64,
         session_id: &str,
         principal: Option<(&str, &pv_state::BudgetSpec)>,
+        caller: &str,
     ) -> (ToolVerdict, pv_judge::JudgeRecord) {
         let tool = call.request.tool.clone();
         let evidence = pv_sandbox::JudgeEvidence {
@@ -4185,7 +4220,7 @@ impl AppState {
                             .iter()
                             .any(|id| id == outcome.predicate_id())
                     });
-                if judge_caused && relaxable && !judge.pilot_admits_block(store, &tool) {
+                if judge_caused && relaxable && !judge.pilot_admits_block(store, &tool, caller) {
                     // Nothing was spent by the refused admission (the
                     // policy gate runs before the budget gate).
                     (

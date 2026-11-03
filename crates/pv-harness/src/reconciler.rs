@@ -3373,48 +3373,45 @@ impl Finalizer {
         let control_key = self.journal_key;
         tokio::task::spawn_blocking(move || -> Result<(), FinalizeError> {
             let directory = spool_dir.join(crate::spool::TOOL_EXECUTIONS);
-            let entries = match std::fs::read_dir(&directory) {
+            let entries = match crate::spool::list_tool_executions(&directory, usize::MAX) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(FinalizeError::atif_source(error)),
             };
             let mut removed_any = false;
-            for entry in entries {
-                let entry = entry.map_err(FinalizeError::atif_source)?;
-                let path = entry.path();
+            for path in entries {
                 let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                     continue;
                 };
                 let Some(key) = name.strip_suffix(crate::spool::TOOL_INTENT_SUFFIX) else {
                     continue;
                 };
-                let intent_bytes =
-                    match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
-                        Ok(bytes) => bytes,
-                        // Concurrent removal or a torn intent already
-                        // quarantined by the recovery scan: skip and
-                        // continue rather than aborting the cleanup pass
-                        // over unrelated files.
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                        // Oversize or non-regular file (`read_capped`, same
-                        // bound as the recovery scan): a real MAC-sealed
-                        // intent is tiny, so this is a plant or corruption.
-                        // Skip it — an uncapped `std::fs::read` here let one
-                        // planted multi-GiB `.intent.json` stall or OOM
-                        // every close of every session.
-                        Err(error)
-                            if error.kind() == std::io::ErrorKind::InvalidData
-                                || error.kind() == std::io::ErrorKind::InvalidInput =>
-                        {
-                            tracing::warn!(
-                                file = %pv_core::fsutil::basename(&path),
-                                %error,
-                                "skipping oversize or non-regular tool-intent file during close cleanup"
-                            );
-                            continue;
-                        }
-                        Err(error) => return Err(FinalizeError::atif_source(error)),
-                    };
+                let intent_bytes = match crate::spool::read_tool_intent(&path) {
+                    Ok(bytes) => bytes,
+                    // Concurrent removal or a torn intent already
+                    // quarantined by the recovery scan: skip and
+                    // continue rather than aborting the cleanup pass
+                    // over unrelated files.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    // Oversize or non-regular file (`read_capped`, same
+                    // bound as the recovery scan): a real MAC-sealed
+                    // intent is tiny, so this is a plant or corruption.
+                    // Skip it — an uncapped `std::fs::read` here let one
+                    // planted multi-GiB `.intent.json` stall or OOM
+                    // every close of every session.
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::InvalidData
+                            || error.kind() == std::io::ErrorKind::InvalidInput =>
+                    {
+                        tracing::warn!(
+                            file = %pv_core::fsutil::basename(&path),
+                            %error,
+                            "skipping oversize or non-regular tool-intent file during close cleanup"
+                        );
+                        continue;
+                    }
+                    Err(error) => return Err(FinalizeError::atif_source(error)),
+                };
                 let intent_session_id = crate::journal::open::<serde_json::Value>(
                     &control_key,
                     &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
@@ -3449,19 +3446,22 @@ impl Finalizer {
                 // reached by this loop and are preserved as
                 // forensic evidence; they are the operator's
                 // choice to sweep by age.
-                for suffix in [
-                    crate::spool::TOOL_AUDITED_SUFFIX,
-                    crate::spool::TOOL_OUTCOME_SUFFIX,
-                    crate::spool::TOOL_INTENT_SUFFIX,
-                    ".intent.torn",
-                ] {
-                    let file = directory.join(format!("{key}{suffix}"));
-                    match std::fs::remove_file(&file) {
-                        Ok(()) => removed_any = true,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(FinalizeError::atif_source(error)),
+                crate::spool::change_tool_executions(&directory, || {
+                    for suffix in [
+                        crate::spool::TOOL_AUDITED_SUFFIX,
+                        crate::spool::TOOL_OUTCOME_SUFFIX,
+                        crate::spool::TOOL_INTENT_SUFFIX,
+                        ".intent.torn",
+                    ] {
+                        let file = directory.join(format!("{key}{suffix}"));
+                        match std::fs::remove_file(&file) {
+                            Ok(()) => removed_any = true,
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(FinalizeError::atif_source(error)),
+                        }
                     }
-                }
+                    Ok(())
+                })?;
             }
             if removed_any {
                 pv_core::fsutil::sync_directory(&directory).map_err(FinalizeError::atif_source)?;
@@ -3483,14 +3483,12 @@ impl Finalizer {
         let control_key = self.journal_key;
         let outcome = tokio::task::spawn_blocking(move || {
             let directory = spool_dir.join(crate::spool::TOOL_EXECUTIONS);
-            let entries = match std::fs::read_dir(&directory) {
+            let entries = match crate::spool::list_tool_executions(&directory, usize::MAX) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error.to_string()),
             };
-            for entry in entries {
-                let Ok(entry) = entry else { continue };
-                let path = entry.path();
+            for path in entries {
                 let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                     continue;
                 };
@@ -3503,11 +3501,10 @@ impl Finalizer {
                 // here before MAC verification. Oversize/unreadable
                 // intents are skipped (they cannot name this session
                 // authentically anyway).
-                let intent_bytes =
-                    match pv_core::fsutil::read_capped(&path, pv_core::fsutil::MAX_CONTROL_BYTES) {
-                        Ok(bytes) => bytes,
-                        Err(_) => continue,
-                    };
+                let intent_bytes = match crate::spool::read_tool_intent(&path) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
                 let intent_session_id = crate::journal::open::<serde_json::Value>(
                     &control_key,
                     &format!("{}:{key}", crate::journal::TOOL_INTENT_DOMAIN),
@@ -3534,17 +3531,19 @@ impl Finalizer {
                 // Audited first, outcome next, intent last — mirrors the
                 // remove path's crash-ordering rationale (outcome must
                 // never exist without its intent at the primary names).
-                for suffix in [
-                    crate::spool::TOOL_AUDITED_SUFFIX,
-                    crate::spool::TOOL_OUTCOME_SUFFIX,
-                    crate::spool::TOOL_INTENT_SUFFIX,
-                ] {
-                    let file = directory.join(format!("{key}{suffix}"));
-                    let quarantine = directory.join(format!("{key}{suffix}.capturefailed-{uid}"));
-                    match std::fs::rename(&file, &quarantine) {
-                        Ok(()) | Err(_) => {}
+                crate::spool::change_tool_executions(&directory, || {
+                    for suffix in [
+                        crate::spool::TOOL_AUDITED_SUFFIX,
+                        crate::spool::TOOL_OUTCOME_SUFFIX,
+                        crate::spool::TOOL_INTENT_SUFFIX,
+                    ] {
+                        let file = directory.join(format!("{key}{suffix}"));
+                        let quarantine = directory.join(format!("{key}{suffix}.capturefailed-{uid}"));
+                        match std::fs::rename(&file, &quarantine) {
+                            Ok(()) | Err(_) => {}
+                        }
                     }
-                }
+                });
                 tracing::warn!(
                     session = %session_id,
                     key = %key,

@@ -89,6 +89,35 @@ exercised against release binaries in CI on every push
 
 ### Security
 
+- **Semantic judge hardening, from an independent security review and
+  edge-case tests.**
+  - A call the judge cannot read in full (arguments over 8192 rendered
+    characters, or more tokens than the local model reads) is no longer
+    scored on its first part; it fails as malformed (held for approval
+    by default). Padding under an early, alphabetically sorted key could
+    hide the risky part of a call.
+  - Arguments and recorded outputs sent to a cloud or TypeSafe judge are
+    redacted like tool arguments in the audit trail, whole numbers and
+    object keys included.
+  - The refusal log the judge reads: only policy refusals are recorded
+    (cheap schema refusals could flush a real one), one entry per kind
+    of refusal, the judged tool's refusals first, keyed by agent
+    instance and session (the session id is caller-chosen), least
+    recently used eviction, and entries read back from Redis must have
+    the shape the harness writes (known code and predicate, plain names,
+    a time within 24 hours, at most 16 read).
+  - The pilot's daily block cap and the judge's concurrency are counted
+    per agent instance (`max_concurrency_per_caller`), so one agent
+    cannot use them up for every other agent.
+  - Calls the session checks will refuse (another agent's session, a
+    closed or broken session, an open loop breaker) are not judged.
+  - TypeSafe answers repeating a label or an answer id are malformed,
+    and only HTTP 200 carries an answer.
+  - The Unicode line separators U+2028 and U+2029 can no longer start a
+    forged line in the text a judge reads.
+  - Trace judging reads the model's answer, not its reasoning.
+  - Vendor-chosen text (model names, labels) is bounded in logs and
+    error details; cloud bearer tokens must be one printable token.
 - **Cross-site requests to the daemon are refused.** The chat
   completions, session close and promote, token exchange and revocation
   routes now apply the same `Origin` allowlist (`mcp_allowed_origins`)
