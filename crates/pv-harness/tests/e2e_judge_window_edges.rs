@@ -557,6 +557,36 @@ async fn two_default_size_outputs_at_once_are_judged_in_full_with_the_default_co
     assert_eq!(findings, 2);
 }
 
+/// A trace is judged within 3 of its adapter's deadlines. With a slow
+/// judge and the largest output, the last windows are not judged in
+/// time: they count as failed, and the event says the output was not
+/// judged in full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn windows_past_the_time_budget_are_skipped_and_reported() {
+    let body = envelope(&text_of(MAX_TRACE_OUTPUT_CHARS, 'k', ""));
+    let url = raw_backend(body.into_bytes()).await;
+    let mut judge = base_judge(DEFAULT_BACKGROUND_CONCURRENCY);
+    judge.adapters[0].deadline_ms = Some(200);
+    judge.trace = Some(trace(vec![TraceSource::Tool], MAX_TRACE_OUTPUT_CHARS));
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mock = scripted(Duration::from_millis(150), Arc::clone(&seen));
+    let h = build(judge, mock_adapters(mock), |config| {
+        config.tool_upstream_url = Some(url);
+        config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
+    });
+    let reply = tool(&h, "budget", "read_ticket").await;
+    assert_eq!(reply.status, 200, "{}", reply.text);
+    let p = wait_judge_events(&h.bus, "budget", 1).await[0]["payload"].clone();
+    close(&h, "budget").await;
+    assert_eq!(p["windows"], window_lengths(MAX_TRACE_OUTPUT_CHARS).len(), "{p}");
+    assert!(p["skipped_windows"].as_u64().unwrap() > 0, "{p}");
+    assert!(
+        p["failed_windows"].as_u64().unwrap() >= p["skipped_windows"].as_u64().unwrap(),
+        "{p}"
+    );
+    assert_eq!(p["complete"], false, "{p}");
+}
+
 // ── A redaction pattern that lengthens a window ─────────────────────
 
 /// A stand-in TypeSafe endpoint that flags states holding `MARK` and
@@ -688,6 +718,30 @@ async fn a_window_lengthened_by_redaction_is_still_judged_by_typesafe() {
          can lengthen it past MAX_ARGUMENT_CHARS, so arguments_too_long fails it: {p}"
     );
     assert_eq!(p["finding"], true, "{p}");
+}
+
+/// A key cut by the window boundary: the first window would carry `sk-`
+/// and 12 characters, too short for the built-in pattern, and the second
+/// the rest without the `sk-`. The whole output is redacted before it is
+/// cut, so no request sent to TypeSafe holds any part of the key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_cut_by_a_window_boundary_is_redacted_whole() {
+    let key = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+    let text = format!(
+        "{} sk-{key} {}",
+        "a".repeat(TRACE_WINDOW_CHARS - 16),
+        "b".repeat(1_000)
+    );
+    let (p, states) = typesafe_case(envelope(&text), Vec::new(), "ts-key").await;
+    assert_eq!(p["failed_windows"], 0, "{p}");
+    assert!(states.len() >= 2, "{p}");
+    let pieces: Vec<&str> = (0..=key.len() - 8).map(|at| &key[at..at + 8]).collect();
+    for state in &states {
+        assert!(
+            pieces.iter().all(|piece| !state.contains(piece)),
+            "part of the key was sent: {state:.200}"
+        );
+    }
 }
 
 // ── Model answers whose content comes in less common shapes ─────────

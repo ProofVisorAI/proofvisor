@@ -589,7 +589,9 @@ must be trained on that layout. The operator's context (intent, task,
 missions, refusals) comes first and the arguments last. A request the
 model cannot read in full is not judged: when the rendered arguments
 exceed 8192 characters, the tasks of the applicable missions together
-exceed 8192 characters, or the whole text exceeds `max_input_tokens`,
+exceed 8192 characters (the daemon warns at startup when the tasks of
+all missions together are longer), or the whole text exceeds
+`max_input_tokens`,
 the call fails as `malformed` (by default, held for approval). Scoring
 only the beginning would let a caller hide the risky part of a call
 behind padding, because the argument keys are sorted. Give judged tools

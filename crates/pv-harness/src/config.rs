@@ -2446,6 +2446,24 @@ impl HarnessConfig {
                 }
             }
         }
+        // The judge reads the tasks of every mission that applies to an
+        // agent, joined; past what it reads, every judged call of that
+        // agent fails as malformed (held, by default).
+        let tasks_chars: usize = self
+            .mission
+            .iter()
+            .chain(&self.missions)
+            .filter_map(|mission| mission.task.as_deref())
+            .map(|task| task.chars().count() + 1)
+            .sum();
+        if self.judge.is_some() && tasks_chars > pv_judge::render::MAX_TASK_CHARS + 1 {
+            tracing::warn!(
+                tasks_chars,
+                limit = pv_judge::render::MAX_TASK_CHARS,
+                "the mission tasks together are longer than the judge reads; an agent covered by \
+                 enough of these missions has every judged call fail as malformed"
+            );
+        }
         if let Some(judge) = &self.judge {
             judge.collect_errors(errors);
             if let Some(range) = &judge.breaker {
