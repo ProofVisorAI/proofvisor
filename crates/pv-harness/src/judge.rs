@@ -3005,6 +3005,9 @@ impl JudgeHooks {
             .and_then(Value::as_str)
             .unwrap_or("finding")
             .to_owned();
+        if kind == "trace" {
+            session.mark_trace_judged();
+        }
         let job = crate::worker::WorkerJob {
             session: Arc::clone(session),
             identity: session.current_identity(),

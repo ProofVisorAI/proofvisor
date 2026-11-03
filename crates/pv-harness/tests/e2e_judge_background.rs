@@ -421,6 +421,76 @@ async fn tool_outputs_are_judged_and_the_finding_is_in_the_unsigned_trajectory()
         .contains("IGNORE PREVIOUS"));
 }
 
+/// An unsigned session holding a trace verdict is promoted by the
+/// reconciler once it closes, so a receipt covers the verdict without
+/// anyone asking; an unsigned session without one stays unsigned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unsigned_session_with_a_trace_verdict_is_promoted_after_close() {
+    let url = backend(INJECTED).await;
+    let mut judge = base_judge();
+    judge.trace = Some(trace());
+    let mock = scripted(Arc::default(), Duration::ZERO);
+    let h = build(judge, &mock, |config| {
+        config.tool_upstream_url = Some(url.clone());
+        config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
+    });
+    assert_eq!(tool(&h, "t-auto", "unsigned", "read_ticket").await.status, 200);
+    let session = h.state.sessions.get("t-auto").unwrap();
+    // Still open: nothing is promoted (a live session is never closed).
+    assert_eq!(
+        h.state.finalizer.promote_judged_sessions(&h.state.sessions).await,
+        0
+    );
+    h.state
+        .finalizer
+        .close_session(Arc::clone(&session), pv_events::StopReason::SessionClosed)
+        .await
+        .unwrap();
+    assert!(!session.is_promoted());
+    assert_eq!(
+        h.state.finalizer.promote_judged_sessions(&h.state.sessions).await,
+        1
+    );
+    assert!(session.is_promoted());
+    let receipt = session.receipt.lock().clone().expect("a retroactive receipt");
+    receipt.verify_embedded().unwrap();
+    assert_eq!(
+        h.state.finalizer.promote_judged_sessions(&h.state.sessions).await,
+        0
+    );
+
+    // Without trace judging, an unsigned session is not promoted.
+    let mut untraced = base_judge();
+    let (tool_cfg, threshold) = tagged_tool();
+    untraced.tools = vec![tool_cfg];
+    untraced.thresholds = vec![threshold];
+    let mock = scripted(Arc::default(), Duration::ZERO);
+    let plain = build(untraced, &mock, |config| {
+        config.tool_upstream_url = Some(url);
+        config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
+    });
+    assert_eq!(
+        tool(&plain, "t-plain", "unsigned", "read_ticket").await.status,
+        200
+    );
+    let session = plain.state.sessions.get("t-plain").unwrap();
+    plain
+        .state
+        .finalizer
+        .close_session(Arc::clone(&session), pv_events::StopReason::SessionClosed)
+        .await
+        .unwrap();
+    assert_eq!(
+        plain
+            .state
+            .finalizer
+            .promote_judged_sessions(&plain.state.sessions)
+            .await,
+        0
+    );
+    assert!(!session.is_promoted());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_signed_receipt_covers_the_trace_finding() {
     let url = backend(INJECTED).await;

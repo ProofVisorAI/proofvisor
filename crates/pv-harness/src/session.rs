@@ -128,6 +128,9 @@ pub struct Session {
     background_drained: tokio::sync::Notify,
     /// Set when an upstream action could not be captured completely.
     capture_failed: AtomicU64,
+    /// Automatic promotions still owed for a semantic-judge trace verdict
+    /// in this unsigned session: attempts left (0 = none owed).
+    judged_promotion: AtomicU64,
     /// RAM-cliff guard: count of unsigned ATIF steps
     /// journaled by the worker. The steps themselves live ONLY in the
     /// events journal; close rebuilds the trajectory from disk.
@@ -267,6 +270,7 @@ impl Session {
             background_jobs: AtomicU64::new(0),
             background_drained: tokio::sync::Notify::new(),
             capture_failed: AtomicU64::new(0),
+            judged_promotion: AtomicU64::new(0),
             atif_steps: AtomicU64::new(0),
             lifecycle: std::sync::atomic::AtomicU8::new(SessionState::Open as u8),
         }
@@ -850,6 +854,41 @@ impl Session {
         self.capture_failed.load(Ordering::Acquire) != 0
     }
 
+    /// A semantic-judge trace verdict was recorded: an unsigned session
+    /// is then promoted automatically once it closes, so a receipt covers
+    /// the verdict without anyone asking for it.
+    pub(crate) fn mark_trace_judged(&self) {
+        if self.workflow == Workflow::Unsigned {
+            let _ = self.judged_promotion.compare_exchange(
+                0,
+                JUDGED_PROMOTION_ATTEMPTS,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
+    /// True when this session is closed and owes an automatic promotion.
+    pub(crate) fn owes_judged_promotion(&self) -> bool {
+        self.judged_promotion.load(Ordering::Acquire) > 0
+            && self.artifact_committed_flag()
+            && !self.is_promoted()
+            && !self.capture_failed()
+    }
+
+    /// Count a failed automatic promotion; returns true when no attempt
+    /// is left.
+    pub(crate) fn judged_promotion_failed(&self) -> bool {
+        self.judged_promotion
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
+            .is_ok_and(|left| left <= 1)
+    }
+
+    /// The automatic promotion is no longer owed.
+    pub(crate) fn judged_promotion_done(&self) {
+        self.judged_promotion.store(0, Ordering::Release);
+    }
+
     /// Refresh token-derived fields after successful validation.
     pub fn refresh_identity(&self, identity: &AgentIdentity) {
         *self.latest_identity.lock() = identity.clone();
@@ -973,6 +1012,10 @@ impl Drop for SessionLease {
         }
     }
 }
+
+/// Automatic promotions tried for a judged unsigned session before giving
+/// up (each reconciler tick tries once).
+const JUDGED_PROMOTION_ATTEMPTS: u64 = 5;
 
 /// The session registry.
 #[derive(Default)]
@@ -1389,6 +1432,16 @@ impl SessionRegistry {
                     && e.active_streams.load(Ordering::Acquire) == 0
             })
             .map(|e| e.clone())
+            .collect()
+    }
+
+    /// Closed unsigned sessions that owe an automatic promotion for a
+    /// semantic-judge trace verdict.
+    pub fn judged_unpromoted(&self) -> Vec<Arc<Session>> {
+        self.sessions
+            .iter()
+            .filter(|entry| entry.owes_judged_promotion())
+            .map(|entry| Arc::clone(&entry))
             .collect()
     }
 
