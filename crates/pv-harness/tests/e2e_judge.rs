@@ -93,6 +93,7 @@ fn judge_config(mode: JudgeModeConfig) -> JudgeConfig {
         trace: None,
         breaker: None,
         standing_rules: Vec::new(),
+        record_inputs: false,
     }
 }
 
@@ -281,6 +282,38 @@ async fn a_memory_write_the_judge_finds_unsafe_is_refused() {
         h.mock.last_request().unwrap().predicate_id,
         pv_judge::MEMORY_WRITE_SAFE
     );
+}
+
+/// With `record_inputs`, a judged call's record keeps what the judge was
+/// asked (for `pvctl judge-export`); by default it does not.
+#[tokio::test]
+async fn record_inputs_keeps_what_the_judge_was_asked() {
+    let mut config = judge_config(JudgeModeConfig::Enforce);
+    config.record_inputs = true;
+    let h = harness(config, |_| {});
+    h.mock.set_default(mismatch(0.1));
+    call(&h, "s-inputs", "update_ticket", json!({"table": "orders"}), None).await;
+    let event = &tool_events(&h.bus, "s-inputs", 1).await[0];
+    let inputs = &event["payload"]["judge"]["inputs"];
+    assert_eq!(inputs["tool"], "update_ticket");
+    assert_eq!(
+        serde_json::from_str::<Value>(inputs["arguments_json"].as_str().unwrap()).unwrap(),
+        json!({"table": "orders"})
+    );
+    assert_eq!(inputs["context"]["intent"], "update_ticket");
+
+    let h = harness(judge_config(JudgeModeConfig::Enforce), |_| {});
+    h.mock.set_default(mismatch(0.1));
+    call(
+        &h,
+        "s-no-inputs",
+        "update_ticket",
+        json!({"table": "orders"}),
+        None,
+    )
+    .await;
+    let event = &tool_events(&h.bus, "s-no-inputs", 1).await[0];
+    assert!(event["payload"]["judge"].get("inputs").is_none());
 }
 
 /// The judge's time is its own field: the sandbox's `decision_us` covers
@@ -1098,7 +1131,9 @@ async fn the_pilot_cap_never_relaxes_a_predicate_in_ask_by_default_mode() {
             model: pin(),
             latency_us: 1,
         };
-        let id = drift.maybe_sample(&verdict, || format!("direct-{top}")).unwrap();
+        let id = drift
+            .maybe_sample(&verdict, |_, _| format!("direct-{top}"))
+            .unwrap();
         drift.record_review(&id, correct).unwrap();
     }
     assert!(drift.is_tripped(ARG_MATCHES_TASK));

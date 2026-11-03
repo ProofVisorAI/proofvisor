@@ -95,6 +95,7 @@ fn judge_config(mode: JudgeModeConfig, endpoint: &str) -> JudgeConfig {
         trace: None,
         breaker: None,
         standing_rules: Vec::new(),
+        record_inputs: false,
     }
 }
 
@@ -995,7 +996,7 @@ async fn shadow_mode_never_blocks_even_with_the_drift_switch_on() {
             model: pin(),
             latency_us: 1,
         };
-        let review = drift.maybe_sample(&verdict, || id.to_owned()).unwrap();
+        let review = drift.maybe_sample(&verdict, |_, _| id.to_owned()).unwrap();
         drift.record_review(&review, correct).unwrap();
     }
     assert!(drift.is_tripped(ARG_MATCHES_TASK));

@@ -27,7 +27,7 @@
   <meta name="twitter:description" content="Drop a receipt JSON in your browser. Ed25519 signature verified offline in ~1 ms.">
   <meta name="twitter:image" content="https://proofvisor.com/social-preview.png">
 </head>
-<body>
+<body class="verify-page">
 
   <nav aria-label="Primary">
     <div class="wrap nav-inner">
@@ -42,64 +42,110 @@
 
   <main class="verify-shell">
     <section class="verify-hero">
+      <p class="eyebrow">Receipt verifier</p>
       <h1>Verify a session receipt</h1>
-      <p>
-        Drop a ProofVisor receipt JSON in your browser. The Ed25519 signature
-        verifies right here, offline, against the receipt's embedded public
-        key. No account, no upload. Nothing leaves this page.
+      <p class="lead">
+        Drop the receipt a ProofVisor session ended with. Your browser checks
+        its Ed25519 signature against the public key inside it. Nothing is
+        uploaded and no account is needed.
       </p>
+      <ul class="trust-strip" aria-label="What happens to your file">
+        <li>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.4 3.4 8.5 8 9.6 4.6-1.1 8-5.2 8-9.6V6l-8-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span><b>Offline</b> The check runs in this tab with Web Crypto.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4 8 8 5 8-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m3 3 18 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span><b>Nothing sent</b> The receipt never leaves your computer.</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span><b>Instant</b> One signature check, about a millisecond.</span>
+        </li>
+      </ul>
     </section>
 
-    <div class="drop" id="drop" aria-label="Drop a receipt file here">
-      <div class="drop-icon">📄</div>
-      <h2 id="dropHead">Drop a receipt JSON here</h2>
-      <p>Or paste a receipt file into this page (⌘V / Ctrl-V works too).</p>
-      <div class="or">or</div>
-      <input type="file" id="fileInput" accept="application/json,.json" hidden>
-      <button type="button" class="browse" id="browseBtn" disabled>Choose a file</button>
-    </div>
+    <section class="verify-panel" aria-labelledby="dropHead">
+      <div class="drop" id="drop" aria-label="Drop a receipt file here">
+        <div class="drop-icon" aria-hidden="true">
+          <svg viewBox="0 0 48 48"><path d="M14 6h14l10 10v24a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M28 6v10h10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M24 22v12m0-12-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h2 id="dropHead">Drop a receipt JSON here</h2>
+        <p class="drop-hint">Drag the file onto this box, paste it with <kbd>&#8984;V</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd>, or choose it.</p>
+        <input type="file" id="fileInput" accept="application/json,.json" hidden>
+        <button type="button" class="browse" id="browseBtn" disabled>Choose a file</button>
+      </div>
 
-    <div class="example-row">
-      <button type="button" class="link" id="loadExample" disabled>Try it with a sample receipt</button>
-      <span style="color: var(--fg-muted)"> — then tamper with one byte and watch it fail</span>
-    </div>
+      <div class="example-row">
+        <span class="example-label">No receipt at hand?</span>
+        <button type="button" class="link" id="loadExample" disabled>Try the sample receipt</button>
+        <span class="example-after">then tamper with one byte and watch it fail.</span>
+      </div>
 
-    <!-- Live region: the verdict IS the page's purpose — screen-reader
-         users must hear "verifies" / "does not verify" without hunting.
-         Present (not hidden) from load so the region is registered
-         before its first content change. -->
-    <div class="result" id="result" role="status" aria-live="polite"></div>
+      <!-- Live region: the verdict IS the page's purpose. Screen-reader
+           users must hear "verifies" / "does not verify" without hunting.
+           Present (not hidden) from load so the region is registered
+           before its first content change. -->
+      <div class="result" id="result" role="status" aria-live="polite"></div>
+    </section>
 
-    <section class="how">
-      <h3>How this works</h3>
-      <p>
-        Every session on ProofVisor can end with a receipt: a signed JSON that
-        commits to the exact set of events, tokens, tool calls, and policy
-        decisions that happened. The receipt embeds an Ed25519 public key.
-      </p>
-      <p>
-        Your browser here runs Web Crypto's Ed25519 verify against the
-        embedded key and the raw signed body. If a single byte changed
-        anywhere, the verification fails. Don't take our word for it —
-        after a green verify, click <em>Now tamper with one byte</em>
-        and watch the same receipt turn red.
-      </p>
-      <p>
-        What this page cannot do is tell you who owns the key. It trusts
-        only the sample receipt's key and the console demo key. A receipt
-        from a real deployment therefore shows "internally consistent,
-        trust anchor not verified": the signature is valid for the key
-        inside the receipt, but you still have to compare that key's
-        fingerprint with the one on the deployment page in the console,
-        or with the key the operator gave you out of band.
-      </p>
-      <p>
-        The same check runs offline in Node too:
-        <code>node server/scripts/verify-receipt.mjs receipt.json</code>. Same code path,
-        same guarantee.
+    <section class="how" aria-labelledby="howHead">
+      <h3 id="howHead">How this works</h3>
+      <ol class="steps">
+        <li>
+          <span class="step-n">1</span>
+          <h4>A session ends with a receipt</h4>
+          <p>The receipt is a signed JSON that commits to every event, token, tool call and policy decision of the session. It carries the Ed25519 public key that signed it.</p>
+        </li>
+        <li>
+          <span class="step-n">2</span>
+          <h4>Your browser checks the signature</h4>
+          <p>Web Crypto verifies the raw signed body against that key. Change a single byte anywhere and the check fails. After a green result, press <em>Now tamper with one byte</em> to see it.</p>
+        </li>
+        <li>
+          <span class="step-n">3</span>
+          <h4>You confirm who owns the key</h4>
+          <p>A valid signature proves the receipt was not altered. It does not say who holds the key. Compare the key fingerprint shown above with the deployment page in the console, or with the key the operator gave you.</p>
+        </li>
+      </ol>
+
+      <div class="proves">
+        <div class="proves-col proves-yes">
+          <h4>A green result proves</h4>
+          <ul>
+            <li>The signed body is byte for byte what the signer produced.</li>
+            <li>The signature was made with the private half of the embedded key.</li>
+            <li>For keys on this page's trust list, or pinned by the console, that the signer is the deployment the console recorded.</li>
+          </ul>
+        </div>
+        <div class="proves-col proves-no">
+          <h4>It does not prove</h4>
+          <ul>
+            <li>Who owns an unknown key. Such a receipt is shown as internally consistent, trust anchor not verified.</li>
+            <li>That the events are true. It proves they were recorded and sealed, not that the agent did the right thing.</li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="cli">
+        The same check runs offline in Node, on the same code path:
+        <code>node server/scripts/verify-receipt.mjs receipt.json</code>
       </p>
     </section>
   </main>
+
+  <footer>
+    <div class="wrap footer-inner">
+      <p>
+        <a href="../">Home</a> &middot;
+        <a href="../app/">Console</a> &middot;
+        <a href="https://github.com/ProofVisorAI/proofvisor">GitHub</a> &middot;
+        <a href="../legal/privacy.html">Privacy</a> &middot;
+        <a href="../legal/terms.html">Terms</a>
+      </p>
+      <p class="muted">Open source under Apache 2.0. The verifier on this page is the same code every ProofVisor deployment ships.</p>
+    </div>
+  </footer>
 
   <script src="verify.js"></script>
 

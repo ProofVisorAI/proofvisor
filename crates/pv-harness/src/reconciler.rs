@@ -3570,6 +3570,46 @@ impl Finalizer {
         }
     }
 
+    /// Promote the closed unsigned sessions that hold a semantic-judge
+    /// trace verdict, so a receipt covers each verdict within a reconciler
+    /// tick of the session's close. A failure is retried on later ticks,
+    /// a few times, then logged and counted.
+    pub async fn promote_judged_sessions(&self, sessions: &SessionRegistry) -> usize {
+        let mut promoted = 0;
+        for session in sessions.judged_unpromoted() {
+            match self.promote(Arc::clone(&session)).await {
+                Ok(_) => {
+                    session.judged_promotion_done();
+                    promoted += 1;
+                    self.metrics
+                        .counter(
+                            "pv_judge_auto_promotions_total{outcome=\"promoted\"}",
+                            "Unsigned sessions with a judge trace verdict promoted automatically",
+                        )
+                        .inc();
+                }
+                Err(error) => {
+                    let gave_up = session.judged_promotion_failed();
+                    tracing::warn!(
+                        session = %session.id,
+                        error = &error as &dyn std::error::Error,
+                        gave_up,
+                        "automatic promotion of a session with a judge trace verdict failed"
+                    );
+                    if gave_up {
+                        self.metrics
+                            .counter(
+                                "pv_judge_auto_promotions_total{outcome=\"failed\"}",
+                                "Unsigned sessions with a judge trace verdict promoted automatically",
+                            )
+                            .inc();
+                    }
+                }
+            }
+        }
+        promoted
+    }
+
     /// Retry every durable promotion marker whose session can be recovered.
     pub async fn retry_marked_promotions(&self, sessions: &SessionRegistry) -> Result<usize, FinalizeError> {
         let mut entries = match tokio::fs::read_dir(&self.spool_dir).await {
@@ -5079,6 +5119,7 @@ pub fn spawn_reconciler(
                         .counter("pv_reconcile_errors_total", "Reconciliation errors")
                         .inc();
                 }
+                finalizer.promote_judged_sessions(&sessions).await;
                 // Drive the finalization tail forward for
                 // sessions that got past `mark_artifact_committed` but
                 // failed the subsequent SESSION_CLOSE emit or journal

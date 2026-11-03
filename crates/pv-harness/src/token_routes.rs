@@ -370,16 +370,21 @@ pub(crate) async fn admin_judge_review(
     let Some(judge) = state.judge.as_ref() else {
         return response(StatusCode::NOT_FOUND, json!({"error":"judge_not_configured"}));
     };
-    let Some(drift) = judge.drift() else {
+    if judge.drift().is_none() {
         return response(
             StatusCode::NOT_FOUND,
             json!({"error":"judge_drift_not_configured"}),
         );
-    };
+    }
     let Ok(review) = serde_json::from_slice::<JudgeReview>(&body) else {
         return response(StatusCode::BAD_REQUEST, json!({"error":"invalid_request"}));
     };
-    match drift.record_review(&review.review_id, review.correct) {
+    let reviewing = Arc::clone(judge);
+    let recorded =
+        tokio::task::spawn_blocking(move || reviewing.record_review(&review.review_id, review.correct))
+            .await
+            .unwrap_or_else(|_| Err(pv_judge::DriftError::Unavailable("review task failed".to_owned())));
+    match recorded {
         Ok(result) => {
             judge.publish_drift();
             let persisted = save_drift(judge).await;
@@ -400,6 +405,13 @@ pub(crate) async fn admin_judge_review(
                 }),
             )
         }
+        Err(pv_judge::DriftError::Unavailable(error)) => {
+            tracing::error!(error = %error, "judge review not recorded: the shared drift store is unavailable");
+            response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"drift_store_unavailable"}),
+            )
+        }
         Err(_) => response(StatusCode::NOT_FOUND, json!({"error":"unknown_review_id"})),
     }
 }
@@ -409,15 +421,19 @@ pub(crate) async fn admin_judge_drift(State(state): State<AppState>, headers: He
     if operator_name(&state, &headers).is_none() {
         return unauthorized();
     }
-    let Some(drift) = state.judge.as_ref().and_then(|judge| judge.drift()) else {
+    let Some(judge) = state.judge.clone().filter(|judge| judge.drift().is_some()) else {
         return response(
             StatusCode::NOT_FOUND,
             json!({"error":"judge_drift_not_configured"}),
         );
     };
+    let snapshot = tokio::task::spawn_blocking(move || judge.drift_snapshot())
+        .await
+        .ok()
+        .flatten();
     response(
         StatusCode::OK,
-        serde_json::to_value(drift.snapshot()).unwrap_or(Value::Null),
+        serde_json::to_value(snapshot).unwrap_or(Value::Null),
     )
 }
 
@@ -434,16 +450,20 @@ pub(crate) async fn admin_judge_drift_reset(
     let Some(judge) = state.judge.as_ref() else {
         return response(StatusCode::NOT_FOUND, json!({"error":"judge_not_configured"}));
     };
-    let Some(drift) = judge.drift() else {
+    if judge.drift().is_none() {
         return response(
             StatusCode::NOT_FOUND,
             json!({"error":"judge_drift_not_configured"}),
         );
-    };
+    }
     let Ok(request) = serde_json::from_slice::<JudgeDriftReset>(&body) else {
         return response(StatusCode::BAD_REQUEST, json!({"error":"invalid_request"}));
     };
-    let was_tripped = drift.reset(&request.predicate_id);
+    let resetting = Arc::clone(judge);
+    let predicate = request.predicate_id.clone();
+    let was_tripped = tokio::task::spawn_blocking(move || resetting.reset_drift(&predicate))
+        .await
+        .unwrap_or(false);
     judge.publish_drift();
     let persisted = save_drift(judge).await;
     tracing::warn!(

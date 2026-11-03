@@ -237,6 +237,22 @@ enum Command {
         #[arg(long)]
         what_if: Option<PathBuf>,
     },
+    /// Export the judged calls an embedded Bridge recorded with
+    /// `[judge] record_inputs = true` as a labelled set to fill in: one
+    /// JSON Lines example per predicate, in the format `judge-calibrate`
+    /// reads, with an empty `label` for a reviewer to set and the judge's
+    /// own answer in `source` as a hint. Writes to standard output.
+    JudgeExport {
+        /// Embedded Bridge data directory.
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// Only this predicate.
+        #[arg(long)]
+        predicate: Option<String>,
+        /// Only calls the judge would have blocked (shadow mode) or did.
+        #[arg(long)]
+        would_block_only: bool,
+    },
     /// Measure a configured semantic-judge adapter against a labelled set
     /// (JSON Lines) and fail when it falls below the given floors.
     JudgeCalibrate {
@@ -489,6 +505,11 @@ async fn run(cli: Cli) -> Result<()> {
             config,
             what_if,
         } => judge_replay(&data_dir, &config, what_if.as_deref()),
+        Command::JudgeExport {
+            data_dir,
+            predicate,
+            would_block_only,
+        } => judge_export(&data_dir, predicate.as_deref(), would_block_only),
         Command::JudgeCalibrate {
             config,
             adapter,
@@ -1141,6 +1162,92 @@ struct ToolReplay {
 }
 
 /// Replay every judged `agent.tool_call` record in an embedded Bridge.
+fn judge_export(data_dir: &Path, predicate: Option<&str>, would_block_only: bool) -> Result<()> {
+    use std::io::Write as _;
+    const TOPIC: &str = "agent.tool_call";
+    const PAGE: usize = 10_000;
+    let manifest_text = read_capped_str(
+        &data_dir.join("manifest.yaml"),
+        MAX_CONFIG_BYTES,
+        "bridge manifest",
+    )?;
+    let manifest = BridgeManifest::from_yaml(&manifest_text).map_err(anyhow::Error::new)?;
+    let partitions = manifest
+        .topics
+        .iter()
+        .find(|topic| topic.name == TOPIC)
+        .map(|topic| topic.partitions)
+        .with_context(|| format!("the Bridge has no {TOPIC} topic"))?;
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    let (mut judged, mut without_inputs, mut exported) = (0u64, 0u64, 0u64);
+    for partition in 0..partitions {
+        let mut offset = 0u64;
+        loop {
+            let page = EmbeddedBroker::fetch_read_only(data_dir, TOPIC, partition, offset, PAGE)
+                .context("read the Bridge")?;
+            let Some(last) = page.last() else { break };
+            offset = last.offset.saturating_add(1);
+            for stored in &page {
+                let event = &stored.value;
+                let Some(raw) = event.pointer("/payload/judge") else {
+                    continue;
+                };
+                judged += 1;
+                let Ok(record) = serde_json::from_value::<pv_judge::JudgeRecord>(raw.clone()) else {
+                    continue;
+                };
+                if would_block_only && !record.would_block {
+                    continue;
+                }
+                let Some(inputs) = &record.inputs else {
+                    without_inputs += 1;
+                    continue;
+                };
+                let arguments: serde_json::Value =
+                    serde_json::from_str(&inputs.arguments_json).unwrap_or(serde_json::Value::Null);
+                for verdict in &record.verdicts {
+                    if predicate.is_some_and(|wanted| wanted != verdict.predicate_id) {
+                        continue;
+                    }
+                    let said = verdict.probs.iter().max_by_key(|prob| prob.ppm).map_or_else(
+                        || format!("judge {}", verdict.status),
+                        |top| format!("judge said {} at {}", top.label, f64::from(top.ppm) / 1e6),
+                    );
+                    let example = pv_judge::calibration::LabelledExample {
+                        predicate_id: verdict.predicate_id.clone(),
+                        tool: inputs.tool.clone(),
+                        arguments: arguments.clone(),
+                        context: inputs.context.clone(),
+                        label: String::new(),
+                        source: Some(format!(
+                            "recorded {} event {}: {said}",
+                            event
+                                .get("session_uid")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("-"),
+                            event
+                                .pointer("/metadata/uid")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("-"),
+                        )),
+                    };
+                    serde_json::to_writer(&mut out, &example)?;
+                    out.write_all(b"\n")?;
+                    exported += 1;
+                }
+            }
+        }
+    }
+    out.flush()?;
+    eprintln!(
+        "{exported} examples exported from {judged} judged calls ({without_inputs} recorded without \
+         inputs: set [judge] record_inputs = true to keep them). Set each `label` before \
+         `pvctl judge-calibrate` reads the file."
+    );
+    Ok(())
+}
+
 fn judge_replay(data_dir: &Path, config: &Path, what_if: Option<&Path>) -> Result<()> {
     use pv_judge::replay::{replay, DecisionSummary};
     const TOPIC: &str = "agent.tool_call";

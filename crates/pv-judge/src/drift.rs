@@ -69,7 +69,8 @@ pub fn is_monotone(bands: &[BandStats], min_count: u64, tolerance_ppm: u32) -> b
     true
 }
 
-fn empty_bands() -> Vec<BandStats> {
+/// One empty statistics entry per confidence band.
+pub fn empty_bands() -> Vec<BandStats> {
     BAND_LOWER_PPM
         .iter()
         .map(|lower| BandStats {
@@ -125,6 +126,9 @@ pub enum DriftError {
     /// or dropped from the pending queue).
     #[error("unknown or already reviewed review_id")]
     UnknownReview,
+    /// The shared store that keeps the statistics could not be reached.
+    #[error("drift statistics store unavailable: {0}")]
+    Unavailable(String),
 }
 
 /// What a review changed.
@@ -198,14 +202,19 @@ impl DriftMonitor {
     }
 
     /// Count a scored verdict and, one time in `sample_every`, register
-    /// it for review under the id `make_id` returns.
-    pub fn maybe_sample(&self, verdict: &Verdict, make_id: impl FnOnce() -> String) -> Option<String> {
+    /// it for review under the id `make_id` returns for its predicate and
+    /// confidence band.
+    pub fn maybe_sample(
+        &self,
+        verdict: &Verdict,
+        make_id: impl FnOnce(&str, usize) -> String,
+    ) -> Option<String> {
         let index = self.seen.fetch_add(1, Ordering::Relaxed);
         if !index.is_multiple_of(self.config.sample_every) {
             return None;
         }
         let top = verdict.top()?;
-        let id = make_id();
+        let id = make_id(&verdict.predicate_id, band_of(top.ppm));
         let mut guard = self.pending.lock();
         let (map, order) = &mut *guard;
         map.insert(
@@ -255,6 +264,26 @@ impl DriftMonitor {
             tripped_now: now && !was,
             tripped: now,
         })
+    }
+
+    /// Switch `predicate_id` to ask-by-default (a switch made on another
+    /// instance).
+    pub fn trip(&self, predicate_id: &str) {
+        self.tripped.lock().insert(predicate_id.to_owned(), true);
+    }
+
+    /// Drop a pending review (it was recorded elsewhere).
+    pub fn forget_review(&self, review_id: &str) {
+        let mut guard = self.pending.lock();
+        let (map, order) = &mut *guard;
+        if map.remove(review_id).is_some() {
+            order.retain(|id| id != review_id);
+        }
+    }
+
+    /// The monitor's settings.
+    pub fn config(&self) -> DriftConfig {
+        self.config
     }
 
     /// True when `predicate_id` is in ask-by-default mode.
@@ -402,7 +431,7 @@ mod tests {
         let mut sample = |top| {
             next += 1;
             let id = format!("r{next}");
-            monitor.maybe_sample(&verdict(top), || id).unwrap()
+            monitor.maybe_sample(&verdict(top), |_, _| id).unwrap()
         };
         // Low band: always right. High band: always wrong.
         let low: Vec<String> = (0..3).map(|_| sample(550_000)).collect();
@@ -437,7 +466,7 @@ mod tests {
         })
         .unwrap();
         let ids: Vec<Option<String>> = (0..9)
-            .map(|i| monitor.maybe_sample(&verdict(900_000), || format!("id{i}")))
+            .map(|i| monitor.maybe_sample(&verdict(900_000), |_, _| format!("id{i}")))
             .collect();
         assert_eq!(ids.iter().filter(|id| id.is_some()).count(), 3);
         assert_eq!(monitor.snapshot().pending_reviews, 2);
@@ -450,14 +479,14 @@ mod tests {
         let monitor = DriftMonitor::new(config()).unwrap();
         for i in 0..3 {
             let id = monitor
-                .maybe_sample(&verdict(950_000), || format!("x{i}"))
+                .maybe_sample(&verdict(950_000), |_, _| format!("x{i}"))
                 .unwrap();
             monitor.record_review(&id, false).unwrap();
         }
         let low: Vec<String> = (0..3)
             .map(|i| {
                 monitor
-                    .maybe_sample(&verdict(550_000), || format!("y{i}"))
+                    .maybe_sample(&verdict(550_000), |_, _| format!("y{i}"))
                     .unwrap()
             })
             .collect();

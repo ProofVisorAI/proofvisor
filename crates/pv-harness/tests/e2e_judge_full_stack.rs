@@ -223,12 +223,19 @@ fn owner_only(path: &Path, contents: &[u8]) {
     }
 }
 
+/// A port for a daemon to listen on, chosen below the range the system
+/// hands out for port 0, so another test's socket cannot take it between
+/// this check and the daemon's bind (see `e2e_process_restart.rs`).
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    let base = u16::try_from(std::process::id() % 400).unwrap() * 25;
+    loop {
+        let offset = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10_000;
+        let port = 20_000 + (base + offset) % 10_000;
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 struct Stack {

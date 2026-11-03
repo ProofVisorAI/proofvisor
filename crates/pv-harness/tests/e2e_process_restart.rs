@@ -15,12 +15,21 @@ use std::time::{Duration, Instant};
 
 /// Pick a free loopback port by binding :0 and dropping the listener.
 /// (Tiny bind race until the daemon rebinds it; acceptable in tests.)
+/// A port for a daemon to listen on. It is chosen below the range the
+/// system hands out for port 0 (32768 and up on Linux, 49152 and up on
+/// macOS and Windows): a port taken from that range and released could be
+/// handed to another test's socket before the daemon binds it, and the
+/// daemon would then fail with "Address already in use".
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    let base = u16::try_from(std::process::id() % 400).unwrap() * 25;
+    loop {
+        let offset = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10_000;
+        let port = 20_000 + (base + offset) % 10_000;
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 /// Minimal canned OpenAI-shaped mock upstream. Serves every connection

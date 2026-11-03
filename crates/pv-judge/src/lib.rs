@@ -55,7 +55,7 @@ pub use predicate::{
     PredicateDef, PredicateRegistry, ARG_MATCHES_TASK, CHILD_USES_PARENT_ENTITLEMENT, LOOP_PROGRESS,
     MEMORY_WRITE_SAFE, OUTPUT_SAFE,
 };
-pub use record::{JudgeMode, JudgeRecord, OutcomeRecord};
+pub use record::{JudgeInputs, JudgeMode, JudgeRecord, OutcomeRecord};
 pub use thresholds::{
     DecisionCause, FailurePolicy, JudgeAction, JudgeDecision, ThresholdPolicy, ThresholdRule,
 };

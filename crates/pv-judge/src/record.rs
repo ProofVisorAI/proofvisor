@@ -86,6 +86,20 @@ impl OutcomeRecord {
         }
     }
 }
+/// The request a judged call put to the judge, kept when the operator
+/// records it. The arguments are kept as JSON text: the event chain is
+/// hashed in canonical JSON, where floating-point numbers are a known
+/// source of disagreement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeInputs {
+    /// The tool called.
+    pub tool: String,
+    /// The validated arguments, as JSON text.
+    pub arguments_json: String,
+    /// The context the judge saw.
+    pub context: crate::model::SessionContext,
+}
 
 /// Everything an auditor needs to replay a judged decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +144,10 @@ pub struct JudgeRecord {
     /// Predicates in ask-by-default mode after a calibration drift check.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drift_tripped: Vec<String>,
+    /// What the judge was asked, when the operator records it
+    /// (`[judge] record_inputs`): the material for a labelled set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<JudgeInputs>,
 }
 
 impl JudgeRecord {
@@ -154,6 +172,7 @@ impl JudgeRecord {
             cause: decision.cause.clone(),
             pilot_cap_reached: false,
             drift_tripped: Vec::new(),
+            inputs: None,
         }
     }
 }
@@ -234,6 +253,7 @@ mod tests {
         "cause",
         "pilot_cap_reached",
         "drift_tripped",
+        "inputs",
     ];
     const VERDICT_FIELDS: &[&str] = &[
         "predicate_id",
@@ -286,6 +306,11 @@ mod tests {
         record.policy = Some("p".into());
         record.pilot_cap_reached = true;
         record.drift_tripped = vec!["arg_matches_task@1".into()];
+        record.inputs = Some(JudgeInputs {
+            tool: "t".into(),
+            arguments_json: "{}".into(),
+            context: crate::model::SessionContext::default(),
+        });
         let value = serde_json::to_value(&record).unwrap();
         let keys = |object: &serde_json::Value| -> std::collections::BTreeSet<String> {
             object.as_object().unwrap().keys().cloned().collect()
