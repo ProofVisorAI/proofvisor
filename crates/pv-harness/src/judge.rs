@@ -54,6 +54,9 @@ const SHARED_DENIALS_PER_KEY: usize = 2 * DENIALS_PER_KEY;
 /// Oldest shared entry used: the lists expire 24 hours after their last
 /// write, so an older entry was kept alive by later writes only.
 const SHARED_DENIAL_MAX_AGE_MS: u64 = 24 * 3_600_000;
+/// A refusal of a kind this instance already shared within this time is
+/// not written again: repeating one refusal cannot fill a shared list.
+const SHARED_DENIAL_REPEAT_MS: u64 = 3_600_000;
 /// Longest mission `task` statement.
 pub const MAX_TASK_CHARS: usize = 4_096;
 /// Default concurrency limit for background judging.
@@ -1048,6 +1051,16 @@ impl DenialLog {
         }
     }
 
+    /// True when `key` holds a refusal of `denial`'s kind made at or
+    /// after `since_ms`.
+    fn holds_since(&self, key: &str, denial: &PriorDenial, since_ms: u64) -> bool {
+        self.by_key.get(key).is_some_and(|(_, entries)| {
+            entries
+                .iter()
+                .any(|entry| same_kind(entry, denial) && entry.at_ms >= since_ms)
+        })
+    }
+
     fn recent(&mut self, key: &str) -> Vec<PriorDenial> {
         self.touch(key);
         self.by_key
@@ -1253,9 +1266,14 @@ impl JudgeService {
             return local;
         };
         let now_ms = pv_core::time::now_ms();
-        let shared = match store.recent(&shared_denial_key(key), SHARED_DENIALS_PER_KEY) {
-            Ok(entries) => entries
+        let read = [true, false]
+            .into_iter()
+            .map(|judged| store.recent(&shared_denial_key(key, judged), SHARED_DENIALS_PER_KEY))
+            .collect::<Result<Vec<_>, _>>();
+        let shared = match read {
+            Ok(lists) => lists
                 .iter()
+                .flatten()
                 .filter(|entry| entry.len() <= MAX_SHARED_DENIAL_BYTES)
                 .filter_map(|entry| serde_json::from_str::<PriorDenial>(entry).ok())
                 .filter(|denial| denial.instance_uid == instance_uid && self.plausible_denial(denial, now_ms))
@@ -1477,11 +1495,21 @@ impl JudgeService {
         };
         let keys = [session_key(instance_uid, session_id), instance_key(instance_uid)];
         if let Some(store) = self.shared_denials.get() {
+            // The judge's refusals have a list of their own, so cheap
+            // policy refusals cannot push them out of it.
+            let judged = denial.predicate_id.is_some();
+            let since_ms = denial.at_ms.saturating_sub(SHARED_DENIAL_REPEAT_MS);
+            let unshared: Vec<&String> = {
+                let log = self.denials.lock();
+                keys.iter()
+                    .filter(|key| !log.holds_since(key, &denial, since_ms))
+                    .collect()
+            };
             match serde_json::to_string(&denial) {
                 Ok(entry) => {
-                    for key in &keys {
+                    for key in unshared {
                         if let Err(error) =
-                            store.push_recent(&shared_denial_key(key), &entry, SHARED_DENIALS_PER_KEY)
+                            store.push_recent(&shared_denial_key(key, judged), &entry, SHARED_DENIALS_PER_KEY)
                         {
                             tracing::warn!(%error, "shared judge denial log unwritable; kept on this instance");
                             self.count_shared_denial_error("write");
@@ -1691,8 +1719,9 @@ impl JudgeService {
     }
 }
 
+/// The length prefix keeps the key unambiguous: both ids may contain ':'.
 fn session_key(instance_uid: &str, session_id: &str) -> String {
-    format!("s:{instance_uid}:{session_id}")
+    format!("s:{}:{instance_uid}:{session_id}", instance_uid.len())
 }
 
 fn instance_key(instance_uid: &str) -> String {
@@ -1702,11 +1731,15 @@ fn instance_key(instance_uid: &str) -> String {
 /// The shared store's key for a denial log key. Hashed, so caller-chosen
 /// session and instance ids never shape the store key; the hash sits in
 /// a hash tag, so a Redis Cluster keeps the list in one slot.
-fn shared_denial_key(key: &str) -> String {
-    format!(
-        "judge:denials:{{{}}}",
-        pv_core::digest::sha256_hex(key.as_bytes())
-    )
+/// The shared list for `key`: the judge's refusals (`judged`) or the
+/// others. Both lists of a key are in one Redis Cluster slot.
+fn shared_denial_key(key: &str, judged: bool) -> String {
+    let digest = pv_core::digest::sha256_hex(key.as_bytes());
+    if judged {
+        format!("judge:denials:{{{digest}}}:judge")
+    } else {
+        format!("judge:denials:{{{digest}}}")
+    }
 }
 
 /// Shared and local entries for one key, newest first, without
@@ -2544,8 +2577,10 @@ mod tests {
             "older than the list lives"
         );
         // Store keys never contain the caller's ids.
-        let key = shared_denial_key(&session_key("agent-1", "s-1 {evil}"));
-        assert!(key.starts_with("judge:denials:{") && !key.contains("evil"));
+        let key = session_key("agent-1", "s-1 {evil}");
+        let (judged, other) = (shared_denial_key(&key, true), shared_denial_key(&key, false));
+        assert!(other.starts_with("judge:denials:{") && !judged.contains("evil"));
+        assert_eq!(&judged[..other.len()], other, "both lists share one Cluster slot");
     }
 
     #[test]
@@ -2604,6 +2639,356 @@ mod tests {
             log.by_key.len(),
             log.order.len(),
             "the use order tracks every key"
+        );
+    }
+
+    // ── Edge cases of the hardening ──────────────────────
+
+    /// A store that shares recent lists between services, like Redis.
+    #[derive(Default)]
+    struct ListStore {
+        lists: parking_lot::Mutex<HashMap<String, VecDeque<String>>>,
+    }
+
+    impl StateStore for ListStore {
+        fn add(&self, _key: &str, _delta: u64) -> Result<u64, StateError> {
+            Ok(0)
+        }
+        fn get(&self, _key: &str) -> Result<u64, StateError> {
+            Ok(0)
+        }
+        fn try_spend_many(&self, _spends: &[Spend]) -> Result<TrySpendOutcome, StateError> {
+            Err(StateError::Backend("unused".into()))
+        }
+        fn remove(&self, _key: &str) {}
+        fn shares_recent_lists(&self) -> bool {
+            true
+        }
+        fn push_recent(&self, key: &str, value: &str, keep: usize) -> Result<(), StateError> {
+            let mut lists = self.lists.lock();
+            let list = lists.entry(key.to_owned()).or_default();
+            list.push_front(value.to_owned());
+            list.truncate(keep.max(1));
+            Ok(())
+        }
+        fn recent(&self, key: &str, max: usize) -> Result<Vec<String>, StateError> {
+            Ok(self
+                .lists
+                .lock()
+                .get(key)
+                .map(|list| list.iter().take(max.max(1)).cloned().collect())
+                .unwrap_or_default())
+        }
+    }
+
+    fn probe_denial(tool: &str, code: &str, at_ms: u64) -> PriorDenial {
+        PriorDenial {
+            tool: tool.to_owned(),
+            denial_code: code.to_owned(),
+            predicate_id: None,
+            at_ms,
+            source: DenialSource::Session,
+            instance_uid: "agent-1".to_owned(),
+        }
+    }
+
+    #[test]
+    fn lru_order_and_key_map_stay_the_same_size() {
+        let mut log = DenialLog::default();
+        for n in 0..(DENIAL_LOG_KEYS * 2) {
+            // Reading keys that do not exist must not add anything.
+            assert!(log.recent(&format!("absent-{n}")).is_empty());
+            log.push(
+                format!("key-{}", n % (DENIAL_LOG_KEYS + 500)),
+                probe_denial("t", "POLICY_DENIED", 1),
+            );
+            if n % 997 == 0 {
+                let _ = log.recent(&format!("key-{}", n / 2));
+                assert_eq!(log.by_key.len(), log.order.len(), "after {n} pushes");
+            }
+        }
+        assert!(log.by_key.len() <= DENIAL_LOG_KEYS);
+        assert_eq!(log.by_key.len(), log.order.len());
+        // Every key in the order map is in the key map with the same generation.
+        for (generation, key) in &log.order {
+            assert_eq!(log.by_key.get(key).map(|(used, _)| *used), Some(*generation));
+        }
+    }
+
+    #[test]
+    fn merge_with_equal_timestamps_and_same_kind_across_shared_and_local() {
+        // Distinct kinds, equal timestamps: both kept, local first.
+        let merged = merge_denials(
+            vec![probe_denial("a", "JUDGE_DENIED", 5)],
+            vec![probe_denial("b", "JUDGE_DENIED", 5)],
+        );
+        let tools: Vec<&str> = merged.iter().map(|d| d.tool.as_str()).collect();
+        assert_eq!(tools, ["b", "a"]);
+        // Same kind, shared older and local newer: the newest is kept once.
+        let merged = merge_denials(
+            vec![probe_denial("a", "JUDGE_DENIED", 1)],
+            vec![probe_denial("a", "JUDGE_DENIED", 9)],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].at_ms, 9);
+        // Same kind, different source (session and parent): one kept.
+        let mut parent = probe_denial("a", "JUDGE_DENIED", 3);
+        parent.source = DenialSource::Parent;
+        let merged = merge_denials(vec![parent], vec![probe_denial("a", "JUDGE_DENIED", 3)]);
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn shared_entries_at_the_age_and_skew_boundaries() {
+        let judge = service(None);
+        let now = 10 * 86_400_000;
+        let at =
+            |at_ms: u64| judge.plausible_denial(&probe_denial("refund_order", "JUDGE_DENIED", at_ms), now);
+        assert!(at(now - SHARED_DENIAL_MAX_AGE_MS), "exactly 24 hours old is kept");
+        assert!(
+            !at(now - SHARED_DENIAL_MAX_AGE_MS - 1),
+            "one millisecond older is dropped"
+        );
+        assert!(at(now), "exactly now is kept");
+        assert!(!at(now + 1), "one millisecond in the future is dropped");
+        assert!(at(0) == (now <= SHARED_DENIAL_MAX_AGE_MS));
+    }
+
+    /// The shared list keeps the newest 16 raw entries. Repeating one
+    /// refusal 16 times on one instance pushes an earlier, different
+    /// refusal out of the shared list, so another instance (which never
+    /// saw it locally) no longer sees it.
+    #[test]
+    fn repeated_refusals_cannot_flush_the_shared_log() {
+        let store: Arc<dyn StateStore> = Arc::new(ListStore::default());
+        let a = service(None);
+        let b = service(None);
+        a.share_denials(Arc::clone(&store));
+        b.share_denials(Arc::clone(&store));
+        assert!(a.denials_shared() && b.denials_shared());
+        a.record_denial("s-1", "agent-1", "refund_order", "JUDGE_DENIED", None);
+        for _ in 0..DENIALS_PER_KEY {
+            a.record_denial("s-1", "agent-1", "read_ticket", "POLICY_DENIED", None);
+        }
+        let on_a = a.recent_denials(&instance_key("agent-1"), "agent-1");
+        assert!(
+            on_a.iter().any(|d| d.tool == "refund_order"),
+            "local view keeps it"
+        );
+        let on_b = b.recent_denials(&instance_key("agent-1"), "agent-1");
+        assert!(
+            on_b.iter().any(|d| d.tool == "refund_order"),
+            "another instance lost the JUDGE_DENIED refusal of refund_order after {DENIALS_PER_KEY} \
+             repeats of one other refusal: the shared list (push_recent keep={DENIALS_PER_KEY}) has \
+             no per-kind dedupe, unlike DenialLog. Seen on B: {:?}",
+            on_b.iter().map(|d| (&d.tool, &d.denial_code)).collect::<Vec<_>>()
+        );
+    }
+
+    /// Two instances share one store. Agent-1's distinct cheap refusals
+    /// on instance A, and one judge refusal repeated many times, cannot
+    /// push its earlier judge refusal out of what instance B sees.
+    #[test]
+    fn many_refusals_cannot_flush_a_shared_judge_refusal() {
+        let store: Arc<dyn StateStore> = Arc::new(ListStore::default());
+        let (a, b) = (service(None), service(None));
+        a.share_denials(Arc::clone(&store));
+        b.share_denials(Arc::clone(&store));
+        let predicate = Some("arg_matches_task@1".to_owned());
+        a.record_denial(
+            "s-1",
+            "agent-1",
+            "refund_order",
+            "JUDGE_DENIED",
+            predicate.clone(),
+        );
+        for n in 0..(3 * SHARED_DENIALS_PER_KEY) {
+            a.record_denial("s-1", "agent-1", &format!("tool_{n}"), "POLICY_DENIED", None);
+            a.record_denial("s-1", "agent-1", "read_ticket", "JUDGE_DENIED", predicate.clone());
+        }
+        let seen = b.recent_denials(&instance_key("agent-1"), "agent-1");
+        assert!(seen.iter().any(|d| d.tool == "refund_order"), "{seen:?}");
+        assert!(seen.iter().any(|d| d.tool == "read_ticket"), "{seen:?}");
+    }
+
+    /// Session ids may contain ':' (any visible ASCII) and so may
+    /// instance uids, so `s:{instance}:{session}` is ambiguous.
+    #[test]
+    fn session_keys_do_not_collide_across_instances() {
+        assert_ne!(
+            session_key("a:b", "c"),
+            session_key("a", "b:c"),
+            "instance \"a:b\" + session \"c\" and instance \"a\" + session \"b:c\" share one key"
+        );
+    }
+
+    #[test]
+    fn one_agent_cannot_plant_refusals_in_another_agents_session() {
+        let judge = service(None);
+        // Agent "agent" refuses in its own session "42:s1".
+        judge.record_denial("42:s1", "agent", "refund_order", "JUDGE_DENIED", None);
+        // Agent "agent:42" works in its session "s1".
+        let context = judge.context(&ContextInputs {
+            session_id: "s1",
+            instance_uid: "agent:42",
+            tool: "refund_order",
+            intent: String::new(),
+            missions: Vec::new(),
+            charter: "c",
+            delegation_depth: 0,
+            parents: Vec::new(),
+        });
+        assert!(
+            context.prior_denials.is_empty(),
+            "agent:42's session s1 shows a refusal recorded by agent \"agent\" in its session \
+             \"42:s1\": {:?}",
+            context.prior_denials
+        );
+    }
+
+    #[test]
+    fn per_caller_share_validation() {
+        let base = |share: Option<usize>| {
+            let mut config: JudgeConfig = toml::from_str(&format!(
+                r#"
+                mode = "enforce"
+                max_concurrency = 8
+                [[adapters]]
+                name = "a"
+                kind = "cloud"
+                endpoint = "http://127.0.0.1:9/x"
+                model_name = "m"
+                model_version = "1"
+                weights_sha256 = "{}"
+                "#,
+                "a".repeat(64)
+            ))
+            .unwrap();
+            config.max_concurrency_per_caller = share;
+            let mut errors = Vec::new();
+            config.collect_errors(&mut errors);
+            errors
+                .into_iter()
+                .filter(|e| e.contains("max_concurrency_per_caller"))
+                .count()
+        };
+        assert_eq!(base(Some(0)), 1, "0 is refused");
+        assert_eq!(base(Some(9)), 1, "above max_concurrency is refused");
+        assert_eq!(base(Some(8)), 0, "equal to max_concurrency is accepted");
+        assert_eq!(base(Some(1)), 0);
+        assert_eq!(base(None), 0);
+    }
+
+    #[test]
+    fn caller_slots_are_released_and_the_map_empties() {
+        let judge = service(None);
+        // Default share: max_concurrency / 4 (at least 1).
+        let share = judge.caller_share;
+        assert!(share >= 1);
+        {
+            let held: Vec<CallerSlot<'_>> = (0..share)
+                .map(|_| CallerSlot::take(&judge, "agent-x").unwrap())
+                .collect();
+            assert!(CallerSlot::take(&judge, "agent-x").is_none(), "share exhausted");
+            assert!(
+                CallerSlot::take(&judge, "agent-y").is_some(),
+                "another caller unaffected"
+            );
+            assert!(CallerSlot::take(&judge, "").is_some(), "anonymous has no share");
+            drop(held);
+        }
+        assert!(
+            judge.caller_in_flight.lock().is_empty(),
+            "map empties after release"
+        );
+        // Many distinct callers, each holding a slot, then all released.
+        let slots: Vec<CallerSlot<'_>> = (0..5_000)
+            .map(|n| CallerSlot::take(&judge, &format!("agent-{n}")).unwrap())
+            .collect();
+        assert_eq!(judge.caller_in_flight.lock().len(), 5_000);
+        drop(slots);
+        assert!(judge.caller_in_flight.lock().is_empty());
+        // Anonymous slots never enter the map.
+        let anon: Vec<CallerSlot<'_>> = (0..100).map(|_| CallerSlot::take(&judge, "").unwrap()).collect();
+        assert!(judge.caller_in_flight.lock().is_empty());
+        drop(anon);
+    }
+
+    /// A call that times out releases its caller slot.
+    #[test]
+    fn a_timed_out_call_releases_its_slot() {
+        let pin = pv_judge::ModelPin::new("m", "1", "a".repeat(64)).unwrap();
+        let config: JudgeConfig = toml::from_str(&format!(
+            r#"
+            mode = "enforce"
+            max_concurrency = 4
+            max_concurrency_per_caller = 1
+            [[adapters]]
+            name = "a"
+            kind = "cloud"
+            endpoint = "http://127.0.0.1:9/x"
+            model_name = "m"
+            model_version = "1"
+            weights_sha256 = "{}"
+            deadline_ms = 100
+            [[tools]]
+            tool = "t"
+            allow_cloud = true
+            predicates = [{{ id = "arg_matches_task@1", adapter = "a" }}]
+            "#,
+            "a".repeat(64)
+        ))
+        .unwrap();
+        let mut adapters: BTreeMap<String, Arc<dyn pv_judge::JudgeAdapter>> = BTreeMap::new();
+        adapters.insert(
+            "a".into(),
+            Arc::new(pv_judge::mock::MockJudge::new(
+                pin,
+                pv_judge::mock::MockBehavior::delayed(
+                    Duration::from_secs(5),
+                    pv_judge::mock::MockBehavior::scores(&[("match", 1.0), ("mismatch", 0.0)]),
+                ),
+            )),
+        );
+        let judge = Arc::new(
+            JudgeService::new(&config, adapters, Arc::new(pv_core::metrics::Registry::new())).unwrap(),
+        );
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let tasks = judge.tasks_for("t").unwrap().to_vec();
+        let run = |judge: Arc<JudgeService>, tasks: Vec<JudgeTask>| {
+            runtime.block_on(async move {
+                tokio::task::spawn_blocking(move || {
+                    judge
+                        .evaluate_blocking(
+                            &tasks,
+                            "t",
+                            &serde_json::json!({}),
+                            SessionContext::default(),
+                            "agent-slow",
+                        )
+                        .0
+                })
+                .await
+                .unwrap()
+            })
+        };
+        let first = run(Arc::clone(&judge), tasks.clone());
+        assert!(
+            matches!(&first[0], JudgeOutcome::Failed(f) if f.kind == pv_judge::FailureKind::Timeout),
+            "{first:?}"
+        );
+        assert!(
+            judge.caller_in_flight.lock().is_empty(),
+            "slot released after a timeout"
+        );
+        let second = run(Arc::clone(&judge), tasks);
+        assert!(
+            matches!(&second[0], JudgeOutcome::Failed(f) if f.kind == pv_judge::FailureKind::Timeout),
+            "the second call is judged (and times out), not refused as saturated: {second:?}"
         );
     }
 }
