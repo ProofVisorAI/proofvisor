@@ -316,6 +316,42 @@ async fn record_inputs_keeps_what_the_judge_was_asked() {
     assert!(event["payload"]["judge"].get("inputs").is_none());
 }
 
+/// Recorded inputs are redacted like the rest of the audit record (a
+/// redaction path reaches into the arguments before they become text),
+/// and arguments too long to record are left out.
+#[tokio::test]
+async fn recorded_inputs_are_redacted_and_bounded() {
+    let mut config = judge_config(JudgeModeConfig::Enforce);
+    config.record_inputs = true;
+    let h = harness(config, |config| {
+        config.redaction_paths = vec!["/api_secret".into()];
+    });
+    h.mock.set_default(mismatch(0.1));
+    call(
+        &h,
+        "s-redact",
+        "update_ticket",
+        json!({"table": "orders", "api_secret": "hunter2-not-for-the-log"}),
+        None,
+    )
+    .await;
+    let event = &tool_events(&h.bus, "s-redact", 1).await[0];
+    let recorded = event["payload"]["judge"]["inputs"]["arguments_json"]
+        .as_str()
+        .unwrap();
+    assert!(!recorded.contains("hunter2"), "{recorded}");
+    assert!(recorded.contains("orders"), "{recorded}");
+
+    let long = "x".repeat(70 * 1024);
+    call(&h, "s-long", "update_ticket", json!({"table": long}), None).await;
+    let event = &tool_events(&h.bus, "s-long", 1).await[0];
+    assert!(
+        event["payload"]["judge"].is_object(),
+        "the long call was judged: {event}"
+    );
+    assert!(event["payload"]["judge"].get("inputs").is_none());
+}
+
 /// The judge's time is its own field: the sandbox's `decision_us` covers
 /// only the sandbox's gates, never the wait for the judge.
 #[tokio::test]

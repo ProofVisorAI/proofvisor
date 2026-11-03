@@ -1181,6 +1181,7 @@ fn judge_export(data_dir: &Path, predicate: Option<&str>, would_block_only: bool
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
     let (mut judged, mut without_inputs, mut exported) = (0u64, 0u64, 0u64);
+    let (mut unreadable_records, mut unreadable_arguments) = (0u64, 0u64);
     for partition in 0..partitions {
         let mut offset = 0u64;
         loop {
@@ -1195,6 +1196,7 @@ fn judge_export(data_dir: &Path, predicate: Option<&str>, would_block_only: bool
                 };
                 judged += 1;
                 let Ok(record) = serde_json::from_value::<pv_judge::JudgeRecord>(raw.clone()) else {
+                    unreadable_records += 1;
                     continue;
                 };
                 if would_block_only && !record.would_block {
@@ -1204,8 +1206,13 @@ fn judge_export(data_dir: &Path, predicate: Option<&str>, would_block_only: bool
                     without_inputs += 1;
                     continue;
                 };
-                let arguments: serde_json::Value =
-                    serde_json::from_str(&inputs.arguments_json).unwrap_or(serde_json::Value::Null);
+                // Arguments that are not JSON (a record from a build that
+                // redacted the text itself) would ask a reviewer to label a
+                // call nobody can see: skipped and counted.
+                let Ok(arguments) = serde_json::from_str::<serde_json::Value>(&inputs.arguments_json) else {
+                    unreadable_arguments += 1;
+                    continue;
+                };
                 for verdict in &record.verdicts {
                     if predicate.is_some_and(|wanted| wanted != verdict.predicate_id) {
                         continue;
@@ -1242,8 +1249,9 @@ fn judge_export(data_dir: &Path, predicate: Option<&str>, would_block_only: bool
     out.flush()?;
     eprintln!(
         "{exported} examples exported from {judged} judged calls ({without_inputs} recorded without \
-         inputs: set [judge] record_inputs = true to keep them). Set each `label` before \
-         `pvctl judge-calibrate` reads the file."
+         inputs: set [judge] record_inputs = true to keep them; {unreadable_records} records could \
+         not be read; {unreadable_arguments} skipped because their arguments are not JSON). Set \
+         each `label` before `pvctl judge-calibrate` reads the file."
     );
     Ok(())
 }

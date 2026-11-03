@@ -4163,6 +4163,36 @@ impl AppState {
         (outcomes, judge_us, inputs)
     }
 
+    /// What a judged call's record keeps of the judge's request, with
+    /// `record_inputs`: redacted as the rest of the audit record is (the
+    /// arguments are kept as JSON text, which redaction paths could no
+    /// longer reach), and left out when the arguments are longer than
+    /// [`MAX_RECORDED_ARGUMENT_BYTES`].
+    fn judge_inputs(
+        &self,
+        judge: &crate::judge::JudgeService,
+        tool: &str,
+        arguments: &Value,
+        context: pv_judge::SessionContext,
+    ) -> Option<pv_judge::JudgeInputs> {
+        let mut arguments = arguments.clone();
+        let mut context_value = serde_json::to_value(&context).ok()?;
+        if let Some(engine) = &self.redaction {
+            engine.redact_user_value(&mut arguments);
+            engine.redact_value(&mut context_value);
+        }
+        let arguments_json = arguments.to_string();
+        if arguments_json.len() > MAX_RECORDED_ARGUMENT_BYTES {
+            judge.count_inputs_left_out();
+            return None;
+        }
+        Some(pv_judge::JudgeInputs {
+            tool: tool.to_owned(),
+            arguments_json,
+            context: serde_json::from_value(context_value).unwrap_or(context),
+        })
+    }
+
     /// Run the policy and budget gates on a judged call with its verdicts.
     ///
     /// Shadow mode: the verdicts are recorded with what judge-aware
@@ -4185,11 +4215,8 @@ impl AppState {
         caller: &str,
     ) -> (ToolVerdict, pv_judge::JudgeRecord) {
         let tool = call.request.tool.clone();
-        let inputs = inputs.map(|context| pv_judge::JudgeInputs {
-            tool: tool.clone(),
-            arguments_json: call.request.arguments.to_string(),
-            context,
-        });
+        let inputs =
+            inputs.and_then(|context| self.judge_inputs(judge, &tool, &call.request.arguments, context));
         let evidence = pv_sandbox::JudgeEvidence {
             outcomes,
             drift_tripped: judge.drift_tripped(),
@@ -5049,6 +5076,8 @@ fn messages_contain(payload: &Value, needle: &str) -> bool {
             _ => false,
         })
 }
+/// Longest arguments a judged call's record keeps with `record_inputs`.
+const MAX_RECORDED_ARGUMENT_BYTES: usize = 64 * 1024;
 
 /// A tagged call scored before the session admission lock.
 struct Prejudged {

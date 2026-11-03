@@ -1195,6 +1195,10 @@ pub struct JudgeService {
     shared_drift: std::sync::OnceLock<Arc<dyn pv_state::StateStore>>,
     /// The shared switches as last read, and when.
     shared_tripped: parking_lot::Mutex<(Option<std::time::Instant>, Vec<String>)>,
+    /// Held while one caller reads the shared switches.
+    drift_refreshing: parking_lot::Mutex<()>,
+    /// The last operator reset count seen per predicate.
+    drift_reset_seen: parking_lot::Mutex<BTreeMap<String, u64>>,
     pilot_cap: Option<u64>,
     denials: parking_lot::Mutex<DenialLog>,
     /// The shared state store, when it is shared between instances: the
@@ -1324,6 +1328,8 @@ impl JudgeService {
             drift_write: parking_lot::Mutex::new(()),
             shared_drift: std::sync::OnceLock::new(),
             shared_tripped: parking_lot::Mutex::new((None, Vec::new())),
+            drift_refreshing: parking_lot::Mutex::new(()),
+            drift_reset_seen: parking_lot::Mutex::new(BTreeMap::new()),
             pilot_cap: config.pilot.map(|pilot| pilot.daily_block_cap),
             denials: parking_lot::Mutex::new(DenialLog::default()),
             shared_denials: std::sync::OnceLock::new(),
@@ -1355,6 +1361,13 @@ impl JudgeService {
                     let key = drift_key(&id, "tripped");
                     if store.get(&key).is_ok_and(|value| value == 0) {
                         let _ = store.add(&key, 1);
+                    }
+                }
+                // Resets made before this instance joined are not applied
+                // to its state file's switches (failing closed).
+                for id in self.runner.registry().iter().map(|def| def.id.as_str()) {
+                    if let Ok(generation) = store.get(&drift_key(id, "reset")) {
+                        self.drift_reset_seen.lock().insert(id.to_owned(), generation);
                     }
                 }
                 let _ = self.shared_drift.set(Arc::clone(&store));
@@ -1539,6 +1552,16 @@ impl JudgeService {
         self.record_inputs
     }
 
+    /// Count a judged call whose arguments were too long to record.
+    pub(crate) fn count_inputs_left_out(&self) {
+        self.metrics
+            .counter(
+                "pv_judge_inputs_not_recorded_total",
+                "Judged calls whose arguments were too long for record_inputs to keep",
+            )
+            .inc();
+    }
+
     /// Shadow or enforce.
     pub fn mode(&self) -> JudgeMode {
         self.mode
@@ -1599,19 +1622,40 @@ impl JudgeService {
         // Issued at 1 when sampled; the first review makes it 2.
         let claim = drift_key(&predicate, &format!("review:{review_id}"));
         let claimed = store.add(&claim, 1).map_err(unavailable)?;
-        store.remove(&claim);
         if claimed != 2 {
+            if claimed == 1 {
+                store.remove(&claim);
+            }
             return Err(pv_judge::DriftError::UnknownReview);
         }
-        monitor.forget_review(review_id);
-        store
-            .add(&drift_key(&predicate, &format!("band:{band}:reviewed")), 1)
-            .map_err(unavailable)?;
+        // Both counts in one atomic step (one Cluster slot), so another
+        // instance never reads a review counted as reviewed but not yet as
+        // correct; a failure gives the claim back, so the review can be
+        // sent again.
+        let count = |name: &str| pv_state::Spend {
+            key: drift_key(&predicate, &format!("band:{band}:{name}")),
+            amount: 1,
+            limit: u64::from(u32::MAX),
+        };
+        let mut spends = vec![count("reviewed")];
         if correct {
-            store
-                .add(&drift_key(&predicate, &format!("band:{band}:correct")), 1)
-                .map_err(unavailable)?;
+            spends.push(count("correct"));
         }
+        match store.try_spend_many(&spends) {
+            Ok(pv_state::TrySpendOutcome::Committed { .. }) => {}
+            Ok(_) => {
+                store.refund(&claim, 1);
+                return Err(pv_judge::DriftError::Unavailable(
+                    "review counts are full".to_owned(),
+                ));
+            }
+            Err(error) => {
+                store.refund(&claim, 1);
+                return Err(unavailable(error));
+            }
+        }
+        store.remove(&claim);
+        monitor.forget_review(review_id);
         let bands = self
             .shared_bands(store.as_ref(), &predicate)
             .map_err(unavailable)?;
@@ -1638,14 +1682,26 @@ impl JudgeService {
     /// Operator reset of a predicate's drift switch and statistics, here
     /// and, with a shared store, on every instance. Returns whether it was
     /// tripped.
-    pub(crate) fn reset_drift(&self, predicate_id: &str) -> bool {
+    pub(crate) fn reset_drift(&self, predicate_id: &str) -> Result<bool, pv_judge::DriftError> {
         let Some(monitor) = &self.drift else {
-            return false;
+            return Ok(false);
         };
-        let mut was = monitor.reset(predicate_id);
+        let mut was = false;
         if let Some(store) = self.shared_drift.get() {
+            // The reset must reach the store, or the other instances (and
+            // this one, which writes its switch back) keep the switch.
+            let unavailable =
+                |error: pv_state::StateError| pv_judge::DriftError::Unavailable(error.to_string());
             let tripped_key = drift_key(predicate_id, "tripped");
-            was |= store.get(&tripped_key).unwrap_or(0) > 0;
+            was |= store.get(&tripped_key).map_err(unavailable)? > 0;
+            // Every instance clears its own switch when this count moves;
+            // a switch that merely vanished from the store is kept.
+            let generation = store
+                .add(&drift_key(predicate_id, "reset"), 1)
+                .map_err(unavailable)?;
+            self.drift_reset_seen
+                .lock()
+                .insert(predicate_id.to_owned(), generation);
             store.remove(&tripped_key);
             for band in 0..pv_judge::drift::BAND_LOWER_PPM.len() {
                 store.remove(&drift_key(predicate_id, &format!("band:{band}:reviewed")));
@@ -1653,35 +1709,67 @@ impl JudgeService {
             }
             self.shared_tripped.lock().0 = None;
         }
-        was
+        was |= monitor.reset(predicate_id);
+        Ok(was)
     }
 
     /// The drift check's state for operators: with a shared store, the
     /// shared statistics and switches.
     pub(crate) fn drift_snapshot(&self) -> Option<pv_judge::DriftSnapshot> {
         let monitor = self.drift.as_ref()?;
-        let mut snapshot = monitor.snapshot();
         let Some(store) = self.shared_drift.get() else {
-            return Some(snapshot);
+            return Some(monitor.snapshot());
         };
         let tripped = self.drift_tripped();
-        snapshot.predicates = self
+        // Reviews this instance sampled but another one recorded are no
+        // longer pending.
+        for id in monitor.pending_ids() {
+            let still_issued = parse_review_id(&id)
+                .and_then(|(predicate, _)| store.get(&drift_key(&predicate, &format!("review:{id}"))).ok())
+                .is_none_or(|issued| issued == 1);
+            if !still_issued {
+                monitor.forget_review(&id);
+            }
+        }
+        let mut snapshot = monitor.snapshot();
+        let shared: Result<Vec<_>, pv_state::StateError> = self
             .runner
             .registry()
             .iter()
             .map(|def| def.id.as_str())
-            .filter_map(|id| {
-                let bands = self.shared_bands(store.as_ref(), id).ok()?;
+            .map(|id| {
+                let bands = self.shared_bands(store.as_ref(), id)?;
                 let tripped = tripped.iter().any(|t| t == id);
-                (tripped || bands.iter().any(|band| band.reviewed > 0)).then(|| {
+                Ok((tripped || bands.iter().any(|band| band.reviewed > 0)).then(|| {
                     pv_judge::drift::PredicateDrift {
                         predicate_id: id.to_owned(),
                         bands,
                         tripped,
                     }
-                })
+                }))
             })
             .collect();
+        match shared {
+            Ok(predicates) => snapshot.predicates = predicates.into_iter().flatten().collect(),
+            // The store cannot be read: this instance's view, with the
+            // switches that apply (never hiding one).
+            Err(_) => {
+                for id in &tripped {
+                    match snapshot
+                        .predicates
+                        .iter_mut()
+                        .find(|drift| &drift.predicate_id == id)
+                    {
+                        Some(drift) => drift.tripped = true,
+                        None => snapshot.predicates.push(pv_judge::drift::PredicateDrift {
+                            predicate_id: id.clone(),
+                            bands: pv_judge::drift::empty_bands(),
+                            tripped: true,
+                        }),
+                    }
+                }
+            }
+        }
         Some(snapshot)
     }
 
@@ -1698,52 +1786,82 @@ impl JudgeService {
         Ok(bands)
     }
 
-    /// The shared switches, read at most every [`SHARED_DRIFT_REFRESH`]
-    /// (on the path of judged calls). Each read also refreshes the expiry
-    /// of the shared keys, which the store drops a day after their last
-    /// write: while any instance runs, the statistics and switches stay.
+    /// The switches to ask-by-default, with a shared store: read at most
+    /// every [`SHARED_DRIFT_REFRESH`] (on the path of judged calls), by one
+    /// caller at a time, outside the lock the others read the result
+    /// under. The switch fails closed:
+    /// * a switch the store no longer holds (its keys expire a day after
+    ///   the last write, or the store lost them) but this instance does
+    ///   is written back, not dropped;
+    /// * only an operator reset, seen as a new reset count, clears this
+    ///   instance's switch (and its state file);
+    /// * when the store cannot be read, this instance's own switches
+    ///   apply until the next attempt, [`SHARED_DRIFT_REFRESH`] later.
     fn shared_tripped(&self) -> Vec<String> {
-        let Some(store) = self.shared_drift.get() else {
+        let (Some(store), Some(monitor)) = (self.shared_drift.get(), &self.drift) else {
             return Vec::new();
         };
-        let mut cache = self.shared_tripped.lock();
-        if cache.0.is_some_and(|at| at.elapsed() < SHARED_DRIFT_REFRESH) {
-            return cache.1.clone();
+        {
+            let cache = self.shared_tripped.lock();
+            if cache.0.is_some_and(|at| at.elapsed() < SHARED_DRIFT_REFRESH) {
+                return cache.1.clone();
+            }
         }
-        let mut tripped = Vec::new();
-        for id in self.runner.registry().iter().map(|def| def.id.as_str()) {
-            let key = drift_key(id, "tripped");
-            match store.get(&key) {
-                Ok(0) => {}
-                Ok(_) => {
-                    let _ = store.add(&key, 0);
+        let Some(_refreshing) = self.drift_refreshing.try_lock() else {
+            // Another caller is reading the store: the last result, or
+            // this instance's own switches before the first one.
+            let cache = self.shared_tripped.lock();
+            return if cache.0.is_some() {
+                cache.1.clone()
+            } else {
+                monitor.tripped()
+            };
+        };
+        let mut reset_here = false;
+        let mut read = || -> Result<Vec<String>, pv_state::StateError> {
+            let mut tripped = Vec::new();
+            for id in self.runner.registry().iter().map(|def| def.id.as_str()) {
+                let key = drift_key(id, "tripped");
+                let shared = store.get(&key)? > 0;
+                let generation = store.get(&drift_key(id, "reset"))?;
+                let seen = self.drift_reset_seen.lock().get(id).copied().unwrap_or(0);
+                if generation > seen {
+                    self.drift_reset_seen.lock().insert(id.to_owned(), generation);
+                    if !shared && monitor.is_tripped(id) {
+                        monitor.reset(id);
+                        reset_here = true;
+                    }
+                }
+                if shared {
+                    store.add(&key, 0)?;
+                    monitor.trip(id);
+                    tripped.push(id.to_owned());
+                } else if monitor.is_tripped(id) {
+                    store.add(&key, 1)?;
                     tripped.push(id.to_owned());
                 }
-                // Unreadable: keep what was last read.
-                Err(_) => return cache.1.clone(),
-            }
-            for band in 0..pv_judge::drift::BAND_LOWER_PPM.len() {
-                for count in ["reviewed", "correct"] {
-                    let key = drift_key(id, &format!("band:{band}:{count}"));
-                    if store.get(&key).is_ok_and(|value| value > 0) {
-                        let _ = store.add(&key, 0);
+                for rest in std::iter::once("reset".to_owned()).chain(
+                    (0..pv_judge::drift::BAND_LOWER_PPM.len())
+                        .flat_map(|band| [format!("band:{band}:reviewed"), format!("band:{band}:correct")]),
+                ) {
+                    let key = drift_key(id, &rest);
+                    if store.get(&key)? > 0 {
+                        store.add(&key, 0)?;
                     }
                 }
             }
-        }
-        // The local monitor (and so the state file) follows the shared
-        // switches, both ways: a reset on another instance clears it here.
-        if let Some(monitor) = &self.drift {
-            for id in monitor.tripped() {
-                if !tripped.contains(&id) {
-                    monitor.reset(&id);
-                }
-            }
-            for id in &tripped {
-                monitor.trip(id);
+            Ok(tripped)
+        };
+        let tripped = read().unwrap_or_else(|error| {
+            tracing::warn!(%error, "shared drift switches unreadable; this instance's own switches apply");
+            monitor.tripped()
+        });
+        if reset_here {
+            if let Err(error) = self.persist_drift() {
+                tracing::error!(error = %error, "an operator's drift reset was not saved on this instance");
             }
         }
-        *cache = (Some(std::time::Instant::now()), tripped.clone());
+        *self.shared_tripped.lock() = (Some(std::time::Instant::now()), tripped.clone());
         tripped
     }
 
@@ -2085,16 +2203,26 @@ impl JudgeService {
         outcomes
             .iter()
             .filter_map(|outcome| match outcome {
-                JudgeOutcome::Scored(verdict) => drift
-                    .maybe_sample(verdict, |predicate, band| {
+                JudgeOutcome::Scored(verdict) => {
+                    let mut issued = true;
+                    let id = drift.maybe_sample(verdict, |predicate, band| {
                         let id = review_id(predicate, band);
                         if let Some(store) = self.shared_drift.get() {
                             // Issued: any instance can record its review once.
-                            let _ = store.add(&drift_key(predicate, &format!("review:{id}")), 1);
+                            issued = store
+                                .add(&drift_key(predicate, &format!("review:{id}")), 1)
+                                .is_ok();
                         }
                         id
-                    })
-                    .map(|id| (verdict.predicate_id.clone(), id)),
+                    })?;
+                    // A review the store could not register could never be
+                    // recorded: it is not handed out.
+                    if !issued {
+                        drift.forget_review(&id);
+                        return None;
+                    }
+                    Some((verdict.predicate_id.clone(), id))
+                }
                 JudgeOutcome::Failed(_) => None,
             })
             .collect()
@@ -2171,10 +2299,12 @@ impl JudgeService {
     }
 }
 
-/// The recorded events at the end of each partition of the embedded
-/// Bridge's `agent.tool_call` topic under `data_dir`: at most `tail_bytes`
-/// per partition, newest last within a partition. Missing files, a
-/// missing topic and unreadable lines yield nothing.
+/// The policy-stage refusals recorded at the end of each partition of the
+/// embedded Bridge's `agent.tool_call` topic under `data_dir`: at most
+/// `tail_bytes` read per partition segment (a regular file named
+/// `p<N>.jsonl`), newest last within a partition. Only refused calls are
+/// kept while reading, so memory follows the refusals, not the traffic.
+/// Missing files, a missing topic and unreadable lines yield nothing.
 pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -> Vec<Value> {
     use std::io::{BufRead as _, Read as _, Seek as _};
     let directory = data_dir.join("topics").join("agent.tool_call");
@@ -2187,8 +2317,10 @@ pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -
         let is_segment = path
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|name| name.starts_with('p') && name.ends_with(".jsonl"));
-        if !is_segment {
+            .and_then(|name| name.strip_prefix('p')?.strip_suffix(".jsonl"))
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()));
+        let regular = entry.file_type().is_ok_and(|kind| kind.is_file());
+        if !is_segment || !regular {
             continue;
         }
         let Ok(mut file) = std::fs::File::open(&path) else {
@@ -2198,13 +2330,19 @@ pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -
             continue;
         };
         let start = length.saturating_sub(tail_bytes);
+        // Starting mid-file, the first line is a fragment unless the byte
+        // before the start ends a line.
+        let mut before = [0u8; 1];
+        let mid_line = start > 0
+            && (file.seek(std::io::SeekFrom::Start(start - 1)).is_err()
+                || file.read_exact(&mut before).is_err()
+                || before[0] != b'\n');
         if file.seek(std::io::SeekFrom::Start(start)).is_err() {
             continue;
         }
         let mut reader = std::io::BufReader::new(file.take(tail_bytes));
         let mut line = Vec::new();
-        // Starting mid-file: the first line is a fragment.
-        if start > 0 && reader.read_until(b'\n', &mut line).is_err() {
+        if mid_line && reader.read_until(b'\n', &mut line).is_err() {
             continue;
         }
         loop {
@@ -2215,9 +2353,18 @@ pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -
                 Ok(_) if line.last() != Some(&b'\n') => break,
                 Ok(_) => {}
             }
-            if let Ok(stored) = serde_json::from_slice::<Value>(&line) {
-                if let Some(event) = stored.get("value") {
-                    events.push(event.clone());
+            // Most lines are not refusals: skip them before parsing.
+            if !line.windows(6).any(|window| window == b"policy") {
+                continue;
+            }
+            let Ok(mut stored) = serde_json::from_slice::<Value>(&line) else {
+                continue;
+            };
+            let refused = stored.pointer("/value/payload/allowed") == Some(&Value::Bool(false))
+                && stored.pointer("/value/payload/stage").and_then(Value::as_str) == Some("policy");
+            if refused {
+                if let Some(event) = stored.get_mut("value") {
+                    events.push(event.take());
                 }
             }
         }
@@ -4211,16 +4358,36 @@ mod tests {
         assert!(recorded_tool_calls(dir.path(), 1_000).is_empty());
         let topic = dir.path().join("topics/agent.tool_call");
         std::fs::create_dir_all(&topic).unwrap();
-        let line = |n: u64| format!("{}\n", serde_json::json!({"offset": n, "value": {"n": n}}));
+        let refusal = |n: u64| serde_json::json!({"offset": n, "value": {"n": n, "payload": {"allowed": false, "stage": "policy"}}});
+        let line = |n: u64| format!("{}\n", refusal(n));
         let mut text: String = (0..100).map(line).collect();
+        // Allowed calls and other refusals are not kept.
+        text.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"value": {"payload": {"allowed": true, "stage": "policy"}}})
+        ));
+        text.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"value": {"payload": {"allowed": false, "stage": "schema"}}})
+        ));
         text.push_str("{\"offset\": 100, \"value\""); // an append in flight
         std::fs::write(topic.join("p0.jsonl"), &text).unwrap();
         std::fs::write(topic.join("notes.txt"), "not a segment").unwrap();
+        // The Bridge's id sidecar is not a segment either.
+        std::fs::write(topic.join("p0.event-uids.jsonl"), line(500)).unwrap();
         let all = recorded_tool_calls(dir.path(), 1_000_000);
         assert_eq!(all.len(), 100);
-        let tail = recorded_tool_calls(dir.path(), u64::try_from(line(99).len() * 3).unwrap());
+        let tail = recorded_tool_calls(dir.path(), u64::try_from(line(99).len() * 5).unwrap());
         assert!(!tail.is_empty() && tail.len() < 4, "{tail:?}");
         assert_eq!(tail.last().unwrap()["n"], 99);
+        // A partition past p9 is read; a symbolic link is not.
+        std::fs::write(topic.join("p10.jsonl"), line(1_000)).unwrap();
+        assert_eq!(recorded_tool_calls(dir.path(), 1_000_000).len(), 101);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(topic.join("p10.jsonl"), topic.join("p11.jsonl")).unwrap();
+            assert_eq!(recorded_tool_calls(dir.path(), 1_000_000).len(), 101);
+        }
     }
 
     /// An in-memory store that says it is shared between instances, so
@@ -4271,7 +4438,8 @@ mod tests {
             label = "mismatch"
             deny_above = 0.7
             [drift]
-            state_file = "{state}"
+            # A literal string: a Windows path holds backslashes.
+            state_file = '{state}'
             sample_every = 1
             min_reviews_per_band = 2
             "#,
@@ -4350,7 +4518,7 @@ mod tests {
         );
         // An operator's reset on A clears it everywhere.
         assert!(b.drift_tripped().contains(&"arg_matches_task@1".to_owned()));
-        assert!(a.reset_drift("arg_matches_task@1"));
+        assert!(a.reset_drift("arg_matches_task@1").unwrap());
         b.shared_tripped.lock().0 = None; // as after the refresh interval
         assert!(b.drift_tripped().is_empty());
         assert!(
@@ -4369,6 +4537,127 @@ mod tests {
         assert!(b.record_review("x~1~no_such_predicate@1", true).is_err());
         assert!(b.record_review("x~99~arg_matches_task@1", true).is_err());
         assert!(b.record_review("not an id", true).is_err());
+    }
+
+    /// A shared in-memory store that can be made to fail: every call,
+    /// or the next `add` to a key containing a given text.
+    #[derive(Default)]
+    struct FlakyShared {
+        inner: pv_state::InMemoryStore,
+        down: std::sync::atomic::AtomicBool,
+        fail_next_add: parking_lot::Mutex<Option<String>>,
+    }
+
+    impl FlakyShared {
+        fn check(&self, key: &str, adding: bool) -> Result<(), StateError> {
+            if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(StateError::Backend("down".into()));
+            }
+            let mut next = self.fail_next_add.lock();
+            if adding && next.as_deref().is_some_and(|text| key.contains(text)) {
+                *next = None;
+                return Err(StateError::Backend("failed once".into()));
+            }
+            Ok(())
+        }
+    }
+
+    impl StateStore for FlakyShared {
+        fn add(&self, key: &str, delta: u64) -> Result<u64, StateError> {
+            self.check(key, true)?;
+            self.inner.add(key, delta)
+        }
+        fn get(&self, key: &str) -> Result<u64, StateError> {
+            self.check(key, false)?;
+            self.inner.get(key)
+        }
+        fn try_spend_many(&self, spends: &[Spend]) -> Result<TrySpendOutcome, StateError> {
+            for spend in spends {
+                self.check(&spend.key, true)?;
+            }
+            self.inner.try_spend_many(spends)
+        }
+        fn remove(&self, key: &str) {
+            self.inner.remove(key);
+        }
+        fn refund(&self, key: &str, amount: u64) {
+            self.inner.refund(key, amount);
+        }
+        fn shares_recent_lists(&self) -> bool {
+            true
+        }
+        fn push_recent(&self, _key: &str, _value: &str, _keep: usize) -> Result<(), StateError> {
+            Ok(())
+        }
+        fn recent(&self, _key: &str, _max: usize) -> Result<Vec<String>, StateError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The shared switch fails closed: a switch the store lost is written
+    /// back, a cold start during an outage keeps the state file's switch,
+    /// and a review the store fails partway through can be sent again.
+    #[test]
+    fn the_shared_drift_switch_fails_closed() {
+        const P: &str = "arg_matches_task@1";
+        let dir = tempfile::tempdir().unwrap();
+        let flaky = Arc::new(FlakyShared::default());
+        let store: Arc<dyn StateStore> = Arc::clone(&flaky) as Arc<dyn StateStore>;
+        let a = drift_service(&dir.path().join("a.json"));
+        a.share_denials(Arc::clone(&store));
+        a.drift.as_ref().unwrap().trip(P);
+        a.shared_tripped.lock().0 = None;
+        assert_eq!(a.drift_tripped(), [P]);
+        // The store loses the key (expiry, failover): written back.
+        store.remove(&drift_key(P, "tripped"));
+        a.shared_tripped.lock().0 = None;
+        assert_eq!(a.drift_tripped(), [P]);
+        assert_eq!(store.get(&drift_key(P, "tripped")).unwrap(), 1);
+
+        // A cold start while the store is down keeps the file's switch.
+        flaky.down.store(true, std::sync::atomic::Ordering::SeqCst);
+        let b = drift_service(&dir.path().join("b.json"));
+        b.drift.as_ref().unwrap().trip(P);
+        b.share_denials(Arc::clone(&store));
+        assert_eq!(b.drift_tripped(), [P]);
+        flaky.down.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // An operator reset on A clears the switch on B as well.
+        assert!(a.reset_drift(P).unwrap());
+        b.shared_tripped.lock().0 = None;
+        assert!(b.drift_tripped().is_empty());
+        assert!(b.drift.as_ref().unwrap().tripped().is_empty());
+
+        // A review interrupted by the store can be sent again, once.
+        let verdict = JudgeOutcome::Scored(pv_judge::Verdict {
+            predicate_id: P.into(),
+            probs: vec![
+                pv_judge::LabelProb {
+                    label: "match".into(),
+                    ppm: 950_000,
+                },
+                pv_judge::LabelProb {
+                    label: "mismatch".into(),
+                    ppm: 50_000,
+                },
+            ],
+            model: pv_judge::ModelPin::new("m", "1", "a".repeat(64)).unwrap(),
+            latency_us: 1,
+        });
+        let id = a.sample_reviews(&[verdict])[P].clone();
+        *flaky.fail_next_add.lock() = Some(":correct".into());
+        assert!(matches!(
+            a.record_review(&id, true),
+            Err(pv_judge::DriftError::Unavailable(_))
+        ));
+        assert!(a.record_review(&id, true).is_ok(), "the review can be sent again");
+        assert!(a.record_review(&id, true).is_err(), "and counts once");
+        let reviewed: u64 = a.drift_snapshot().unwrap().predicates[0]
+            .bands
+            .iter()
+            .map(|band| band.reviewed)
+            .sum();
+        assert_eq!(reviewed, 1);
     }
 
     #[test]
@@ -4496,3 +4785,7 @@ mod tests {
 #[cfg(test)]
 #[path = "judge_decoding_edge_tests.rs"]
 mod judge_decoding_edge_tests;
+
+#[cfg(test)]
+#[path = "judge_restore_drift_edge_tests.rs"]
+mod judge_restore_drift_edge_tests;

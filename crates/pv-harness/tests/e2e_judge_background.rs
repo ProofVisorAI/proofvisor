@@ -492,6 +492,39 @@ async fn an_unsigned_session_with_a_trace_verdict_is_promoted_after_close() {
     assert!(!session.is_promoted());
 }
 
+/// A burst of judged sessions is promoted a bounded number per tick, so
+/// the tick's other work is never held up by it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn automatic_promotions_are_bounded_per_tick() {
+    let url = backend(INJECTED).await;
+    let mut judge = base_judge();
+    judge.trace = Some(trace());
+    let mock = scripted(Arc::default(), Duration::ZERO);
+    let h = build(judge, &mock, |config| {
+        config.tool_upstream_url = Some(url);
+        config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
+    });
+    let total = pv_harness::reconciler::MAX_JUDGED_PROMOTIONS_PER_TICK + 8;
+    for n in 0..total {
+        let session_id = format!("burst-{n}");
+        assert_eq!(tool(&h, &session_id, "unsigned", "read_ticket").await.status, 200);
+        let session = h.state.sessions.get(&session_id).unwrap();
+        h.state
+            .finalizer
+            .close_session(session, pv_events::StopReason::SessionClosed)
+            .await
+            .unwrap();
+    }
+    let first = h.state.finalizer.promote_judged_sessions(&h.state.sessions).await;
+    assert_eq!(first, pv_harness::reconciler::MAX_JUDGED_PROMOTIONS_PER_TICK);
+    let second = h.state.finalizer.promote_judged_sessions(&h.state.sessions).await;
+    assert_eq!(second, 8);
+    assert_eq!(
+        h.state.finalizer.promote_judged_sessions(&h.state.sessions).await,
+        0
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_signed_receipt_covers_the_trace_finding() {
     let url = backend(INJECTED).await;

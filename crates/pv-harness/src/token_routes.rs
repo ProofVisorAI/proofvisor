@@ -461,9 +461,19 @@ pub(crate) async fn admin_judge_drift_reset(
     };
     let resetting = Arc::clone(judge);
     let predicate = request.predicate_id.clone();
-    let was_tripped = tokio::task::spawn_blocking(move || resetting.reset_drift(&predicate))
+    let reset = tokio::task::spawn_blocking(move || resetting.reset_drift(&predicate))
         .await
-        .unwrap_or(false);
+        .unwrap_or_else(|_| Err(pv_judge::DriftError::Unavailable("reset task failed".to_owned())));
+    let was_tripped = match reset {
+        Ok(was_tripped) => was_tripped,
+        Err(error) => {
+            tracing::error!(error = %error, predicate = %request.predicate_id, "judge drift reset not applied: the shared drift store is unavailable");
+            return response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"drift_store_unavailable"}),
+            );
+        }
+    };
     judge.publish_drift();
     let persisted = save_drift(judge).await;
     tracing::warn!(

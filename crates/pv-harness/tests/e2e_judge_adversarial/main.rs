@@ -9,5 +9,6 @@ mod common;
 mod decoding_edges;
 mod edge_probe;
 mod hardening;
+mod restore_inputs_promotion;
 mod spool_turns;
 mod window_edges;
