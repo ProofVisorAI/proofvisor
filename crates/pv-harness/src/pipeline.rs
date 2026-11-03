@@ -3696,7 +3696,10 @@ impl AppState {
                 .map(|spec| (principal_id_for_budget(&identity), spec));
             let principal_ref = principal_binding.as_ref().map(|(id, spec)| (id.as_str(), *spec));
             let (call, scored) = match prejudged.take() {
-                Some(prejudged) => (prejudged.call, Some((prejudged.outcomes, prejudged.judge_us))),
+                Some(prejudged) => (
+                    prejudged.call,
+                    Some((prejudged.outcomes, prejudged.judge_us, prejudged.inputs)),
+                ),
                 None => match self.sandbox.precheck(raw) {
                     Ok(call) => (call, None),
                     Err(verdict) => return (verdict, None),
@@ -3740,7 +3743,7 @@ impl AppState {
                 Some((judge, tasks)) => {
                     // Normally scored before the admission lock; only a
                     // call whose eligibility changed in between is scored here.
-                    let (outcomes, judge_us) = scored.unwrap_or_else(|| {
+                    let (outcomes, judge_us, inputs) = scored.unwrap_or_else(|| {
                         self.run_judge(judge, tasks, &call, &session_id, &identity, caller)
                     });
                     let (verdict, record) = self.judged_admission(
@@ -3749,6 +3752,7 @@ impl AppState {
                         call,
                         outcomes,
                         judge_us,
+                        inputs,
                         &session_id,
                         principal_ref,
                         &principal_id_for_budget(&identity),
@@ -4102,11 +4106,12 @@ impl AppState {
             return None;
         }
         let call = self.sandbox.precheck(raw).ok()?;
-        let (outcomes, judge_us) = self.run_judge(judge, tasks, &call, session_id, identity, caller);
+        let (outcomes, judge_us, inputs) = self.run_judge(judge, tasks, &call, session_id, identity, caller);
         Some(Prejudged {
             call,
             outcomes,
             judge_us,
+            inputs,
         })
     }
 
@@ -4127,7 +4132,7 @@ impl AppState {
         session_id: &str,
         identity: &AgentIdentity,
         caller: &AuthenticatedCaller,
-    ) -> (Vec<pv_judge::JudgeOutcome>, u64) {
+    ) -> (Vec<pv_judge::JudgeOutcome>, u64, Option<pv_judge::SessionContext>) {
         let tool = &call.request.tool;
         let facts = caller.facts();
         let validated = caller.validated.as_ref();
@@ -4141,7 +4146,8 @@ impl AppState {
             delegation_depth: validated.map_or(0, |validated| validated.total_delegation_depth),
             parents: validated.map(delegation_parents).unwrap_or_default(),
         });
-        judge.evaluate_blocking(
+        let inputs = judge.records_inputs().then(|| context.clone());
+        let (outcomes, judge_us) = judge.evaluate_blocking(
             tasks,
             tool,
             &call.request.arguments,
@@ -4153,7 +4159,8 @@ impl AppState {
             } else {
                 ""
             },
-        )
+        );
+        (outcomes, judge_us, inputs)
     }
 
     /// Run the policy and budget gates on a judged call with its verdicts.
@@ -4172,11 +4179,17 @@ impl AppState {
         call: pv_sandbox::ValidatedCall,
         outcomes: Vec<pv_judge::JudgeOutcome>,
         judge_us: u64,
+        inputs: Option<pv_judge::SessionContext>,
         session_id: &str,
         principal: Option<(&str, &pv_state::BudgetSpec)>,
         caller: &str,
     ) -> (ToolVerdict, pv_judge::JudgeRecord) {
         let tool = call.request.tool.clone();
+        let inputs = inputs.map(|context| pv_judge::JudgeInputs {
+            tool: tool.clone(),
+            arguments_json: call.request.arguments.to_string(),
+            context,
+        });
         let evidence = pv_sandbox::JudgeEvidence {
             outcomes,
             drift_tripped: judge.drift_tripped(),
@@ -4256,6 +4269,7 @@ impl AppState {
         record.policy = deciding_policy;
         record.pilot_cap_reached = pilot_cap_reached;
         record.drift_tripped = evidence.drift_tripped;
+        record.inputs = inputs;
         judge.count_decision(decision.action, enforced);
         (verdict, record)
     }
@@ -5041,6 +5055,8 @@ struct Prejudged {
     call: pv_sandbox::ValidatedCall,
     outcomes: Vec<pv_judge::JudgeOutcome>,
     judge_us: u64,
+    /// The context the judge saw, when records keep it.
+    inputs: Option<pv_judge::SessionContext>,
 }
 
 /// A verdict reached without consulting the semantic judge.

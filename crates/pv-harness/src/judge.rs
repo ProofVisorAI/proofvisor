@@ -556,6 +556,13 @@ pub struct JudgeConfig {
     /// Standing rules re-pinned after context compression.
     #[serde(default)]
     pub standing_rules: Vec<StandingRuleConfig>,
+    /// Keep in each judged call's record what the judge was asked (the
+    /// tool, the validated arguments and the context), so `pvctl
+    /// judge-export` can turn recorded calls into a labelled set. Off by
+    /// default: the arguments and mission tasks then reach the audit
+    /// stream.
+    #[serde(default)]
+    pub record_inputs: bool,
 }
 
 fn default_max_concurrency() -> usize {
@@ -1171,6 +1178,7 @@ pub struct JudgeService {
     /// Judge calls in flight per agent instance, and the most one may have.
     caller_in_flight: parking_lot::Mutex<HashMap<String, usize>>,
     caller_share: usize,
+    record_inputs: bool,
     trace: Option<JudgeTraceConfig>,
     breaker: Option<JudgeBreakerConfig>,
     standing_rules: Vec<StandingRuleConfig>,
@@ -1321,6 +1329,7 @@ impl JudgeService {
             shared_denials: std::sync::OnceLock::new(),
             last_shared: parking_lot::Mutex::new(HashMap::new()),
             caller_in_flight: parking_lot::Mutex::new(HashMap::new()),
+            record_inputs: config.record_inputs,
             caller_share: config.max_concurrency_per_caller.unwrap_or_else(|| {
                 let widest = config
                     .tools
@@ -1523,6 +1532,11 @@ impl JudgeService {
             });
         self.count_calls(std::slice::from_ref(&outcome));
         (outcome, micros_since(started))
+    }
+
+    /// True when records keep what the judge was asked.
+    pub fn records_inputs(&self) -> bool {
+        self.record_inputs
     }
 
     /// Shadow or enforce.

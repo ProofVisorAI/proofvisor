@@ -79,6 +79,7 @@ fn base_judge() -> JudgeConfig {
         trace: None,
         breaker: None,
         standing_rules: Vec::new(),
+        record_inputs: false,
     }
 }
 

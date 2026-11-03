@@ -76,6 +76,7 @@ fn judge_config(deadline_ms: u64, max_output_chars: usize) -> JudgeConfig {
         }),
         breaker: None,
         standing_rules: Vec::new(),
+        record_inputs: false,
     }
 }
 

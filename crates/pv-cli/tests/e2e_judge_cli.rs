@@ -284,6 +284,80 @@ fn mismatch_verdict(p: u32) -> pv_judge::JudgeOutcome {
     })
 }
 
+/// Recorded calls whose inputs were kept become a labelled set to fill
+/// in: one example per predicate, label empty, the judge's answer as a
+/// hint; calls recorded without inputs are counted and skipped.
+#[test]
+fn judge_export_turns_recorded_calls_into_a_labelled_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(dir.path(), 9, TOOL_WITH_OPT_IN, "cloud");
+    let policy = pv_harness::HarnessConfig::from_toml(&std::fs::read_to_string(&config).unwrap())
+        .unwrap()
+        .judge
+        .unwrap()
+        .threshold_policy()
+        .unwrap();
+    let bridge = dir.path().join("export-bridge");
+    std::fs::create_dir_all(bridge.join("topics/agent.tool_call")).unwrap();
+    std::fs::write(
+        bridge.join("manifest.yaml"),
+        "manifest_version: 1\nname: export\ntopics:\n  - name: agent.tool_call\n    partitions: 1\n    retention: {hot_hours: 24}\n",
+    )
+    .unwrap();
+    let with_inputs = |amount: f64| {
+        move |record: &mut pv_judge::JudgeRecord| {
+            record.inputs = Some(pv_judge::JudgeInputs {
+                tool: "refund_order".into(),
+                arguments_json: json!({"order": "1001", "amount": amount}).to_string(),
+                context: pv_judge::SessionContext {
+                    task: Some("Refund order 1001".into()),
+                    charter: "billing-agent".into(),
+                    ..pv_judge::SessionContext::default()
+                },
+            });
+        }
+    };
+    let lines = [
+        judged_event(&policy, 0, mismatch_verdict(820_000), with_inputs(9_000.5)),
+        judged_event(&policy, 1, mismatch_verdict(100_000), with_inputs(12.0)),
+        judged_event(&policy, 2, mismatch_verdict(900_000), |_| {}),
+    ];
+    std::fs::write(
+        bridge.join("topics/agent.tool_call/p0.jsonl"),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+    let data_dir = bridge.to_string_lossy().into_owned();
+    let output = pvctl(&["judge-export", "--data-dir", &data_dir]);
+    assert!(output.status.success(), "{}", text(&output));
+    let examples: Vec<Value> = String::from_utf8(output.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(examples.len(), 2, "{}", text(&output));
+    assert_eq!(examples[0]["predicate_id"], "arg_matches_task@1");
+    assert_eq!(examples[0]["tool"], "refund_order");
+    assert_eq!(examples[0]["arguments"]["amount"], 9_000.5);
+    assert_eq!(examples[0]["context"]["task"], "Refund order 1001");
+    assert_eq!(examples[0]["label"], "");
+    assert!(examples[0]["source"]
+        .as_str()
+        .unwrap()
+        .contains("judge said mismatch at 0.82"));
+    assert!(
+        text(&output).contains("1 recorded without inputs"),
+        "{}",
+        text(&output)
+    );
+    // The file is the calibration format; it needs labels before use.
+    let text_set = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(pv_judge::calibration::load_jsonl(&text_set).unwrap().len(), 2);
+    // Only the calls the judge would have blocked.
+    let blocked = pvctl(&["judge-export", "--data-dir", &data_dir, "--would-block-only"]);
+    assert_eq!(String::from_utf8(blocked.stdout).unwrap().lines().count(), 1);
+}
+
 #[test]
 fn judge_replay_checks_recorded_decisions_and_tries_other_thresholds() {
     let dir = tempfile::tempdir().unwrap();

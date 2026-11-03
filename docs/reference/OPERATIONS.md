@@ -440,6 +440,24 @@ binary across a SIGKILL and restart, then drives a timeout, a malformed
 answer, saturation and a dead judge; `a_local_judge_with_the_wrong_model_refuses_to_boot`
 covers the hash mismatch.
 
+### Building a labelled set from recorded calls
+
+With `[judge] record_inputs = true`, each judged call's record keeps
+what the judge was asked. `pvctl judge-export` writes those calls as a
+labelled set in the format `pvctl judge-calibrate` reads, one example
+per predicate, with an empty `label` for a reviewer to set and the
+judge's own answer in `source` as a hint:
+
+```bash
+pvctl judge-export --data-dir data/bridge > to-label.jsonl
+pvctl judge-export --data-dir data/bridge --would-block-only --predicate arg_matches_task@1 > disputed.jsonl
+```
+
+Shadow mode is the natural source: the judge scores every tagged call
+without blocking any. Once reviewers have set the labels, the file is a
+labelled set for `pvctl judge-calibrate` and for training a local
+model. The harness ships no labelled data and no trained model.
+
 ### Replaying recorded decisions
 
 `pvctl judge-replay` reads every judged `agent.tool_call` record from an

@@ -116,9 +116,10 @@ presets, `doctor`, `health`, `start`, `sidecar`, `keygen`, `pubkey`,
 `session-promote`, `token-revoke`, `instance-revoke`, `config-validate`,
 `console-sync` (uploads evidence to the hosted console, with a watch
 mode), `loadgen`, `judge-calibrate` (measures a semantic-judge model on
-a labelled set and fails below set floors) and `judge-replay` (replays
+a labelled set and fails below set floors), `judge-replay` (replays
 recorded judge decisions against the configured or other thresholds;
-see section 11).
+see section 11) and `judge-export` (turns judged calls recorded with
+`record_inputs` into a labelled set for reviewers to label).
 
 ## 5. The hosted console (proofvisor.com/app and api.proofvisor.com)
 

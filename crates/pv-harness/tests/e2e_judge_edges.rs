@@ -95,6 +95,7 @@ fn judge_config(mode: JudgeModeConfig, endpoint: &str) -> JudgeConfig {
         trace: None,
         breaker: None,
         standing_rules: Vec::new(),
+        record_inputs: false,
     }
 }
 
