@@ -1552,6 +1552,16 @@ impl JudgeService {
         self.record_inputs
     }
 
+    /// Count a judged call whose arguments were too long to record.
+    pub(crate) fn count_inputs_left_out(&self) {
+        self.metrics
+            .counter(
+                "pv_judge_inputs_not_recorded_total",
+                "Judged calls whose arguments were too long for record_inputs to keep",
+            )
+            .inc();
+    }
+
     /// Shadow or enforce.
     pub fn mode(&self) -> JudgeMode {
         self.mode
