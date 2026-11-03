@@ -355,6 +355,11 @@ impl From<pv_bridge::BusError> for FinalizeError {
         }
     }
 }
+/// Automatic promotions (sessions holding a judge trace verdict) done in
+/// one reconciler tick.
+pub const MAX_JUDGED_PROMOTIONS_PER_TICK: usize = 32;
+/// Longest one automatic promotion may take before it is counted as failed.
+pub const JUDGED_PROMOTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Shared asynchronous finalization service.
 #[derive(Clone)]
@@ -3572,12 +3577,27 @@ impl Finalizer {
 
     /// Promote the closed unsigned sessions that hold a semantic-judge
     /// trace verdict, so a receipt covers each verdict within a reconciler
-    /// tick of the session's close. A failure is retried on later ticks,
-    /// a few times, then logged and counted.
+    /// tick of the session's close. At most [`MAX_JUDGED_PROMOTIONS_PER_TICK`]
+    /// a tick, each within [`JUDGED_PROMOTION_DEADLINE`], so a burst of
+    /// sessions or one stuck promotion cannot hold up the tick's other
+    /// work; the rest wait for later ticks. A failure (a timeout counts as
+    /// one) is retried on later ticks, a few times, then logged and counted.
     pub async fn promote_judged_sessions(&self, sessions: &SessionRegistry) -> usize {
         let mut promoted = 0;
-        for session in sessions.judged_unpromoted() {
-            match self.promote(Arc::clone(&session)).await {
+        for session in sessions
+            .judged_unpromoted()
+            .into_iter()
+            .take(MAX_JUDGED_PROMOTIONS_PER_TICK)
+        {
+            let outcome = tokio::time::timeout(JUDGED_PROMOTION_DEADLINE, self.promote(Arc::clone(&session)))
+                .await
+                .unwrap_or_else(|_| {
+                    Err(FinalizeError::Promotion(format!(
+                        "promotion took longer than {} s",
+                        JUDGED_PROMOTION_DEADLINE.as_secs()
+                    )))
+                });
+            match outcome {
                 Ok(_) => {
                     session.judged_promotion_done();
                     promoted += 1;
