@@ -4438,7 +4438,8 @@ mod tests {
             label = "mismatch"
             deny_above = 0.7
             [drift]
-            state_file = "{state}"
+            # A literal string: a Windows path holds backslashes.
+            state_file = '{state}'
             sample_every = 1
             min_reviews_per_band = 2
             "#,
