@@ -57,6 +57,9 @@ const SHARED_DENIAL_MAX_AGE_MS: u64 = 24 * 3_600_000;
 /// A refusal of a kind this instance already shared within this time is
 /// not written again: repeating one refusal cannot fill a shared list.
 const SHARED_DENIAL_REPEAT_MS: u64 = 3_600_000;
+/// Most bytes read from the end of each partition of the recorded
+/// `agent.tool_call` topic when the refusal log is rebuilt at startup.
+pub const RESTORE_TAIL_BYTES: u64 = 32 * 1024 * 1024;
 /// Longest wait for room in the audit queue for a semantic judge event.
 const JUDGE_EVENT_WAIT: Duration = Duration::from_secs(2);
 /// Shared refusal reads background judging may have in flight.
@@ -1617,6 +1620,70 @@ impl JudgeService {
         }
     }
 
+    /// Rebuild this instance's refusal log from recorded `agent.tool_call`
+    /// events (the session chain), so a restart does not forget the
+    /// refusals the judge sees as context. Only refusals the live path
+    /// records count: policy-stage refusals of tools `known_tool` accepts,
+    /// with a known code, made in the last 24 hours. Nothing is written
+    /// to a shared store, which keeps its own. Returns how many refusals
+    /// were restored.
+    pub(crate) fn restore_denials(
+        &self,
+        events: &[Value],
+        known_tool: &dyn Fn(&str) -> bool,
+        now_ms: u64,
+    ) -> usize {
+        let mut restored: Vec<(u64, PriorDenial, String)> = events
+            .iter()
+            .filter(|event| event.get("class_name").and_then(Value::as_str) == Some("agent.tool_call"))
+            .filter_map(|event| {
+                let payload = event.get("payload")?;
+                if payload.get("allowed") != Some(&Value::Bool(false))
+                    || payload.get("stage").and_then(Value::as_str) != Some("policy")
+                {
+                    return None;
+                }
+                let tool = payload.get("tool").and_then(Value::as_str)?;
+                let code = payload.get("denial_code").and_then(Value::as_str)?;
+                let at_ms = event.get("time").and_then(Value::as_u64)?;
+                let session = event.get("session_uid").and_then(Value::as_str)?;
+                let instance = event.pointer("/ai_agent/instance_uid").and_then(Value::as_str)?;
+                let known_code =
+                    serde_json::from_value::<pv_sandbox::DenialCode>(Value::String(code.to_owned())).is_ok();
+                let recent = at_ms <= now_ms && at_ms >= now_ms.saturating_sub(SHARED_DENIAL_MAX_AGE_MS);
+                if !known_tool(tool) || !known_code || !recent {
+                    return None;
+                }
+                let predicate_id = (payload.get("policy").and_then(Value::as_str)
+                    == Some(pv_sandbox::JUDGE_POLICY_NAME))
+                .then(|| {
+                    payload
+                        .pointer("/judge/decision_predicate")
+                        .and_then(Value::as_str)
+                })
+                .flatten()
+                .filter(|id| self.runner.registry().get(id).is_some())
+                .map(str::to_owned);
+                let denial = PriorDenial {
+                    tool: tool.to_owned(),
+                    denial_code: code.to_owned(),
+                    predicate_id,
+                    at_ms,
+                    source: DenialSource::Session,
+                    instance_uid: instance.to_owned(),
+                };
+                Some((at_ms, denial, session.to_owned()))
+            })
+            .collect();
+        restored.sort_by_key(|(at_ms, _, _)| *at_ms);
+        let mut log = self.denials.lock();
+        for (_, denial, session) in &restored {
+            log.push(session_key(&denial.instance_uid, session), denial.clone());
+            log.push(instance_key(&denial.instance_uid), denial.clone());
+        }
+        restored.len()
+    }
+
     /// Record a refusal under the session and the refusing agent.
     pub(crate) fn record_denial(
         &self,
@@ -1886,6 +1953,60 @@ impl JudgeService {
             }
         }
     }
+}
+
+/// The recorded events at the end of each partition of the embedded
+/// Bridge's `agent.tool_call` topic under `data_dir`: at most `tail_bytes`
+/// per partition, newest last within a partition. Missing files, a
+/// missing topic and unreadable lines yield nothing.
+pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -> Vec<Value> {
+    use std::io::{BufRead as _, Read as _, Seek as _};
+    let directory = data_dir.join("topics").join("agent.tool_call");
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_segment = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| name.starts_with('p') && name.ends_with(".jsonl"));
+        if !is_segment {
+            continue;
+        }
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+            continue;
+        };
+        let start = length.saturating_sub(tail_bytes);
+        if file.seek(std::io::SeekFrom::Start(start)).is_err() {
+            continue;
+        }
+        let mut reader = std::io::BufReader::new(file.take(tail_bytes));
+        let mut line = Vec::new();
+        // Starting mid-file: the first line is a fragment.
+        if start > 0 && reader.read_until(b'\n', &mut line).is_err() {
+            continue;
+        }
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                // An unterminated last line is an append still in flight.
+                Ok(0) | Err(_) => break,
+                Ok(_) if line.last() != Some(&b'\n') => break,
+                Ok(_) => {}
+            }
+            if let Ok(stored) = serde_json::from_slice::<Value>(&line) {
+                if let Some(event) = stored.get("value") {
+                    events.push(event.clone());
+                }
+            }
+        }
+    }
+    events
 }
 
 /// What [`JudgeService::record_denial`] remembers a shared write by: the
@@ -3766,6 +3887,97 @@ mod tests {
         );
         let off = policy("min_confidence = 0.0");
         assert_eq!(off.decide(&verdict(490_000), &never).action, JudgeAction::Allow);
+    }
+
+    /// A restart rebuilds the refusals the judge sees from the recorded
+    /// tool-call events, with the rules the live path records by.
+    #[test]
+    fn refusals_are_restored_from_recorded_events() {
+        let judge = service(None);
+        let now = pv_core::time::now_ms();
+        let event = |minutes_ago: u64, session: &str, payload: Value| {
+            serde_json::json!({
+                "class_name": "agent.tool_call",
+                "time": now - minutes_ago * 60_000,
+                "session_uid": session,
+                "ai_agent": {"instance_uid": "agent-1"},
+                "payload": payload,
+            })
+        };
+        let refused = |tool: &str, stage: &str, code: &str| serde_json::json!({"tool": tool, "allowed": false, "stage": stage, "denial_code": code});
+        let events = vec![
+            event(60, "s-1", refused("refund_order", "policy", "POLICY_DENIED")),
+            event(
+                30,
+                "s-1",
+                serde_json::json!({
+                    "tool": "wire_funds", "allowed": false, "stage": "policy",
+                    "policy": pv_sandbox::JUDGE_POLICY_NAME, "denial_code": "JUDGE_DENIED",
+                    "judge": {"decision_predicate": "arg_matches_task@1"},
+                }),
+            ),
+            // Not restored: a schema refusal, an undefined tool, a day
+            // old, an allowed call, an unknown code.
+            event(10, "s-1", refused("refund_order", "schema", "SCHEMA_INVALID")),
+            event(10, "s-1", refused("made_up", "policy", "POLICY_DENIED")),
+            event(
+                25 * 60,
+                "s-1",
+                refused("refund_order", "policy", "BUDGET_EXCEEDED"),
+            ),
+            event(
+                10,
+                "s-1",
+                serde_json::json!({"tool": "refund_order", "allowed": true}),
+            ),
+            event(10, "s-1", refused("refund_order", "policy", "NOT_A_CODE")),
+        ];
+        let known = |tool: &str| matches!(tool, "refund_order" | "wire_funds");
+        assert_eq!(judge.restore_denials(&events, &known, now), 2);
+        let context = judge.context(&ContextInputs {
+            session_id: "s-1",
+            instance_uid: "agent-1",
+            tool: "wire_funds",
+            intent: String::new(),
+            missions: Vec::new(),
+            charter: "c",
+            delegation_depth: 0,
+            parents: Vec::new(),
+        });
+        let seen: Vec<(&str, &str, Option<&str>)> = context
+            .prior_denials
+            .iter()
+            .map(|d| (d.tool.as_str(), d.denial_code.as_str(), d.predicate_id.as_deref()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("wire_funds", "JUDGE_DENIED", Some("arg_matches_task@1")),
+                ("refund_order", "POLICY_DENIED", None),
+            ]
+        );
+        // A child's view of this agent as its parent has them too.
+        assert_eq!(judge.denials.lock().recent(&instance_key("agent-1")).len(), 2);
+    }
+
+    /// Only the end of each partition is read, a torn first or last line
+    /// is skipped, and a missing topic yields nothing.
+    #[test]
+    fn the_end_of_each_partition_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(recorded_tool_calls(dir.path(), 1_000).is_empty());
+        let topic = dir.path().join("topics/agent.tool_call");
+        std::fs::create_dir_all(&topic).unwrap();
+        let line = |n: u64| format!("{}\n", serde_json::json!({"offset": n, "value": {"n": n}}));
+        let mut text: String = (0..100).map(line).collect();
+        text.push_str("{\"offset\": 100, \"value\""); // an append in flight
+        std::fs::write(topic.join("p0.jsonl"), &text).unwrap();
+        std::fs::write(topic.join("notes.txt"), "not a segment").unwrap();
+        let all = recorded_tool_calls(dir.path(), 1_000_000);
+        assert_eq!(all.len(), 100);
+        let tail = recorded_tool_calls(dir.path(), u64::try_from(line(99).len() * 3).unwrap());
+        assert!(!tail.is_empty() && tail.len() < 4, "{tail:?}");
+        assert_eq!(tail.last().unwrap()["n"], 99);
     }
 
     #[test]

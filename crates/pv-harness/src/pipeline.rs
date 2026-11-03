@@ -2154,6 +2154,23 @@ impl AppState {
         // A store shared between instances also keeps the refusals the
         // judge sees, so delegated agents on other instances see them.
         judge.share_denials(Arc::clone(&self.store));
+        // The refusals the judge sees outlive a restart: rebuilt from the
+        // recorded tool-call events of an embedded Bridge on this machine.
+        if matches!(self.config.bridge(), Ok(crate::config::BridgeBackend::Embedded)) {
+            let events = crate::judge::recorded_tool_calls(
+                std::path::Path::new(&self.config.bridge_data_dir),
+                crate::judge::RESTORE_TAIL_BYTES,
+            );
+            let sandbox = Arc::clone(&self.sandbox);
+            let known_tool = |tool: &str| sandbox.has_schema(tool) || judge.tasks_for(tool).is_some();
+            let restored = judge.restore_denials(&events, &known_tool, pv_core::time::now_ms());
+            if restored > 0 {
+                tracing::info!(
+                    restored,
+                    "semantic judge: earlier refusals restored from the recorded events"
+                );
+            }
+        }
         *self.judge_hooks.write() = Some(Arc::new(crate::judge::JudgeHooks::new(
             Arc::clone(&judge),
             self.worker.clone(),
