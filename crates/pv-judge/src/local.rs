@@ -194,7 +194,7 @@ fn infer(
     // A request longer than the model reads would be scored on its first
     // part only, which the caller can shape: it is not judged at all.
     if encoding.get_ids().len() > max_tokens {
-        return Err(JudgeError::Malformed(format!(
+        return Err(JudgeError::TooLong(format!(
             "the request is {} tokens, longer than the model reads ({max_tokens}); the call cannot \
              be judged in full",
             encoding.get_ids().len()

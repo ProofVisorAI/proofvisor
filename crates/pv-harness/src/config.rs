@@ -2475,25 +2475,28 @@ impl HarnessConfig {
                         && adapter.kind != crate::judge::JudgeAdapterKind::Local
                 })
             };
-            let mut hidden: Vec<&str> = Vec::new();
-            if judge
+            let trace = judge
                 .trace
                 .as_ref()
-                .is_some_and(|trace| redacting(&trace.adapter))
-            {
-                hidden.extend(["/source", "/output"]);
-            }
-            if judge
+                .is_some_and(|trace| redacting(&trace.adapter));
+            let breaker = judge
                 .breaker
                 .as_ref()
-                .is_some_and(|breaker| redacting(&breaker.adapter))
-            {
+                .is_some_and(|breaker| redacting(&breaker.adapter));
+            let mut hidden: Vec<&str> = Vec::new();
+            if trace {
+                hidden.extend(["/source", "/output"]);
+            }
+            if breaker {
                 hidden.extend(["/previous", "/current"]);
             }
             for path in &self.redaction_paths {
-                if hidden
-                    .iter()
-                    .any(|name| path == name || path.starts_with(&format!("{name}/")))
+                // The empty pointer is the whole value.
+                let whole = path.is_empty() && (trace || breaker);
+                if whole
+                    || hidden
+                        .iter()
+                        .any(|name| path == name || path.starts_with(&format!("{name}/")))
                 {
                     errors.push(format!(
                         "redaction_paths entry {path:?} would hide what the judge reads in \

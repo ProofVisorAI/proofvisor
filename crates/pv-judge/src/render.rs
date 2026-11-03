@@ -134,7 +134,7 @@ pub fn request_too_long(request: &JudgeRequest) -> Option<crate::adapter::JudgeE
             .as_deref()
             .map_or(0, |task| task.chars().count());
         (length > MAX_TASK_CHARS).then(|| {
-            crate::adapter::JudgeError::Malformed(format!(
+            crate::adapter::JudgeError::TooLong(format!(
                 "the task ({length} characters) is longer than this judge reads ({MAX_TASK_CHARS}); \
                  the call cannot be judged against all of it"
             ))
@@ -157,7 +157,7 @@ pub fn request_too_long(request: &JudgeRequest) -> Option<crate::adapter::JudgeE
 pub fn arguments_too_long(request: &JudgeRequest) -> Option<crate::adapter::JudgeError> {
     let length = rendered_json(&request.validated_args).chars().count();
     (length > MAX_ARGUMENT_CHARS).then(|| {
-        crate::adapter::JudgeError::Malformed(format!(
+        crate::adapter::JudgeError::TooLong(format!(
             "the arguments ({length} characters as rendered) are longer than this judge reads \
              ({MAX_ARGUMENT_CHARS}); the call cannot be judged in full"
         ))

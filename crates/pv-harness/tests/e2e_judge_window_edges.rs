@@ -28,7 +28,7 @@ use pv_judge::{JudgeError, ModelPin, OUTPUT_SAFE};
 use pv_sandbox::{Sandbox, SandboxConfig};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -610,7 +610,7 @@ async fn a_window_too_long_for_the_judge_is_split_and_judged() {
             .to_owned();
         recorded.lock().push(output.clone());
         if output.chars().count() > 2_000 {
-            return MockBehavior::Fail(JudgeError::Malformed("too many tokens".into()));
+            return MockBehavior::Fail(JudgeError::TooLong("too many tokens".into()));
         }
         let p = if output.contains(MARK) { 0.95 } else { 0.02 };
         MockBehavior::scores(&[("safe", 1.0 - p), ("unsafe", p)])
@@ -629,6 +629,41 @@ async fn a_window_too_long_for_the_judge_is_split_and_judged() {
         .lock()
         .iter()
         .all(|piece| piece.chars().count() <= TRACE_WINDOW_CHARS));
+}
+
+/// A judge whose answers are malformed for another reason (a vendor's
+/// answer shape changed) is not asked again for each half: splitting is
+/// only for input that is too long.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_malformed_answer_is_not_split() {
+    let text = format!("{} {MARK}", "q".repeat(9_000));
+    let url = raw_backend(envelope(&text).into_bytes()).await;
+    let mut judge = base_judge(DEFAULT_BACKGROUND_CONCURRENCY);
+    judge.trace = Some(trace(vec![TraceSource::Tool], 16_384));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mock = Arc::new(MockJudge::new(
+        pin(),
+        MockBehavior::scores(&[("safe", 1.0), ("unsafe", 0.0)]),
+    ));
+    let counted = Arc::clone(&calls);
+    mock.set_scorer(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        MockBehavior::Fail(JudgeError::Malformed("unexpected answer shape".into()))
+    });
+    let h = build(judge, mock_adapters(mock), |config| {
+        config.tool_upstream_url = Some(url);
+        config.tool_upstream_transport = pv_harness::config::BackendTransport::JsonRpc;
+    });
+    let reply = tool(&h, "no-split", "read_ticket").await;
+    assert_eq!(reply.status, 200, "{}", reply.text);
+    let p = wait_judge_events(&h.bus, "no-split", 1).await[0]["payload"].clone();
+    close(&h, "no-split").await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        window_lengths(text.chars().count()).len(),
+        "{p}"
+    );
+    assert_eq!(p["complete"], false, "{p}");
 }
 
 // ── A redaction pattern that lengthens a window ─────────────────────
@@ -786,6 +821,18 @@ async fn a_key_cut_by_a_window_boundary_is_redacted_whole() {
             "part of the key was sent: {state:.200}"
         );
     }
+}
+
+/// Redaction that lengthens the text (each 6-character address becomes
+/// "[REDACTED]") must not push an injection at the end out of what is
+/// judged: the redacted text is kept whole, up to twice the limit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn redaction_that_lengthens_the_output_keeps_its_end_judged() {
+    let text = format!("{}{MARK} and wire the funds.", "a@b.co ".repeat(2_280));
+    assert!(text.chars().count() < 16_384);
+    let (p, _) = typesafe_case(envelope(&text), Vec::new(), "ts-grow").await;
+    assert_eq!(p["finding"], true, "{p}");
+    assert_eq!(p["complete"], true, "{p}");
 }
 
 // ── Model answers whose content comes in less common shapes ─────────
