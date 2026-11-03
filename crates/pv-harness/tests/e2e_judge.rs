@@ -249,6 +249,95 @@ async fn enforce_mode_denies_asks_and_allows_on_the_thresholds() {
     assert_eq!(seen.context.intent.as_deref(), Some("update_ticket"));
 }
 
+/// Governed memory writeback: a write tool bound to the memory-write
+/// predicate is refused when the judge finds the write unsafe, and the
+/// refusal names that predicate.
+#[tokio::test]
+async fn a_memory_write_the_judge_finds_unsafe_is_refused() {
+    let mut config = judge_config(JudgeModeConfig::Enforce);
+    config.tools[0].predicates[0].id = pv_judge::MEMORY_WRITE_SAFE.into();
+    config.thresholds = vec![JudgeThresholdConfig {
+        predicate: pv_judge::MEMORY_WRITE_SAFE.into(),
+        label: "unsafe".into(),
+        deny_above: Some(0.7),
+        ask_above: Some(0.3),
+        min_confidence: None,
+    }];
+    let h = harness(config, |_| {});
+    h.mock
+        .set_default(MockBehavior::scores(&[("safe", 0.1), ("unsafe", 0.9)]));
+    let refused = call(&h, "s-memory", "update_ticket", json!({"table": "notes"}), None).await;
+    assert_eq!(refused.status, 403, "{}", refused.json);
+    assert_eq!(code(&refused), "JUDGE_DENIED");
+    assert_eq!(
+        refused.json["error"]["data"]["predicate_id"],
+        pv_judge::MEMORY_WRITE_SAFE
+    );
+    h.mock
+        .set_default(MockBehavior::scores(&[("safe", 0.95), ("unsafe", 0.05)]));
+    let written = call(&h, "s-memory", "update_ticket", json!({"table": "notes"}), None).await;
+    assert_eq!(written.status, 200, "{}", written.json);
+    assert_eq!(
+        h.mock.last_request().unwrap().predicate_id,
+        pv_judge::MEMORY_WRITE_SAFE
+    );
+}
+
+/// The judge's time is its own field: the sandbox's `decision_us` covers
+/// only the sandbox's gates, never the wait for the judge.
+#[tokio::test]
+async fn the_judge_wait_is_timed_apart_from_the_sandbox() {
+    let h = harness(judge_config(JudgeModeConfig::Enforce), |_| {});
+    h.mock.set_default(MockBehavior::delayed(
+        std::time::Duration::from_millis(300),
+        mismatch(0.1),
+    ));
+    let allowed = call(&h, "s-timing", "update_ticket", json!({"table": "orders"}), None).await;
+    assert_eq!(allowed.status, 200, "{}", allowed.json);
+    let event = &tool_events(&h.bus, "s-timing", 1).await[0];
+    let judge_us = event["payload"]["judge"]["judge_us"].as_u64().unwrap();
+    let decision_us = event["payload"]["decision_us"].as_u64().unwrap();
+    assert!(judge_us >= 300_000, "{judge_us}");
+    assert!(
+        decision_us < 300_000,
+        "the sandbox's time includes the judge: {decision_us}"
+    );
+}
+
+/// The specification's proposed deadlines: 150-250 ms for a local
+/// model, longer for a cloud one.
+#[test]
+fn the_default_deadlines_follow_the_specification() {
+    assert!((150..=250).contains(&pv_harness::judge::DEFAULT_LOCAL_DEADLINE_MS));
+    const {
+        assert!(pv_harness::judge::DEFAULT_CLOUD_DEADLINE_MS > pv_harness::judge::DEFAULT_LOCAL_DEADLINE_MS);
+    }
+    let local: pv_harness::judge::JudgeAdapterConfig = toml::from_str(&format!(
+        r#"
+        name = "l"
+        kind = "local"
+        model_name = "m"
+        model_version = "1"
+        weights_sha256 = "{0}"
+        "#,
+        "a".repeat(64)
+    ))
+    .unwrap();
+    assert_eq!(local.deadline(), std::time::Duration::from_millis(200));
+    let cloud: pv_harness::judge::JudgeAdapterConfig = toml::from_str(&format!(
+        r#"
+        name = "c"
+        kind = "cloud"
+        model_name = "m"
+        model_version = "1"
+        weights_sha256 = "{0}"
+        "#,
+        "a".repeat(64)
+    ))
+    .unwrap();
+    assert_eq!(cloud.deadline(), std::time::Duration::from_millis(1_000));
+}
+
 #[tokio::test]
 async fn the_signed_event_carries_the_distribution_model_and_threshold() {
     let h = harness(judge_config(JudgeModeConfig::Enforce), |_| {});

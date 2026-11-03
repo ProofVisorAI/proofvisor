@@ -560,7 +560,7 @@ Built-in predicates:
 | `max_concurrency_per_caller` | a quarter of `max_concurrency`, and at least the most predicates bound to one tool | Judge calls one agent instance may have in flight, counting one per predicate (a tool with three predicates takes three). It must be at least the most predicates bound to one tool. Beyond it the call fails as `saturated` (by default, refused), so one caller cannot fill the judge and make every other agent's judged calls fail. It applies to callers with a validated identity; without one (`require_identity = false`) callers cannot be told apart, and only `max_concurrency` applies. |
 | `adapters` | `[]` | Judge backends (`[[judge.adapters]]`, below). |
 | `tools` | required | Tools tagged for review (`[[judge.tools]]`): `tool`, `predicates` (a list of `{ id = "<predicate>", adapter = "<adapter name>" }`), and `allow_cloud` (default `false`; must be `true` to bind a cloud adapter, because the tool's arguments then leave the harness). |
-| `thresholds` | `[]` | Policy thresholds (`[[judge.thresholds]]`): `predicate`, `label`, and at least one of `deny_above`, `ask_above`, `min_confidence`, written as probabilities. Comparisons are strict: `deny_above = 0.7` denies at 0.700001 and above. `ask_above` must not exceed `deny_above`. `min_confidence` asks when the most probable label is below it. In `enforce` mode every bound predicate needs a threshold or a policy using interface version 2, or the daemon refuses to start. |
+| `thresholds` | `[]` | Policy thresholds (`[[judge.thresholds]]`): `predicate`, `label`, and at least one of `deny_above`, `ask_above`, `min_confidence`, written as probabilities. Comparisons are strict: `deny_above = 0.7` denies at 0.700001 and above. `ask_above` must not exceed `deny_above`. `min_confidence` asks when the most probable label is below it (default `0.6`, so a near-even verdict asks instead of being allowed; `0` turns the check off). In `enforce` mode every bound predicate needs a threshold or a policy using interface version 2, or the daemon refuses to start. |
 | `on_failure` | see notes | What a failure does (`[judge.on_failure]`): `timeout`, `unavailable` (crash or unreachable), `saturated` default to `deny`; `malformed` (output that does not fit the predicate's labels or is not a probability distribution) defaults to `ask`. Each accepts `deny` or `ask`; `allow` is not accepted. A model that answers with an unpinned identity always denies. |
 | `predicates` | `[]` | Operator-defined predicates (`[[judge.predicates]]`): `id` (`name@version`), `labels` (2 to 16, `[a-z0-9_]`), `positive_label` (the risky label, used by calibration), `description`. |
 | `pilot` | none | `[judge.pilot]` `daily_block_cap`: in `enforce` mode, the most score-based judge blocks per tool and agent instance per UTC day (per agent, so one agent cannot use up the cap and let other agents' blocked calls through). Callers without a validated identity cannot be told apart, so they share one count: when `require_identity = false`, one of them can use up the cap for all of them. Later ones are recorded with `pilot_cap_reached` and let through. A judge failure always keeps its block, and so does any call where a judged predicate is in ask-by-default mode after the calibration drift check. The counters live in the state store, so all instances sharing it share the cap. |
@@ -610,15 +610,18 @@ enterprise buyers when describing where their data goes. The cloud contract is d
 translator in front of its API, or by speaking the contract directly.
 
 **TypeSafe (Jev).** `kind = "typesafe"` calls TypeSafe's System One API
-directly, one request per predicate. It was built from TypeSafe's
+directly, one request per predicate. As of October 2026 TypeSafe offers
+no service-level agreement and no known on-premises option, and its
+latency and pricing are not confirmed: do not promise it to customers. It was built from TypeSafe's
 published reference and tested against a local stand-in that speaks
 that format, not against the live service; a test runs against the live
 API when `PV_TYPESAFE_API_KEY_FILE` names a file holding a key.
 
 - What is sent: the request rendered with the local classifier's
-  template (version 1) after redaction, so the operator's context comes
-  first and the arguments last. A call whose rendered arguments exceed
-  8192 characters is not sent; it fails as `malformed`. One `choice`
+  template (version 2) after redaction, so the operator's context comes
+  first and the arguments last. A call whose rendered arguments, or the
+  tasks of whose missions together, exceed 8192 characters is not sent;
+  it fails as `malformed`. One `choice`
   question asks the predicate's question, with its labels as the
   options. The prompt is never sent, and no header that widens what
   TypeSafe accepts (images, long context) is set.
@@ -671,14 +674,22 @@ breaker's second opinions (`kind: "breaker"`, with `delta_ppm`, the
 range, and `looping`), and shadow-mode would-be blocks (`kind: "shadow"`,
 with the admission record) are published on the `agent.judge` topic. Each
 is also an ATIF step, so a session's receipt covers it whether the
-session is signed (event chain) or unsigned (trajectory digest). When
+session is signed (event chain) or unsigned (trajectory digest). A trace
+finding has OCSF severity 4 (high), a shadow would-be block 3 (medium),
+and the others 1 (informational). When the audit queue is full, an
+event waits up to 2 seconds for room (a session's close waits with it);
+one that still finds none marks its session's record as incomplete, as
+a lost response capture does. When
 `[judge]` is set, an embedded Bridge created before this topic existed
 gains it at startup; with your own `bridge_manifest_path`, add an
 `agent.judge` topic to that file, or the daemon refuses to start and
 names the file.
 
 Judge refusals name the predicate in `error.data.predicate_id` and the
-policy `judge.thresholds` in the audit record.
+policy `judge.thresholds` in the audit record. A refusal by a policy
+using interface version 2, which reads the verdicts, lists the judged
+predicates in `error.data.predicate_ids` (and names the predicate in
+`error.data.predicate_id` when there is only one).
 
 The record: every judged call's `agent.tool_call` event payload carries
 a `judge` object, and the ATIF tool call carries the same object in

@@ -563,7 +563,16 @@ impl Sandbox {
         let outcomes: &[JudgeOutcome] = judge.map_or(&[], |evidence| evidence.outcomes.as_slice());
         let mut held: Option<ToolVerdict> = None;
 
-        // Gate 3: policy chain (first deny wins).
+        // Gate 3: policy chain (first deny wins). A policy that read the
+        // judge's verdicts names their predicates in its refusal.
+        let judged: Vec<&str> = outcomes.iter().map(JudgeOutcome::predicate_id).collect();
+        let refusal = |policy: &dyn PolicyEngine, code: DenialCode, reason: &str| {
+            if policy.sees_judge() && !judged.is_empty() {
+                crate::rpc::judged_policy_error(req.id.as_ref(), code, reason, &judged)
+            } else {
+                denial_error(req.id.as_ref(), code, reason)
+            }
+        };
         for policy in &self.policies {
             match policy.evaluate_with_judge(&req.tool, &req.arguments, outcomes) {
                 PolicyDecision::Allow => {}
@@ -574,8 +583,8 @@ impl Sandbox {
                         stage: "policy",
                         policy: Some(policy.name().to_owned()),
                         denial_code: DenialCode::PolicyDenied,
-                        reason: reason.clone(),
-                        response: denial_error(req.id.as_ref(), DenialCode::PolicyDenied, &reason),
+                        response: refusal(policy.as_ref(), DenialCode::PolicyDenied, &reason),
+                        reason,
                         elapsed_us: elapsed_us(),
                     });
                 }
@@ -587,8 +596,8 @@ impl Sandbox {
                             stage: "policy",
                             policy: Some(policy.name().to_owned()),
                             denial_code: DenialCode::ApprovalRequired,
-                            reason: reason.clone(),
-                            response: denial_error(req.id.as_ref(), DenialCode::ApprovalRequired, &reason),
+                            response: refusal(policy.as_ref(), DenialCode::ApprovalRequired, &reason),
+                            reason,
                             elapsed_us: elapsed_us(),
                         });
                     }
@@ -977,6 +986,65 @@ mod tests {
             code(&admit(&s, &store, "db_write", args, Some(&scored(100_000)))),
             DenialCode::BudgetExceeded
         );
+    }
+
+    /// A policy that reads the judge's verdicts (as a WASM policy with
+    /// interface version 2 does) and refuses any judged call.
+    struct RefusesJudged {
+        sees: bool,
+    }
+
+    impl PolicyEngine for RefusesJudged {
+        fn name(&self) -> &str {
+            "refuses-judged"
+        }
+        fn evaluate(&self, _tool: &str, _arguments: &Value) -> PolicyDecision {
+            PolicyDecision::Allow
+        }
+        fn evaluate_with_judge(
+            &self,
+            _tool: &str,
+            _arguments: &Value,
+            judge: &[JudgeOutcome],
+        ) -> PolicyDecision {
+            if judge.is_empty() {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Deny {
+                    reason: "judged".into(),
+                }
+            }
+        }
+        fn sees_judge(&self) -> bool {
+            self.sees
+        }
+    }
+
+    /// The specification's structured denial carries the predicate id,
+    /// also when the policy, not the thresholds, makes the call.
+    #[test]
+    fn a_policy_that_reads_verdicts_names_their_predicate_when_it_refuses() {
+        let response = |sees: bool| {
+            let s = Sandbox::new(
+                SandboxConfig {
+                    schemas: HashMap::new(),
+                    budget: BudgetSpec::default(),
+                    payout_field: "amount_usd".into(),
+                    require_schema: false,
+                },
+                vec![Box::new(RefusesJudged { sees })],
+            )
+            .unwrap();
+            let store = InMemoryStore::new();
+            match admit(&s, &store, "db_write", json!({}), Some(&scored(100_000))) {
+                ToolVerdict::Blocked { response, .. } => response,
+                other => panic!("expected a block, got {other:?}"),
+            }
+        };
+        let named = response(true);
+        assert_eq!(named["error"]["data"]["code"], "POLICY_DENIED");
+        assert_eq!(named["error"]["data"]["predicate_id"], "arg_matches_task@1");
+        assert!(response(false)["error"]["data"].get("predicate_id").is_none());
     }
 
     #[test]

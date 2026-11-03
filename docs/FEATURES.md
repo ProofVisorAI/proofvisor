@@ -381,6 +381,38 @@ with demonstration data, which is what the public site shows by default.
     the end). Compression never rewrites text, so a missing rule text
     means compression cut it; the check relies on the application
     sending each rule with exactly the configured text.
+  - Other differences from the build specification:
+    - Thresholds are written in `[[judge.thresholds]]` and applied by
+      native code in the policy stage, not by a WAT module. A WASM
+      policy using interface version 2 receives the verdicts and can
+      apply its own thresholds.
+    - The refusals the judge sees as context come from an in-memory
+      log, shared through Redis when it is configured, not from the
+      signed session chain. Without Redis, a restart loses them, so a
+      child agent can be judged without its parent's earlier refusals.
+    - The receipt format is unchanged: verdicts are signed through the
+      event chain (signed sessions) or the trajectory digest (unsigned
+      sessions). A test fixes the judge record's fields instead of a
+      receipt whitelist.
+    - An unsigned session's retroactive receipt is issued on promotion,
+      not automatically within 60 seconds of a trace verdict.
+    - Judge events use their own OCSF class (`agent.judge`, 9907), not
+      the standard Detection Finding class.
+    - Write tools are judged with `memory_write_safe@1` only when an
+      operator binds it to them; there is no built-in notion of write
+      tools.
+    - The calibration drift check runs on each instance separately.
+    - Recorded decisions do not keep the context the judge saw, and no
+      command exports shadow traces into a labelled set.
+    - The pilot's daily cap counts blocks per tool and per agent, not
+      one total; tools cannot be mixed between shadow and enforce in one
+      deployment.
+    - A local model whose hash does not match its pin stops the whole
+      daemon, in shadow mode too, with an error in the log; no metric
+      is sent first.
+    - The calibration check in CI measures the test model on 18
+      synthetic examples; it guards the measuring code, not a model that
+      would be deployed.
   - The breaker's second opinion runs inside the audit worker, so a
     slow judge call delays that session's later audit records by at most
     500 ms per ambiguous step (the limit on the breaker adapter's

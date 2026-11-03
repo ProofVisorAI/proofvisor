@@ -326,8 +326,10 @@ fn judge_replay_checks_recorded_decisions_and_tries_other_thresholds() {
     assert_eq!(report["consistency"]["mismatches"], 0);
     let tool = &report["tools"]["refund_order"];
     assert_eq!(tool["recorded"]["deny"], 2, "0.82 mismatch and the outage");
-    assert_eq!(tool["recorded"]["allow"], 2);
-    assert_eq!(tool["would_block"], 2);
+    // 0.5 against 0.5 is below the default confidence floor (0.6): ask.
+    assert_eq!(tool["recorded"]["ask"], 1);
+    assert_eq!(tool["recorded"]["allow"], 1);
+    assert_eq!(tool["would_block"], 3);
 
     // A stricter threshold (deny above 0.4) would also block the 0.5 call.
     let stricter = dir.path().join("stricter.toml");
