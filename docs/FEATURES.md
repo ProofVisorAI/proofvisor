@@ -382,31 +382,21 @@ with demonstration data, which is what the public site shows by default.
     the end). Compression never rewrites text, so a missing rule text
     means compression cut it; the check relies on the application
     sending each rule with exactly the configured text.
-  - Other differences from the build specification:
+  - Differences from the build specification that remain:
     - Thresholds are written in `[[judge.thresholds]]` and applied by
       native code in the policy stage, not by a WAT module. A WASM
       policy using interface version 2 receives the verdicts and can
-      apply its own thresholds.
-    - The refusals the judge sees as context come from an in-memory
-      log, shared through Redis when it is configured, not from the
-      signed session chain. Without Redis, a restart loses them, so a
-      child agent can be judged without its parent's earlier refusals.
-    - The receipt format is unchanged: verdicts are signed through the
-      event chain (signed sessions) or the trajectory digest (unsigned
-      sessions). A test fixes the judge record's fields instead of a
-      receipt whitelist.
-    - An unsigned session's retroactive receipt is issued on promotion,
-      not automatically within 60 seconds of a trace verdict.
+      apply its own thresholds; `config/policies/judge_thresholds.wat`
+      is an example.
     - Judge events use their own OCSF class (`agent.judge`, 9907), not
-      the standard Detection Finding class.
+      the standard Detection Finding class, so receipt verifiers,
+      console sync and Bridge consumers keep working.
     - Write tools are judged with `memory_write_safe@1` only when an
       operator binds it to them; there is no built-in notion of write
       tools.
-    - The calibration drift check runs on each instance separately.
-    - Recorded decisions do not keep the context the judge saw, and no
-      command exports shadow traces into a labelled set.
     - The pilot's daily cap counts blocks per tool and per agent, not
-      one total; tools cannot be mixed between shadow and enforce in one
+      one total, so one agent cannot use up the cap for the others;
+      tools cannot be mixed between shadow and enforce in one
       deployment.
     - A local model whose hash does not match its pin stops the whole
       daemon, in shadow mode too, with an error in the log; no metric
@@ -414,6 +404,25 @@ with demonstration data, which is what the public site shows by default.
     - The calibration check in CI measures the test model on 18
       synthetic examples; it guards the measuring code, not a model that
       would be deployed.
+  - Built after the specification audit:
+    - The refusals the judge sees are rebuilt at startup from the
+      recorded `agent.tool_call` events of an embedded Bridge (the
+      newest 32 MiB of each partition, the last 24 hours). With an
+      external Bridge and no Redis, a restart still forgets them.
+    - An unsigned session holding a trace verdict is promoted once it
+      closes, on the reconciler's next tick (every 5 seconds by
+      default), so a receipt covers the verdict without anyone asking.
+      A crash between the close and that tick loses the automatic
+      promotion; the session can still be promoted on demand.
+    - With Redis, the drift check (reviews, statistics and the switch
+      to ask-by-default) is shared by every instance.
+    - With `record_inputs = true`, records keep what the judge was
+      asked, and `pvctl judge-export` turns them into a labelled set
+      for reviewers to label.
+  - Still owed, and not something the code can provide:
+    - A labelled data set (reviewers labelling exported calls from
+      shadow mode or design-partner traffic) and a local model trained
+      and calibrated on it.
   - The breaker's second opinion runs inside the audit worker, so a
     slow judge call delays that session's later audit records by at most
     500 ms per ambiguous step (the limit on the breaker adapter's
@@ -424,25 +433,15 @@ with demonstration data, which is what the public site shows by default.
     `crates/pv-harness/src/worker.rs` checks that a stalled session does
     not block its neighbours).
   - Differences from the build specification, kept on purpose:
-    - Prior refusals come from a refusal log kept by the harness (in
-      the process, and in Redis when `state_backend = "redis"`), not
-      read back from the session's event chain. With the in-memory
-      backend, a restart empties it.
     - Probabilities are recorded as integer parts per million, not
       32-bit floats, so the hashed event chain is the same on every
       machine.
     - The receipt's field whitelist was not extended: the receipt
       format did not change, and the verdicts are covered through the
-      event chain and the trajectory it signs.
-    - Labelled examples are not exported automatically from shadow
-      traces: the record keeps the arguments but not the full context
-      the judge saw, so an exported example would be scored on a
-      different input. Building the labelled set is data work.
+      event chain and the trajectory it signs. A test fixes the judge
+      record's fields instead.
   - Tools are tagged for review in `[[judge.tools]]`, not inside their
     schema files.
-  - The review queue and the drift state are kept per instance. The
-    prior-denial log is shared through Redis when `state_backend =
-    "redis"`; with the in-memory backend it is kept per instance.
 
 ## 8. Verification record for 2026-10-31 and 2026-11-01
 

@@ -559,16 +559,31 @@ process, the log evicts the least recently used session or agent first.
 If Redis cannot be read,
 the judge uses the instance's own entries and counts the failure in
 `pv_judge_shared_denials_errors_total`. With the in-memory backend the
-log lives only in the process. The sampled verdicts waiting for review
-and the concurrency limit live in each harness process and start empty
-after a restart; a review of a verdict sampled before a restart answers
-`unknown_review_id`. The drift
-statistics and switches are saved to each instance's `state_file`, so
-they survive that instance's restarts but are not shared: give every
-instance its own file, send each review to the instance that sampled
-the verdict, and reset a switch on every instance where it tripped
-(`GET /admin/v1/judge/drift` shows which). The pilot cap counters live
-in the state store and are shared.
+log lives in the process; at startup it is rebuilt from the recorded
+`agent.tool_call` events of an embedded Bridge (the newest 32 MiB of
+each partition, the last 24 hours), so a restart keeps the refusals
+the judge sees. The concurrency limit lives in each process.
+
+With Redis, the drift check is shared: a review sampled on one instance
+can be recorded on any instance, once; the band statistics and the
+switch to ask-by-default are shared counters, so a predicate switched on
+one instance asks on every instance within 5 seconds, and a reset on
+one clears it on all. Each instance still saves the switches to its own
+`state_file` and publishes a switch the file holds when it starts (the
+shared keys expire a day after their last write, and any running
+instance keeps refreshing them). An unreachable store makes a review
+answer 503. Without Redis, the drift check is per instance as before:
+send each review to the instance that sampled the verdict (a review of
+a verdict sampled before a restart answers `unknown_review_id`), and
+reset a switch on every instance where it tripped. The pilot cap
+counters live in the state store and are shared.
+
+An unsigned session that holds a trace verdict is promoted once it
+closes, on the reconciler's next tick (`reconcile_tick_s`, 5 seconds
+by default), so a signed receipt covers the verdict.
+`pv_judge_auto_promotions_total{outcome="failed"}` counts sessions
+whose promotion still failed after five ticks; promote them with
+`pvctl session-promote`.
 
 ## Metrics you should alert on
 
