@@ -1195,6 +1195,10 @@ pub struct JudgeService {
     shared_drift: std::sync::OnceLock<Arc<dyn pv_state::StateStore>>,
     /// The shared switches as last read, and when.
     shared_tripped: parking_lot::Mutex<(Option<std::time::Instant>, Vec<String>)>,
+    /// Held while one caller reads the shared switches.
+    drift_refreshing: parking_lot::Mutex<()>,
+    /// The last operator reset count seen per predicate.
+    drift_reset_seen: parking_lot::Mutex<BTreeMap<String, u64>>,
     pilot_cap: Option<u64>,
     denials: parking_lot::Mutex<DenialLog>,
     /// The shared state store, when it is shared between instances: the
@@ -1324,6 +1328,8 @@ impl JudgeService {
             drift_write: parking_lot::Mutex::new(()),
             shared_drift: std::sync::OnceLock::new(),
             shared_tripped: parking_lot::Mutex::new((None, Vec::new())),
+            drift_refreshing: parking_lot::Mutex::new(()),
+            drift_reset_seen: parking_lot::Mutex::new(BTreeMap::new()),
             pilot_cap: config.pilot.map(|pilot| pilot.daily_block_cap),
             denials: parking_lot::Mutex::new(DenialLog::default()),
             shared_denials: std::sync::OnceLock::new(),
@@ -1355,6 +1361,13 @@ impl JudgeService {
                     let key = drift_key(&id, "tripped");
                     if store.get(&key).is_ok_and(|value| value == 0) {
                         let _ = store.add(&key, 1);
+                    }
+                }
+                // Resets made before this instance joined are not applied
+                // to its state file's switches (failing closed).
+                for id in self.runner.registry().iter().map(|def| def.id.as_str()) {
+                    if let Ok(generation) = store.get(&drift_key(id, "reset")) {
+                        self.drift_reset_seen.lock().insert(id.to_owned(), generation);
                     }
                 }
                 let _ = self.shared_drift.set(Arc::clone(&store));
@@ -1599,19 +1612,28 @@ impl JudgeService {
         // Issued at 1 when sampled; the first review makes it 2.
         let claim = drift_key(&predicate, &format!("review:{review_id}"));
         let claimed = store.add(&claim, 1).map_err(unavailable)?;
-        store.remove(&claim);
         if claimed != 2 {
+            if claimed == 1 {
+                store.remove(&claim);
+            }
             return Err(pv_judge::DriftError::UnknownReview);
         }
-        monitor.forget_review(review_id);
-        store
-            .add(&drift_key(&predicate, &format!("band:{band}:reviewed")), 1)
-            .map_err(unavailable)?;
-        if correct {
-            store
-                .add(&drift_key(&predicate, &format!("band:{band}:correct")), 1)
-                .map_err(unavailable)?;
+        // A store failure while counting gives the claim (and any count
+        // already made) back, so the review can be sent again.
+        let reviewed = drift_key(&predicate, &format!("band:{band}:reviewed"));
+        if let Err(error) = store.add(&reviewed, 1) {
+            store.refund(&claim, 1);
+            return Err(unavailable(error));
         }
+        if correct {
+            if let Err(error) = store.add(&drift_key(&predicate, &format!("band:{band}:correct")), 1) {
+                store.refund(&reviewed, 1);
+                store.refund(&claim, 1);
+                return Err(unavailable(error));
+            }
+        }
+        store.remove(&claim);
+        monitor.forget_review(review_id);
         let bands = self
             .shared_bands(store.as_ref(), &predicate)
             .map_err(unavailable)?;
@@ -1646,6 +1668,13 @@ impl JudgeService {
         if let Some(store) = self.shared_drift.get() {
             let tripped_key = drift_key(predicate_id, "tripped");
             was |= store.get(&tripped_key).unwrap_or(0) > 0;
+            // Every instance clears its own switch when this count moves;
+            // a switch that merely vanished from the store is kept.
+            if let Ok(generation) = store.add(&drift_key(predicate_id, "reset"), 1) {
+                self.drift_reset_seen
+                    .lock()
+                    .insert(predicate_id.to_owned(), generation);
+            }
             store.remove(&tripped_key);
             for band in 0..pv_judge::drift::BAND_LOWER_PPM.len() {
                 store.remove(&drift_key(predicate_id, &format!("band:{band}:reviewed")));
@@ -1698,52 +1727,82 @@ impl JudgeService {
         Ok(bands)
     }
 
-    /// The shared switches, read at most every [`SHARED_DRIFT_REFRESH`]
-    /// (on the path of judged calls). Each read also refreshes the expiry
-    /// of the shared keys, which the store drops a day after their last
-    /// write: while any instance runs, the statistics and switches stay.
+    /// The switches to ask-by-default, with a shared store: read at most
+    /// every [`SHARED_DRIFT_REFRESH`] (on the path of judged calls), by one
+    /// caller at a time, outside the lock the others read the result
+    /// under. The switch fails closed:
+    /// * a switch the store no longer holds (its keys expire a day after
+    ///   the last write, or the store lost them) but this instance does
+    ///   is written back, not dropped;
+    /// * only an operator reset, seen as a new reset count, clears this
+    ///   instance's switch (and its state file);
+    /// * when the store cannot be read, this instance's own switches
+    ///   apply until the next attempt, [`SHARED_DRIFT_REFRESH`] later.
     fn shared_tripped(&self) -> Vec<String> {
-        let Some(store) = self.shared_drift.get() else {
+        let (Some(store), Some(monitor)) = (self.shared_drift.get(), &self.drift) else {
             return Vec::new();
         };
-        let mut cache = self.shared_tripped.lock();
-        if cache.0.is_some_and(|at| at.elapsed() < SHARED_DRIFT_REFRESH) {
-            return cache.1.clone();
+        {
+            let cache = self.shared_tripped.lock();
+            if cache.0.is_some_and(|at| at.elapsed() < SHARED_DRIFT_REFRESH) {
+                return cache.1.clone();
+            }
         }
-        let mut tripped = Vec::new();
-        for id in self.runner.registry().iter().map(|def| def.id.as_str()) {
-            let key = drift_key(id, "tripped");
-            match store.get(&key) {
-                Ok(0) => {}
-                Ok(_) => {
-                    let _ = store.add(&key, 0);
+        let Some(_refreshing) = self.drift_refreshing.try_lock() else {
+            // Another caller is reading the store: the last result, or
+            // this instance's own switches before the first one.
+            let cache = self.shared_tripped.lock();
+            return if cache.0.is_some() {
+                cache.1.clone()
+            } else {
+                monitor.tripped()
+            };
+        };
+        let mut reset_here = false;
+        let mut read = || -> Result<Vec<String>, pv_state::StateError> {
+            let mut tripped = Vec::new();
+            for id in self.runner.registry().iter().map(|def| def.id.as_str()) {
+                let key = drift_key(id, "tripped");
+                let shared = store.get(&key)? > 0;
+                let generation = store.get(&drift_key(id, "reset"))?;
+                let seen = self.drift_reset_seen.lock().get(id).copied().unwrap_or(0);
+                if generation > seen {
+                    self.drift_reset_seen.lock().insert(id.to_owned(), generation);
+                    if !shared && monitor.is_tripped(id) {
+                        monitor.reset(id);
+                        reset_here = true;
+                    }
+                }
+                if shared {
+                    store.add(&key, 0)?;
+                    monitor.trip(id);
+                    tripped.push(id.to_owned());
+                } else if monitor.is_tripped(id) {
+                    store.add(&key, 1)?;
                     tripped.push(id.to_owned());
                 }
-                // Unreadable: keep what was last read.
-                Err(_) => return cache.1.clone(),
-            }
-            for band in 0..pv_judge::drift::BAND_LOWER_PPM.len() {
-                for count in ["reviewed", "correct"] {
-                    let key = drift_key(id, &format!("band:{band}:{count}"));
-                    if store.get(&key).is_ok_and(|value| value > 0) {
-                        let _ = store.add(&key, 0);
+                for rest in std::iter::once("reset".to_owned()).chain(
+                    (0..pv_judge::drift::BAND_LOWER_PPM.len())
+                        .flat_map(|band| [format!("band:{band}:reviewed"), format!("band:{band}:correct")]),
+                ) {
+                    let key = drift_key(id, &rest);
+                    if store.get(&key)? > 0 {
+                        store.add(&key, 0)?;
                     }
                 }
             }
-        }
-        // The local monitor (and so the state file) follows the shared
-        // switches, both ways: a reset on another instance clears it here.
-        if let Some(monitor) = &self.drift {
-            for id in monitor.tripped() {
-                if !tripped.contains(&id) {
-                    monitor.reset(&id);
-                }
-            }
-            for id in &tripped {
-                monitor.trip(id);
+            Ok(tripped)
+        };
+        let tripped = read().unwrap_or_else(|error| {
+            tracing::warn!(%error, "shared drift switches unreadable; this instance's own switches apply");
+            monitor.tripped()
+        });
+        if reset_here {
+            if let Err(error) = self.persist_drift() {
+                tracing::error!(error = %error, "an operator's drift reset was not saved on this instance");
             }
         }
-        *cache = (Some(std::time::Instant::now()), tripped.clone());
+        *self.shared_tripped.lock() = (Some(std::time::Instant::now()), tripped.clone());
         tripped
     }
 
@@ -4369,6 +4428,124 @@ mod tests {
         assert!(b.record_review("x~1~no_such_predicate@1", true).is_err());
         assert!(b.record_review("x~99~arg_matches_task@1", true).is_err());
         assert!(b.record_review("not an id", true).is_err());
+    }
+
+    /// A shared in-memory store that can be made to fail: every call,
+    /// or the next `add` to a key containing a given text.
+    #[derive(Default)]
+    struct FlakyShared {
+        inner: pv_state::InMemoryStore,
+        down: std::sync::atomic::AtomicBool,
+        fail_next_add: parking_lot::Mutex<Option<String>>,
+    }
+
+    impl FlakyShared {
+        fn check(&self, key: &str, adding: bool) -> Result<(), StateError> {
+            if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(StateError::Backend("down".into()));
+            }
+            let mut next = self.fail_next_add.lock();
+            if adding && next.as_deref().is_some_and(|text| key.contains(text)) {
+                *next = None;
+                return Err(StateError::Backend("failed once".into()));
+            }
+            Ok(())
+        }
+    }
+
+    impl StateStore for FlakyShared {
+        fn add(&self, key: &str, delta: u64) -> Result<u64, StateError> {
+            self.check(key, true)?;
+            self.inner.add(key, delta)
+        }
+        fn get(&self, key: &str) -> Result<u64, StateError> {
+            self.check(key, false)?;
+            self.inner.get(key)
+        }
+        fn try_spend_many(&self, spends: &[Spend]) -> Result<TrySpendOutcome, StateError> {
+            self.inner.try_spend_many(spends)
+        }
+        fn remove(&self, key: &str) {
+            self.inner.remove(key);
+        }
+        fn refund(&self, key: &str, amount: u64) {
+            self.inner.refund(key, amount);
+        }
+        fn shares_recent_lists(&self) -> bool {
+            true
+        }
+        fn push_recent(&self, _key: &str, _value: &str, _keep: usize) -> Result<(), StateError> {
+            Ok(())
+        }
+        fn recent(&self, _key: &str, _max: usize) -> Result<Vec<String>, StateError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The shared switch fails closed: a switch the store lost is written
+    /// back, a cold start during an outage keeps the state file's switch,
+    /// and a review the store fails partway through can be sent again.
+    #[test]
+    fn the_shared_drift_switch_fails_closed() {
+        const P: &str = "arg_matches_task@1";
+        let dir = tempfile::tempdir().unwrap();
+        let flaky = Arc::new(FlakyShared::default());
+        let store: Arc<dyn StateStore> = Arc::clone(&flaky) as Arc<dyn StateStore>;
+        let a = drift_service(&dir.path().join("a.json"));
+        a.share_denials(Arc::clone(&store));
+        a.drift.as_ref().unwrap().trip(P);
+        a.shared_tripped.lock().0 = None;
+        assert_eq!(a.drift_tripped(), [P]);
+        // The store loses the key (expiry, failover): written back.
+        store.remove(&drift_key(P, "tripped"));
+        a.shared_tripped.lock().0 = None;
+        assert_eq!(a.drift_tripped(), [P]);
+        assert_eq!(store.get(&drift_key(P, "tripped")).unwrap(), 1);
+
+        // A cold start while the store is down keeps the file's switch.
+        flaky.down.store(true, std::sync::atomic::Ordering::SeqCst);
+        let b = drift_service(&dir.path().join("b.json"));
+        b.drift.as_ref().unwrap().trip(P);
+        b.share_denials(Arc::clone(&store));
+        assert_eq!(b.drift_tripped(), [P]);
+        flaky.down.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // An operator reset on A clears the switch on B as well.
+        assert!(a.reset_drift(P));
+        b.shared_tripped.lock().0 = None;
+        assert!(b.drift_tripped().is_empty());
+        assert!(b.drift.as_ref().unwrap().tripped().is_empty());
+
+        // A review interrupted by the store can be sent again, once.
+        let verdict = JudgeOutcome::Scored(pv_judge::Verdict {
+            predicate_id: P.into(),
+            probs: vec![
+                pv_judge::LabelProb {
+                    label: "match".into(),
+                    ppm: 950_000,
+                },
+                pv_judge::LabelProb {
+                    label: "mismatch".into(),
+                    ppm: 50_000,
+                },
+            ],
+            model: pv_judge::ModelPin::new("m", "1", "a".repeat(64)).unwrap(),
+            latency_us: 1,
+        });
+        let id = a.sample_reviews(&[verdict])[P].clone();
+        *flaky.fail_next_add.lock() = Some(":correct".into());
+        assert!(matches!(
+            a.record_review(&id, true),
+            Err(pv_judge::DriftError::Unavailable(_))
+        ));
+        assert!(a.record_review(&id, true).is_ok(), "the review can be sent again");
+        assert!(a.record_review(&id, true).is_err(), "and counts once");
+        let reviewed: u64 = a.drift_snapshot().unwrap().predicates[0]
+            .bands
+            .iter()
+            .map(|band| band.reviewed)
+            .sum();
+        assert_eq!(reviewed, 1);
     }
 
     #[test]
