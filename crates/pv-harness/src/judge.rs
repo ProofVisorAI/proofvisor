@@ -48,8 +48,9 @@ pub const DENIALS_PER_KEY: usize = 16;
 pub const DENIAL_LOG_KEYS: usize = 20_000;
 /// Largest shared denial entry read back (bytes).
 const MAX_SHARED_DENIAL_BYTES: usize = 1_024;
-/// Clock difference tolerated between instances writing shared entries.
-const SHARED_DENIAL_SKEW_MS: u64 = 60_000;
+/// Entries kept per shared list: more than the judge sees, so trimming
+/// to [`DENIALS_PER_KEY`] can keep the judge's own refusals first.
+const SHARED_DENIALS_PER_KEY: usize = 2 * DENIALS_PER_KEY;
 /// Oldest shared entry used: the lists expire 24 hours after their last
 /// write, so an older entry was kept alive by later writes only.
 const SHARED_DENIAL_MAX_AGE_MS: u64 = 24 * 3_600_000;
@@ -1031,8 +1032,18 @@ impl DenialLog {
         if let Some((_, entries)) = self.by_key.get_mut(&key) {
             entries.retain(|entry| !same_kind(entry, &denial));
             entries.push_back(denial);
+            // Full: drop the oldest refusal that did not come from the
+            // judge first, so cheap policy refusals cannot push out the
+            // judge's own.
             while entries.len() > DENIALS_PER_KEY {
-                entries.pop_front();
+                match entries.iter().position(|entry| entry.predicate_id.is_none()) {
+                    Some(oldest) => {
+                        entries.remove(oldest);
+                    }
+                    None => {
+                        entries.pop_front();
+                    }
+                }
             }
         }
     }
@@ -1234,18 +1245,20 @@ impl JudgeService {
     /// The newest refusals under `key`: the shared log merged with this
     /// instance's, newest first. A shared log that cannot be read leaves
     /// this instance's entries and counts the failure.
-    fn recent_denials(&self, key: &str) -> Vec<PriorDenial> {
+    /// The refusals under `key`, every one made by `instance_uid` (the
+    /// agent the key belongs to).
+    fn recent_denials(&self, key: &str, instance_uid: &str) -> Vec<PriorDenial> {
         let local = self.denials.lock().recent(key);
         let Some(store) = self.shared_denials.get() else {
             return local;
         };
         let now_ms = pv_core::time::now_ms();
-        let shared = match store.recent(&shared_denial_key(key), DENIALS_PER_KEY) {
+        let shared = match store.recent(&shared_denial_key(key), SHARED_DENIALS_PER_KEY) {
             Ok(entries) => entries
                 .iter()
                 .filter(|entry| entry.len() <= MAX_SHARED_DENIAL_BYTES)
                 .filter_map(|entry| serde_json::from_str::<PriorDenial>(entry).ok())
-                .filter(|denial| self.plausible_denial(denial, now_ms))
+                .filter(|denial| denial.instance_uid == instance_uid && self.plausible_denial(denial, now_ms))
                 .collect(),
             Err(error) => {
                 tracing::warn!(%error, "shared judge denial log unreadable; using this instance's entries");
@@ -1276,8 +1289,11 @@ impl JudgeService {
             .predicate_id
             .as_deref()
             .is_none_or(|id| self.runner.registry().get(id).is_some());
-        let recent = denial.at_ms <= now_ms.saturating_add(SHARED_DENIAL_SKEW_MS)
-            && denial.at_ms >= now_ms.saturating_sub(SHARED_DENIAL_MAX_AGE_MS);
+        // No future times: an entry dated ahead would sort first and push
+        // real ones out (an instance whose clock runs ahead has its entries
+        // used once this clock catches up).
+        let recent =
+            denial.at_ms <= now_ms && denial.at_ms >= now_ms.saturating_sub(SHARED_DENIAL_MAX_AGE_MS);
         name(&denial.tool, 128) && name(&denial.instance_uid, 256) && known_code && known_predicate && recent
     }
 
@@ -1412,13 +1428,16 @@ impl JudgeService {
         };
         let mut prior = Vec::new();
         prior.extend(
-            same_tool_first(self.recent_denials(&session_key(inputs.instance_uid, inputs.session_id)))
-                .into_iter()
-                .take(8),
+            same_tool_first(self.recent_denials(
+                &session_key(inputs.instance_uid, inputs.session_id),
+                inputs.instance_uid,
+            ))
+            .into_iter()
+            .take(8),
         );
         for parent in &inputs.parents {
             prior.extend(
-                same_tool_first(self.recent_denials(&instance_key(parent)))
+                same_tool_first(self.recent_denials(&instance_key(parent), parent))
                     .into_iter()
                     .map(|mut denial| {
                         denial.source = DenialSource::Parent;
@@ -1462,7 +1481,7 @@ impl JudgeService {
                 Ok(entry) => {
                     for key in &keys {
                         if let Err(error) =
-                            store.push_recent(&shared_denial_key(key), &entry, DENIALS_PER_KEY)
+                            store.push_recent(&shared_denial_key(key), &entry, SHARED_DENIALS_PER_KEY)
                         {
                             tracing::warn!(%error, "shared judge denial log unwritable; kept on this instance");
                             self.count_shared_denial_error("write");
@@ -1693,17 +1712,31 @@ fn shared_denial_key(key: &str) -> String {
 /// Shared and local entries for one key, newest first, without
 /// duplicates (an entry this instance wrote is in both).
 fn merge_denials(shared: Vec<PriorDenial>, local: Vec<PriorDenial>) -> Vec<PriorDenial> {
-    let mut all = shared;
-    all.extend(local);
-    all.sort_by_key(|denial| std::cmp::Reverse(denial.at_ms));
-    // Newest first; one entry per kind of refusal.
+    // This instance's own refusals first (the shared store may hold
+    // planted ones), then the shared ones; newest first within each; one
+    // entry per kind of refusal.
+    let by_time = |mut denials: Vec<PriorDenial>| {
+        denials.sort_by_key(|denial| std::cmp::Reverse(denial.at_ms));
+        denials
+    };
     let mut merged: Vec<PriorDenial> = Vec::new();
-    for denial in all {
+    for denial in by_time(local).into_iter().chain(by_time(shared)) {
         if !merged.iter().any(|kept| same_kind(kept, &denial)) {
             merged.push(denial);
         }
     }
-    merged.truncate(DENIALS_PER_KEY);
+    // Over the limit: drop refusals that did not come from the judge
+    // first, last-listed (shared, oldest) first.
+    while merged.len() > DENIALS_PER_KEY {
+        match merged.iter().rposition(|denial| denial.predicate_id.is_none()) {
+            Some(last) => {
+                merged.remove(last);
+            }
+            None => {
+                merged.pop();
+            }
+        }
+    }
     merged
 }
 
@@ -2441,7 +2474,27 @@ mod tests {
             vec![denial("a", 1), denial("c", 3)],
         );
         let tools: Vec<&str> = merged.iter().map(|d| d.tool.as_str()).collect();
-        assert_eq!(tools, ["c", "b", "a"], "newest first, no duplicate");
+        assert_eq!(
+            tools,
+            ["c", "a", "b"],
+            "this instance's first, newest first, no duplicate"
+        );
+        // Planted shared entries cannot push this instance's own out.
+        let planted: Vec<PriorDenial> = (0..40)
+            .map(|n| denial(&format!("planted{n}"), 1_000 + n))
+            .collect();
+        let merged = merge_denials(planted, vec![denial("own", 1)]);
+        assert_eq!(merged.len(), DENIALS_PER_KEY);
+        assert_eq!(merged[0].tool, "own");
+        // Over the limit, refusals without a judge predicate go first.
+        let mut judged = denial("judged", 0);
+        judged.predicate_id = Some("arg_matches_task@1".into());
+        let policy: Vec<PriorDenial> = (0..40).map(|n| denial(&format!("p{n}"), 100 + n)).collect();
+        let merged = merge_denials(Vec::new(), policy.into_iter().chain([judged]).collect());
+        assert!(
+            merged.iter().any(|d| d.tool == "judged"),
+            "the judge's refusal is kept"
+        );
         // One entry per kind of refusal: repeats keep only the newest.
         let repeats: Vec<PriorDenial> = (0..40).map(|n| denial("t", n)).collect();
         let kept = merge_denials(repeats, Vec::new());
@@ -2483,6 +2536,10 @@ mod tests {
             "future-dated entries cannot sort first"
         );
         assert!(
+            !checked(&|d| d.at_ms = now + 1),
+            "no entry may be dated after now"
+        );
+        assert!(
             !checked(&|d| d.at_ms = now - 2 * 86_400_000),
             "older than the list lives"
         );
@@ -2520,6 +2577,18 @@ mod tests {
             repeats.push("p".into(), denial(1));
         }
         assert_eq!(repeats.recent("p").len(), 2);
+        // A full log drops refusals without a judge predicate first.
+        let mut protected = DenialLog::default();
+        let mut judged = denial(999);
+        judged.predicate_id = Some("arg_matches_task@1".into());
+        protected.push("j".into(), judged);
+        for n in 0..(DENIALS_PER_KEY * 3) {
+            protected.push("j".into(), denial(n));
+        }
+        assert!(
+            protected.recent("j").iter().any(|d| d.tool == "t999"),
+            "the judge's refusal survives"
+        );
         // Least recently used keys go first: a key in use survives a burst
         // of new ones, an idle one does not.
         log.push("active".into(), denial(0));

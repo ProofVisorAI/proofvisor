@@ -523,11 +523,14 @@ exist only when `operator_tokens` and `[judge.drift]` are both set.
 The prior-denial log holds the refusals the judge sees as context. With
 `state_backend = "redis"` it is kept in Redis as well as in each
 process, so a delegated agent served by another instance sees the
-refusals of the agents above it. Each list keeps the newest 16 refusals
+refusals of the agents above it. Each list keeps the newest 32 refusals
 and expires 24 hours after its last refusal. An entry read back from
 Redis is used only if it has the shape the harness writes: a known
-denial code and predicate, plain tool and agent names, and a time within
-the last 24 hours; at most 16 entries are read per list. In each
+denial code and predicate, plain tool and agent names, the agent the
+list belongs to, and a time within the last 24 hours and not after now;
+at most 32 entries are read per list. The judge sees at most 16: this
+instance's own refusals first, then the shared ones, and when there are
+more, refusals that did not come from the judge are dropped first. In each
 process, the log evicts the least recently used session or agent first.
 If Redis cannot be read,
 the judge uses the instance's own entries and counts the failure in
