@@ -64,6 +64,8 @@ pub const RESTORE_TAIL_BYTES: u64 = 32 * 1024 * 1024;
 const JUDGE_EVENT_WAIT: Duration = Duration::from_secs(2);
 /// Shared refusal reads background judging may have in flight.
 const SHARED_DENIAL_READS_AT_ONCE: usize = 4;
+/// How often the shared drift switches are read again.
+const SHARED_DRIFT_REFRESH: Duration = Duration::from_secs(5);
 /// Longest wait for the shared refusal log in background judging.
 const SHARED_DENIAL_READ_WAIT: Duration = Duration::from_millis(200);
 /// `min_confidence` of a threshold rule that does not set one.
@@ -1179,6 +1181,12 @@ pub struct JudgeService {
     drift: Option<DriftMonitor>,
     drift_file: Option<std::path::PathBuf>,
     drift_write: parking_lot::Mutex<()>,
+    /// The store shared between instances, when there is one: the drift
+    /// check's reviews, statistics and switches are kept there, so every
+    /// instance switches together.
+    shared_drift: std::sync::OnceLock<Arc<dyn pv_state::StateStore>>,
+    /// The shared switches as last read, and when.
+    shared_tripped: parking_lot::Mutex<(Option<std::time::Instant>, Vec<String>)>,
     pilot_cap: Option<u64>,
     denials: parking_lot::Mutex<DenialLog>,
     /// The shared state store, when it is shared between instances: the
@@ -1306,6 +1314,8 @@ impl JudgeService {
             drift,
             drift_file,
             drift_write: parking_lot::Mutex::new(()),
+            shared_drift: std::sync::OnceLock::new(),
+            shared_tripped: parking_lot::Mutex::new((None, Vec::new())),
             pilot_cap: config.pilot.map(|pilot| pilot.daily_block_cap),
             denials: parking_lot::Mutex::new(DenialLog::default()),
             shared_denials: std::sync::OnceLock::new(),
@@ -1324,11 +1334,22 @@ impl JudgeService {
         })
     }
 
-    /// Keep the denial log in `store` as well, when the store is shared
-    /// between instances. Has no effect for a store that is not, or
-    /// after the first call.
+    /// Keep the denial log and the drift check in `store` as well, when
+    /// the store is shared between instances. Has no effect for a store
+    /// that is not, or after the first call.
     pub(crate) fn share_denials(&self, store: Arc<dyn pv_state::StateStore>) {
         if store.shares_recent_lists() {
+            if let Some(monitor) = &self.drift {
+                // A switch this instance's state file kept (the store drops
+                // keys a day after their last write) is published again.
+                for id in monitor.tripped() {
+                    let key = drift_key(&id, "tripped");
+                    if store.get(&key).is_ok_and(|value| value == 0) {
+                        let _ = store.add(&key, 1);
+                    }
+                }
+                let _ = self.shared_drift.set(Arc::clone(&store));
+            }
             let _ = self.shared_denials.set(store);
         }
     }
@@ -1541,8 +1562,182 @@ impl JudgeService {
         self.drift.as_ref()
     }
 
+    /// Record a reviewer's answer for a sampled verdict. With a shared
+    /// store, the review may have been sampled on another instance: its
+    /// id names its predicate and band, a shared marker counts it once,
+    /// and the statistics and switch are the shared ones.
+    pub(crate) fn record_review(
+        &self,
+        review_id: &str,
+        correct: bool,
+    ) -> Result<pv_judge::ReviewResult, pv_judge::DriftError> {
+        let Some(monitor) = &self.drift else {
+            return Err(pv_judge::DriftError::UnknownReview);
+        };
+        let Some(store) = self.shared_drift.get() else {
+            return monitor.record_review(review_id, correct);
+        };
+        let unavailable = |error: pv_state::StateError| pv_judge::DriftError::Unavailable(error.to_string());
+        let (predicate, band) = parse_review_id(review_id).ok_or(pv_judge::DriftError::UnknownReview)?;
+        if self.runner.registry().get(&predicate).is_none() || band >= pv_judge::drift::BAND_LOWER_PPM.len() {
+            return Err(pv_judge::DriftError::UnknownReview);
+        }
+        // Issued at 1 when sampled; the first review makes it 2.
+        let claim = drift_key(&predicate, &format!("review:{review_id}"));
+        let claimed = store.add(&claim, 1).map_err(unavailable)?;
+        store.remove(&claim);
+        if claimed != 2 {
+            return Err(pv_judge::DriftError::UnknownReview);
+        }
+        monitor.forget_review(review_id);
+        store
+            .add(&drift_key(&predicate, &format!("band:{band}:reviewed")), 1)
+            .map_err(unavailable)?;
+        if correct {
+            store
+                .add(&drift_key(&predicate, &format!("band:{band}:correct")), 1)
+                .map_err(unavailable)?;
+        }
+        let bands = self
+            .shared_bands(store.as_ref(), &predicate)
+            .map_err(unavailable)?;
+        let config = monitor.config();
+        let monotone =
+            pv_judge::drift::is_monotone(&bands, config.min_reviews_per_band, config.tolerance_ppm);
+        let tripped_key = drift_key(&predicate, "tripped");
+        let was = store.get(&tripped_key).map_err(unavailable)? > 0;
+        if !monotone && !was {
+            store.add(&tripped_key, 1).map_err(unavailable)?;
+        }
+        let tripped = was || !monotone;
+        if tripped {
+            monitor.trip(&predicate);
+        }
+        self.shared_tripped.lock().0 = None;
+        Ok(pv_judge::ReviewResult {
+            predicate_id: predicate,
+            tripped_now: tripped && !was,
+            tripped,
+        })
+    }
+
+    /// Operator reset of a predicate's drift switch and statistics, here
+    /// and, with a shared store, on every instance. Returns whether it was
+    /// tripped.
+    pub(crate) fn reset_drift(&self, predicate_id: &str) -> bool {
+        let Some(monitor) = &self.drift else {
+            return false;
+        };
+        let mut was = monitor.reset(predicate_id);
+        if let Some(store) = self.shared_drift.get() {
+            let tripped_key = drift_key(predicate_id, "tripped");
+            was |= store.get(&tripped_key).unwrap_or(0) > 0;
+            store.remove(&tripped_key);
+            for band in 0..pv_judge::drift::BAND_LOWER_PPM.len() {
+                store.remove(&drift_key(predicate_id, &format!("band:{band}:reviewed")));
+                store.remove(&drift_key(predicate_id, &format!("band:{band}:correct")));
+            }
+            self.shared_tripped.lock().0 = None;
+        }
+        was
+    }
+
+    /// The drift check's state for operators: with a shared store, the
+    /// shared statistics and switches.
+    pub(crate) fn drift_snapshot(&self) -> Option<pv_judge::DriftSnapshot> {
+        let monitor = self.drift.as_ref()?;
+        let mut snapshot = monitor.snapshot();
+        let Some(store) = self.shared_drift.get() else {
+            return Some(snapshot);
+        };
+        let tripped = self.drift_tripped();
+        snapshot.predicates = self
+            .runner
+            .registry()
+            .iter()
+            .map(|def| def.id.as_str())
+            .filter_map(|id| {
+                let bands = self.shared_bands(store.as_ref(), id).ok()?;
+                let tripped = tripped.iter().any(|t| t == id);
+                (tripped || bands.iter().any(|band| band.reviewed > 0)).then(|| {
+                    pv_judge::drift::PredicateDrift {
+                        predicate_id: id.to_owned(),
+                        bands,
+                        tripped,
+                    }
+                })
+            })
+            .collect();
+        Some(snapshot)
+    }
+
+    fn shared_bands(
+        &self,
+        store: &dyn pv_state::StateStore,
+        predicate: &str,
+    ) -> Result<Vec<pv_judge::drift::BandStats>, pv_state::StateError> {
+        let mut bands = pv_judge::drift::empty_bands();
+        for (index, band) in bands.iter_mut().enumerate() {
+            band.reviewed = store.get(&drift_key(predicate, &format!("band:{index}:reviewed")))?;
+            band.correct = store.get(&drift_key(predicate, &format!("band:{index}:correct")))?;
+        }
+        Ok(bands)
+    }
+
+    /// The shared switches, read at most every [`SHARED_DRIFT_REFRESH`]
+    /// (on the path of judged calls). Each read also refreshes the expiry
+    /// of the shared keys, which the store drops a day after their last
+    /// write: while any instance runs, the statistics and switches stay.
+    fn shared_tripped(&self) -> Vec<String> {
+        let Some(store) = self.shared_drift.get() else {
+            return Vec::new();
+        };
+        let mut cache = self.shared_tripped.lock();
+        if cache.0.is_some_and(|at| at.elapsed() < SHARED_DRIFT_REFRESH) {
+            return cache.1.clone();
+        }
+        let mut tripped = Vec::new();
+        for id in self.runner.registry().iter().map(|def| def.id.as_str()) {
+            let key = drift_key(id, "tripped");
+            match store.get(&key) {
+                Ok(0) => {}
+                Ok(_) => {
+                    let _ = store.add(&key, 0);
+                    tripped.push(id.to_owned());
+                }
+                // Unreadable: keep what was last read.
+                Err(_) => return cache.1.clone(),
+            }
+            for band in 0..pv_judge::drift::BAND_LOWER_PPM.len() {
+                for count in ["reviewed", "correct"] {
+                    let key = drift_key(id, &format!("band:{band}:{count}"));
+                    if store.get(&key).is_ok_and(|value| value > 0) {
+                        let _ = store.add(&key, 0);
+                    }
+                }
+            }
+        }
+        // The local monitor (and so the state file) follows the shared
+        // switches, both ways: a reset on another instance clears it here.
+        if let Some(monitor) = &self.drift {
+            for id in monitor.tripped() {
+                if !tripped.contains(&id) {
+                    monitor.reset(&id);
+                }
+            }
+            for id in &tripped {
+                monitor.trip(id);
+            }
+        }
+        *cache = (Some(std::time::Instant::now()), tripped.clone());
+        tripped
+    }
+
     /// Predicates in ask-by-default mode.
     pub fn drift_tripped(&self) -> Vec<String> {
+        if self.shared_drift.get().is_some() {
+            return self.shared_tripped();
+        }
         self.drift.as_ref().map(DriftMonitor::tripped).unwrap_or_default()
     }
 
@@ -1877,7 +2072,14 @@ impl JudgeService {
             .iter()
             .filter_map(|outcome| match outcome {
                 JudgeOutcome::Scored(verdict) => drift
-                    .maybe_sample(verdict, pv_core::new_event_uid)
+                    .maybe_sample(verdict, |predicate, band| {
+                        let id = review_id(predicate, band);
+                        if let Some(store) = self.shared_drift.get() {
+                            // Issued: any instance can record its review once.
+                            let _ = store.add(&drift_key(predicate, &format!("review:{id}")), 1);
+                        }
+                        id
+                    })
                     .map(|id| (verdict.predicate_id.clone(), id)),
                 JudgeOutcome::Failed(_) => None,
             })
@@ -2007,6 +2209,30 @@ pub(crate) fn recorded_tool_calls(data_dir: &std::path::Path, tail_bytes: u64) -
         }
     }
     events
+}
+
+/// A review id: the sampled verdict's predicate and confidence band, and
+/// a unique part, so any instance can record the review.
+fn review_id(predicate: &str, band: usize) -> String {
+    format!("{}~{band}~{predicate}", pv_core::new_event_uid())
+}
+
+/// The predicate and band a review id names.
+fn parse_review_id(review_id: &str) -> Option<(String, usize)> {
+    let mut parts = review_id.splitn(3, '~');
+    let _unique = parts.next()?;
+    let band = parts.next()?.parse().ok()?;
+    let predicate = parts.next()?;
+    Some((predicate.to_owned(), band))
+}
+
+/// A shared drift key of `predicate`; all of one predicate's keys share a
+/// Redis Cluster slot.
+fn drift_key(predicate: &str, rest: &str) -> String {
+    format!(
+        "judge:drift:{{{}}}:{rest}",
+        pv_core::digest::sha256_hex(predicate.as_bytes())
+    )
 }
 
 /// What [`JudgeService::record_denial`] remembers a shared write by: the
@@ -3978,6 +4204,154 @@ mod tests {
         let tail = recorded_tool_calls(dir.path(), u64::try_from(line(99).len() * 3).unwrap());
         assert!(!tail.is_empty() && tail.len() < 4, "{tail:?}");
         assert_eq!(tail.last().unwrap()["n"], 99);
+    }
+
+    /// An in-memory store that says it is shared between instances, so
+    /// two services in one test behave as two instances on one Redis.
+    struct SharedMemory(pv_state::InMemoryStore);
+
+    impl StateStore for SharedMemory {
+        fn add(&self, key: &str, delta: u64) -> Result<u64, StateError> {
+            self.0.add(key, delta)
+        }
+        fn get(&self, key: &str) -> Result<u64, StateError> {
+            self.0.get(key)
+        }
+        fn try_spend_many(&self, spends: &[Spend]) -> Result<TrySpendOutcome, StateError> {
+            self.0.try_spend_many(spends)
+        }
+        fn remove(&self, key: &str) {
+            self.0.remove(key);
+        }
+        fn shares_recent_lists(&self) -> bool {
+            true
+        }
+        fn push_recent(&self, _key: &str, _value: &str, _keep: usize) -> Result<(), StateError> {
+            Ok(())
+        }
+        fn recent(&self, _key: &str, _max: usize) -> Result<Vec<String>, StateError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn drift_service(state_file: &std::path::Path) -> JudgeService {
+        let config: JudgeConfig = toml::from_str(&format!(
+            r#"
+            mode = "enforce"
+            [[adapters]]
+            name = "a"
+            kind = "cloud"
+            endpoint = "http://127.0.0.1:9/x"
+            model_name = "m"
+            model_version = "1"
+            weights_sha256 = "{hash}"
+            [[tools]]
+            tool = "t"
+            allow_cloud = true
+            predicates = [{{ id = "arg_matches_task@1", adapter = "a" }}]
+            [[thresholds]]
+            predicate = "arg_matches_task@1"
+            label = "mismatch"
+            deny_above = 0.7
+            [drift]
+            state_file = "{state}"
+            sample_every = 1
+            min_reviews_per_band = 2
+            "#,
+            hash = "a".repeat(64),
+            state = state_file.display(),
+        ))
+        .unwrap();
+        let mut adapters: BTreeMap<String, Arc<dyn pv_judge::JudgeAdapter>> = BTreeMap::new();
+        adapters.insert(
+            "a".into(),
+            Arc::new(pv_judge::mock::MockJudge::new(
+                pv_judge::ModelPin::new("m", "1", "a".repeat(64)).unwrap(),
+                pv_judge::mock::MockBehavior::scores(&[("match", 1.0), ("mismatch", 0.0)]),
+            )),
+        );
+        JudgeService::new(&config, adapters, Arc::new(pv_core::metrics::Registry::new())).unwrap()
+    }
+
+    /// With a shared store, the drift check is one check for every
+    /// instance: a review sampled on one instance is recorded on another,
+    /// once; the switch made from the shared statistics reaches both; and
+    /// an operator's reset on one clears it on both.
+    #[test]
+    fn the_drift_check_is_shared_between_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn StateStore> = Arc::new(SharedMemory(pv_state::InMemoryStore::new()));
+        let (a, b) = (
+            drift_service(&dir.path().join("a.json")),
+            drift_service(&dir.path().join("b.json")),
+        );
+        a.share_denials(Arc::clone(&store));
+        b.share_denials(Arc::clone(&store));
+        let verdict = |top: u32| {
+            JudgeOutcome::Scored(pv_judge::Verdict {
+                predicate_id: "arg_matches_task@1".into(),
+                probs: vec![
+                    pv_judge::LabelProb {
+                        label: "match".into(),
+                        ppm: top,
+                    },
+                    pv_judge::LabelProb {
+                        label: "mismatch".into(),
+                        ppm: 1_000_000 - top,
+                    },
+                ],
+                model: pv_judge::ModelPin::new("m", "1", "a".repeat(64)).unwrap(),
+                latency_us: 1,
+            })
+        };
+        let sample = |top: u32| a.sample_reviews(&[verdict(top)])["arg_matches_task@1"].clone();
+        // Confident verdicts wrong, unsure ones right: accuracy falls as
+        // confidence rises. Sampled on A, reviewed on B.
+        for _ in 0..2 {
+            let unsure = sample(550_000);
+            assert!(!b.record_review(&unsure, true).unwrap().tripped);
+            assert!(
+                b.record_review(&unsure, true).is_err(),
+                "a review counts once, on any instance"
+            );
+        }
+        let first = b.record_review(&sample(950_000), false).unwrap();
+        assert!(!first.tripped, "a band needs two reviews");
+        let second = b.record_review(&sample(950_000), false).unwrap();
+        assert!(second.tripped && second.tripped_now, "{second:?}");
+        // A, which recorded no review, now asks by default too.
+        assert_eq!(a.drift_tripped(), ["arg_matches_task@1"]);
+        let snapshot = a.drift_snapshot().unwrap();
+        assert!(snapshot.predicates[0].tripped);
+        assert_eq!(
+            snapshot.predicates[0]
+                .bands
+                .iter()
+                .map(|band| band.reviewed)
+                .sum::<u64>(),
+            4
+        );
+        // An operator's reset on A clears it everywhere.
+        assert!(b.drift_tripped().contains(&"arg_matches_task@1".to_owned()));
+        assert!(a.reset_drift("arg_matches_task@1"));
+        b.shared_tripped.lock().0 = None; // as after the refresh interval
+        assert!(b.drift_tripped().is_empty());
+        assert!(
+            b.drift.as_ref().unwrap().tripped().is_empty(),
+            "B's own copy follows"
+        );
+        assert!(a.drift_tripped().is_empty());
+        // A switch kept only in a state file is published again when an
+        // instance joins the store.
+        let c = drift_service(&dir.path().join("c.json"));
+        c.drift.as_ref().unwrap().trip("arg_matches_task@1");
+        c.share_denials(Arc::clone(&store));
+        a.shared_tripped.lock().0 = None;
+        assert_eq!(a.drift_tripped(), ["arg_matches_task@1"]);
+        // Ids that name no known predicate, or no band, are refused.
+        assert!(b.record_review("x~1~no_such_predicate@1", true).is_err());
+        assert!(b.record_review("x~99~arg_matches_task@1", true).is_err());
+        assert!(b.record_review("not an id", true).is_err());
     }
 
     #[test]

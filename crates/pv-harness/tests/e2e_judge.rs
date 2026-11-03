@@ -1098,7 +1098,9 @@ async fn the_pilot_cap_never_relaxes_a_predicate_in_ask_by_default_mode() {
             model: pin(),
             latency_us: 1,
         };
-        let id = drift.maybe_sample(&verdict, || format!("direct-{top}")).unwrap();
+        let id = drift
+            .maybe_sample(&verdict, |_, _| format!("direct-{top}"))
+            .unwrap();
         drift.record_review(&id, correct).unwrap();
     }
     assert!(drift.is_tripped(ARG_MATCHES_TASK));
