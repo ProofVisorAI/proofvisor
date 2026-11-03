@@ -4571,6 +4571,9 @@ mod tests {
             self.inner.get(key)
         }
         fn try_spend_many(&self, spends: &[Spend]) -> Result<TrySpendOutcome, StateError> {
+            for spend in spends {
+                self.check(&spend.key, true)?;
+            }
             self.inner.try_spend_many(spends)
         }
         fn remove(&self, key: &str) {
