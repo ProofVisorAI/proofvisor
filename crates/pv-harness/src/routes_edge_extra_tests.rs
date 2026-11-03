@@ -145,7 +145,8 @@ fn listings_beside_removals_see_every_untouched_file() {
                 std::fs::write(name, b"c").unwrap();
             }
             for name in &names {
-                crate::spool::change_tool_executions(|| std::fs::remove_file(name)).unwrap();
+                crate::spool::change_tool_executions(name.parent().unwrap(), || std::fs::remove_file(name))
+                    .unwrap();
             }
         }
     });

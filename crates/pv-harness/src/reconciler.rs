@@ -3446,7 +3446,7 @@ impl Finalizer {
                 // reached by this loop and are preserved as
                 // forensic evidence; they are the operator's
                 // choice to sweep by age.
-                crate::spool::change_tool_executions(|| {
+                crate::spool::change_tool_executions(&directory, || {
                     for suffix in [
                         crate::spool::TOOL_AUDITED_SUFFIX,
                         crate::spool::TOOL_OUTCOME_SUFFIX,
@@ -3531,7 +3531,7 @@ impl Finalizer {
                 // Audited first, outcome next, intent last — mirrors the
                 // remove path's crash-ordering rationale (outcome must
                 // never exist without its intent at the primary names).
-                crate::spool::change_tool_executions(|| {
+                crate::spool::change_tool_executions(&directory, || {
                     for suffix in [
                         crate::spool::TOOL_AUDITED_SUFFIX,
                         crate::spool::TOOL_OUTCOME_SUFFIX,

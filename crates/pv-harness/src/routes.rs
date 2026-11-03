@@ -2672,9 +2672,9 @@ pub(crate) async fn unresolved_tool_sessions(
                         quarantine = %pv_core::fsutil::basename(&quarantine),
                         "torn tool-execution intent quarantined so recovery can proceed"
                     );
-                    if let Err(rename_err) =
-                        crate::spool::change_tool_executions(|| std::fs::rename(&path, &quarantine))
-                    {
+                    if let Err(rename_err) = crate::spool::change_tool_executions(&directory, || {
+                        std::fs::rename(&path, &quarantine)
+                    }) {
                         tracing::warn!(%rename_err, "failed to quarantine torn intent — leaving in place");
                     }
                     // Also quarantine the outcome
@@ -2798,7 +2798,9 @@ pub(crate) async fn unresolved_tool_sessions(
                 // Checked again in a turn: a call that claimed its intent
                 // after the first listing has a live outcome, not an orphan.
                 let intent = directory.join(format!("{key}{}", crate::spool::TOOL_INTENT_SUFFIX));
-                if !intent_keys.contains(key) && !crate::spool::change_tool_executions(|| intent.exists()) {
+                if !intent_keys.contains(key)
+                    && !crate::spool::change_tool_executions(&directory, || intent.exists())
+                {
                     // An orphan outcome must not
                     // return Err — that turns the recovery tick into a
                     // permanent brick, especially at boot where
@@ -2830,7 +2832,9 @@ fn quarantine_orphan_sibling(directory: &std::path::Path, key: &str, suffix: &st
     }
     let uid = pv_core::new_event_uid();
     let quarantine = directory.join(format!("{key}{suffix}.corrupt-{uid}"));
-    if let Err(rename_err) = crate::spool::change_tool_executions(|| std::fs::rename(&path, &quarantine)) {
+    if let Err(rename_err) =
+        crate::spool::change_tool_executions(directory, || std::fs::rename(&path, &quarantine))
+    {
         tracing::warn!(
             %rename_err,
             role = %role,
@@ -2861,6 +2865,11 @@ struct ToolExecution {
 }
 
 impl ToolExecution {
+    /// The tool-execution folder this execution's files are in.
+    fn directory(&self) -> &std::path::Path {
+        self.intent_path.parent().unwrap_or(std::path::Path::new(""))
+    }
+
     fn from_request(
         spool: &str,
         headers: &HeaderMap,
@@ -3030,7 +3039,9 @@ impl ToolExecution {
     async fn release_unexecuted(&self) -> Result<(), String> {
         let execution = self.clone();
         tokio::task::spawn_blocking(move || {
-            match crate::spool::change_tool_executions(|| std::fs::remove_file(&execution.intent_path)) {
+            match crate::spool::change_tool_executions(execution.directory(), || {
+                std::fs::remove_file(&execution.intent_path)
+            }) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error.to_string()),
@@ -3106,7 +3117,7 @@ impl ToolExecution {
         // too, so it never finds this one empty and takes it for one a
         // crash left torn (it would move it aside, and a retry could then
         // run the tool again). The sync runs after, outside the turn.
-        let file = crate::spool::change_tool_executions(|| {
+        let file = crate::spool::change_tool_executions(self.directory(), || {
             let mut file = open_options
                 .open(&self.intent_path)
                 .map_err(|error| match error.kind() {
@@ -8993,7 +9004,7 @@ mod tests {
             .unwrap();
         std::fs::create_dir_all(execution.intent_path.parent().unwrap()).unwrap();
         let intent_path = execution.intent_path.clone();
-        let claim = crate::spool::change_tool_executions(|| {
+        let claim = crate::spool::change_tool_executions(intent_path.parent().unwrap(), || {
             let claim = std::thread::spawn(move || execution.claim_sync());
             std::thread::sleep(std::time::Duration::from_millis(100));
             assert!(!intent_path.exists(), "the claim waits for the turn");

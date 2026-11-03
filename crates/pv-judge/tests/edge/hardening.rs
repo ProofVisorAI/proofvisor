@@ -10,7 +10,7 @@
     clippy::too_many_lines
 )]
 
-mod common;
+use crate::common;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse as _;

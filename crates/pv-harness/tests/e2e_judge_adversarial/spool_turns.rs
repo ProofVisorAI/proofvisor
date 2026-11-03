@@ -11,7 +11,7 @@
     clippy::too_many_lines
 )]
 
-mod common;
+use crate::common;
 
 use axum::response::IntoResponse as _;
 use pv_harness::judge::{

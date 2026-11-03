@@ -12,11 +12,16 @@ pub(crate) const TOOL_INTENT_SUFFIX: &str = ".intent.json";
 pub(crate) const TOOL_OUTCOME_SUFFIX: &str = ".outcome.json";
 pub(crate) const TOOL_AUDITED_SUFFIX: &str = ".audited";
 
-/// Listing the tool-execution folder and removing or renaming files in it
-/// take turns. On macOS, a listing that runs while another thread removes
-/// files from the folder can miss files that nobody touched, and
-/// concurrent closes then left other sessions' files behind.
-static TOOL_EXECUTIONS_TURNS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+/// Listing a tool-execution folder and creating, removing or renaming
+/// files in it take turns. On macOS, a listing that runs while another
+/// thread removes files from the folder can miss files that nobody
+/// touched, and concurrent closes then left other sessions' files behind.
+/// Each folder has its own turns: work in one never waits for another.
+fn turns(directory: &std::path::Path) -> std::sync::Arc<parking_lot::Mutex<()>> {
+    type Turns = std::collections::HashMap<std::path::PathBuf, std::sync::Arc<parking_lot::Mutex<()>>>;
+    static TURNS: std::sync::LazyLock<parking_lot::Mutex<Turns>> = std::sync::LazyLock::new(Default::default);
+    std::sync::Arc::clone(TURNS.lock().entry(directory.to_path_buf()).or_default())
+}
 
 /// The paths in the tool-execution folder `directory`: at most
 /// `max + 1`, so a caller can tell that it holds more than `max`.
@@ -24,7 +29,8 @@ pub(crate) fn list_tool_executions(
     directory: &std::path::Path,
     max: usize,
 ) -> std::io::Result<Vec<std::path::PathBuf>> {
-    let _turn = TOOL_EXECUTIONS_TURNS.lock();
+    let turn = turns(directory);
+    let _turn = turn.lock();
     std::fs::read_dir(directory)?
         .take(max.saturating_add(1))
         .map(|entry| entry.map(|entry| entry.path()))
@@ -32,17 +38,20 @@ pub(crate) fn list_tool_executions(
 }
 
 /// Read the tool intent at `path` (at most `MAX_CONTROL_BYTES`) in a
-/// turn: a claim creates and writes an intent in one turn, so this never
-/// reads one that is still empty.
+/// turn of its folder: a claim creates and writes an intent in one turn,
+/// so this never reads one that is still empty.
 pub(crate) fn read_tool_intent(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    let _turn = TOOL_EXECUTIONS_TURNS.lock();
+    let turn = turns(path.parent().unwrap_or(std::path::Path::new("")));
+    let _turn = turn.lock();
     pv_core::fsutil::read_capped(path, pv_core::fsutil::MAX_CONTROL_BYTES)
 }
 
 /// Run `change`, which creates, removes or renames files in the
-/// tool-execution folder, while no listing or intent read runs.
-pub(crate) fn change_tool_executions<T>(change: impl FnOnce() -> T) -> T {
-    let _turn = TOOL_EXECUTIONS_TURNS.lock();
+/// tool-execution folder `directory`, while no listing of it or intent
+/// read in it runs.
+pub(crate) fn change_tool_executions<T>(directory: &std::path::Path, change: impl FnOnce() -> T) -> T {
+    let turn = turns(directory);
+    let _turn = turn.lock();
     change()
 }
 
