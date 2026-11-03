@@ -365,15 +365,17 @@ async fn whitespace_and_empty_tool_outputs_are_not_judged() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tool_output_exactly_at_max_output_chars_is_sent_whole_and_one_more_is_cut() {
-    let body = envelope(&format!("{MARK} {}", "é".repeat(30)));
-    let chars = body.chars().count();
+    // The judge reads the decoded text of the response.
+    let text = format!("{MARK} {}", "é".repeat(30));
+    let body = envelope(&text);
+    let chars = text.chars().count();
     let (events, judged, status) = tool_output_case(body.clone().into_bytes(), chars, "max-exact").await;
     assert_eq!(status, 200);
     assert_eq!(events.len(), 1);
-    assert_eq!(judged[0], body, "exactly max_output_chars must be sent whole");
+    assert_eq!(judged[0], text, "exactly max_output_chars must be sent whole");
     let (_, judged, _) = tool_output_case(body.clone().into_bytes(), chars - 1, "max-minus").await;
     assert_eq!(judged[0].chars().count(), chars - 1);
-    assert!(body.starts_with(&judged[0]));
+    assert!(text.starts_with(&judged[0]));
     // A cut inside a run of multi-byte characters stays valid text.
     let (_, judged, _) = tool_output_case(body.clone().into_bytes(), chars - 5, "max-mb").await;
     assert_eq!(judged[0].chars().count(), chars - 5);
