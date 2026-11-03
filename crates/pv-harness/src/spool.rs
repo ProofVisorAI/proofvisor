@@ -12,6 +12,32 @@ pub(crate) const TOOL_INTENT_SUFFIX: &str = ".intent.json";
 pub(crate) const TOOL_OUTCOME_SUFFIX: &str = ".outcome.json";
 pub(crate) const TOOL_AUDITED_SUFFIX: &str = ".audited";
 
+/// Listing the tool-execution folder and removing or renaming files in it
+/// take turns. On macOS, a listing that runs while another thread removes
+/// files from the folder can miss files that nobody touched, and
+/// concurrent closes then left other sessions' files behind.
+static TOOL_EXECUTIONS_TURNS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// The paths in the tool-execution folder `directory`: at most
+/// `max + 1`, so a caller can tell that it holds more than `max`.
+pub(crate) fn list_tool_executions(
+    directory: &std::path::Path,
+    max: usize,
+) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let _turn = TOOL_EXECUTIONS_TURNS.lock();
+    std::fs::read_dir(directory)?
+        .take(max.saturating_add(1))
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect()
+}
+
+/// Run `change`, which removes or renames files in the tool-execution
+/// folder, while no listing of it runs.
+pub(crate) fn change_tool_executions<T>(change: impl FnOnce() -> T) -> T {
+    let _turn = TOOL_EXECUTIONS_TURNS.lock();
+    change()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

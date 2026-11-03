@@ -3373,15 +3373,13 @@ impl Finalizer {
         let control_key = self.journal_key;
         tokio::task::spawn_blocking(move || -> Result<(), FinalizeError> {
             let directory = spool_dir.join(crate::spool::TOOL_EXECUTIONS);
-            let entries = match std::fs::read_dir(&directory) {
+            let entries = match crate::spool::list_tool_executions(&directory, usize::MAX) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(FinalizeError::atif_source(error)),
             };
             let mut removed_any = false;
-            for entry in entries {
-                let entry = entry.map_err(FinalizeError::atif_source)?;
-                let path = entry.path();
+            for path in entries {
                 let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                     continue;
                 };
@@ -3449,19 +3447,22 @@ impl Finalizer {
                 // reached by this loop and are preserved as
                 // forensic evidence; they are the operator's
                 // choice to sweep by age.
-                for suffix in [
-                    crate::spool::TOOL_AUDITED_SUFFIX,
-                    crate::spool::TOOL_OUTCOME_SUFFIX,
-                    crate::spool::TOOL_INTENT_SUFFIX,
-                    ".intent.torn",
-                ] {
-                    let file = directory.join(format!("{key}{suffix}"));
-                    match std::fs::remove_file(&file) {
-                        Ok(()) => removed_any = true,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(FinalizeError::atif_source(error)),
+                crate::spool::change_tool_executions(|| {
+                    for suffix in [
+                        crate::spool::TOOL_AUDITED_SUFFIX,
+                        crate::spool::TOOL_OUTCOME_SUFFIX,
+                        crate::spool::TOOL_INTENT_SUFFIX,
+                        ".intent.torn",
+                    ] {
+                        let file = directory.join(format!("{key}{suffix}"));
+                        match std::fs::remove_file(&file) {
+                            Ok(()) => removed_any = true,
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => return Err(FinalizeError::atif_source(error)),
+                        }
                     }
-                }
+                    Ok(())
+                })?;
             }
             if removed_any {
                 pv_core::fsutil::sync_directory(&directory).map_err(FinalizeError::atif_source)?;
@@ -3483,14 +3484,12 @@ impl Finalizer {
         let control_key = self.journal_key;
         let outcome = tokio::task::spawn_blocking(move || {
             let directory = spool_dir.join(crate::spool::TOOL_EXECUTIONS);
-            let entries = match std::fs::read_dir(&directory) {
+            let entries = match crate::spool::list_tool_executions(&directory, usize::MAX) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error.to_string()),
             };
-            for entry in entries {
-                let Ok(entry) = entry else { continue };
-                let path = entry.path();
+            for path in entries {
                 let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                     continue;
                 };
@@ -3534,17 +3533,19 @@ impl Finalizer {
                 // Audited first, outcome next, intent last — mirrors the
                 // remove path's crash-ordering rationale (outcome must
                 // never exist without its intent at the primary names).
-                for suffix in [
-                    crate::spool::TOOL_AUDITED_SUFFIX,
-                    crate::spool::TOOL_OUTCOME_SUFFIX,
-                    crate::spool::TOOL_INTENT_SUFFIX,
-                ] {
-                    let file = directory.join(format!("{key}{suffix}"));
-                    let quarantine = directory.join(format!("{key}{suffix}.capturefailed-{uid}"));
-                    match std::fs::rename(&file, &quarantine) {
-                        Ok(()) | Err(_) => {}
+                crate::spool::change_tool_executions(|| {
+                    for suffix in [
+                        crate::spool::TOOL_AUDITED_SUFFIX,
+                        crate::spool::TOOL_OUTCOME_SUFFIX,
+                        crate::spool::TOOL_INTENT_SUFFIX,
+                    ] {
+                        let file = directory.join(format!("{key}{suffix}"));
+                        let quarantine = directory.join(format!("{key}{suffix}.capturefailed-{uid}"));
+                        match std::fs::rename(&file, &quarantine) {
+                            Ok(()) | Err(_) => {}
+                        }
                     }
-                }
+                });
                 tracing::warn!(
                     session = %session_id,
                     key = %key,

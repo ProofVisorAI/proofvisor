@@ -2456,18 +2456,15 @@ fn ensure_tool_executions_resolved_with_limit(
     control_key: &[u8; 32],
     max_dirents: usize,
 ) -> Result<(), String> {
-    let entries = match std::fs::read_dir(directory) {
+    let entries = match crate::spool::list_tool_executions(directory, max_dirents) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => return Err("tool evidence directory is unavailable".to_owned()),
     };
-    for (index, entry) in entries.enumerate() {
-        if index >= max_dirents {
-            return Err("tool evidence directory exceeds the bounded scan limit".to_owned());
-        }
-        let path = entry
-            .map_err(|_| "tool evidence entry is unavailable".to_owned())?
-            .path();
+    if entries.len() > max_dirents {
+        return Err("tool evidence directory exceeds the bounded scan limit".to_owned());
+    }
+    for path in entries {
         let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
             continue;
         };
@@ -2567,7 +2564,10 @@ pub(crate) async fn unresolved_tool_sessions(
     let directory = spool.join(crate::spool::TOOL_EXECUTIONS);
     let control_key = *control_key;
     tokio::task::spawn_blocking(move || {
-        let entries = match std::fs::read_dir(&directory) {
+        let entries = match crate::spool::list_tool_executions(
+            &directory,
+            crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK,
+        ) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(std::collections::HashSet::new());
@@ -2577,7 +2577,7 @@ pub(crate) async fn unresolved_tool_sessions(
         let mut intent_keys = std::collections::HashSet::new();
         let mut unresolved_sessions = std::collections::HashSet::new();
         let mut dirents_seen = 0usize;
-        for entry in entries {
+        for path in entries {
             // Dirent cap: every other spool scan bounds its directory
             // walk (MAX_RECOVERY_DIRENTS_PER_TICK); this one also
             // accumulates one HashSet key per `*.intent.json` name
@@ -2598,7 +2598,6 @@ pub(crate) async fn unresolved_tool_sessions(
                     crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK
                 ));
             }
-            let path = entry.map_err(|error| error.to_string())?.path();
             let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                 continue;
             };
@@ -2674,7 +2673,9 @@ pub(crate) async fn unresolved_tool_sessions(
                         quarantine = %pv_core::fsutil::basename(&quarantine),
                         "torn tool-execution intent quarantined so recovery can proceed"
                     );
-                    if let Err(rename_err) = std::fs::rename(&path, &quarantine) {
+                    if let Err(rename_err) =
+                        crate::spool::change_tool_executions(|| std::fs::rename(&path, &quarantine))
+                    {
                         tracing::warn!(%rename_err, "failed to quarantine torn intent — leaving in place");
                     }
                     // Also quarantine the outcome
@@ -2778,7 +2779,10 @@ pub(crate) async fn unresolved_tool_sessions(
             };
         }
         let mut orphan_dirents = 0usize;
-        for entry in std::fs::read_dir(&directory).map_err(|error| error.to_string())? {
+        let orphan_entries =
+            crate::spool::list_tool_executions(&directory, crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK)
+                .map_err(|error| error.to_string())?;
+        for path in orphan_entries {
             // Same fail-closed dirent cap as the intent pass above.
             orphan_dirents = orphan_dirents.saturating_add(1);
             if orphan_dirents > crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK {
@@ -2788,7 +2792,6 @@ pub(crate) async fn unresolved_tool_sessions(
                     crate::reconciler::MAX_RECOVERY_DIRENTS_PER_TICK
                 ));
             }
-            let path = entry.map_err(|error| error.to_string())?.path();
             let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
                 continue;
             };
@@ -2825,7 +2828,7 @@ fn quarantine_orphan_sibling(directory: &std::path::Path, key: &str, suffix: &st
     }
     let uid = pv_core::new_event_uid();
     let quarantine = directory.join(format!("{key}{suffix}.corrupt-{uid}"));
-    if let Err(rename_err) = std::fs::rename(&path, &quarantine) {
+    if let Err(rename_err) = crate::spool::change_tool_executions(|| std::fs::rename(&path, &quarantine)) {
         tracing::warn!(
             %rename_err,
             role = %role,
@@ -3025,7 +3028,7 @@ impl ToolExecution {
     async fn release_unexecuted(&self) -> Result<(), String> {
         let execution = self.clone();
         tokio::task::spawn_blocking(move || {
-            match std::fs::remove_file(&execution.intent_path) {
+            match crate::spool::change_tool_executions(|| std::fs::remove_file(&execution.intent_path)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error.to_string()),
@@ -3090,8 +3093,7 @@ impl ToolExecution {
             use std::os::unix::fs::OpenOptionsExt as _;
             open_options.mode(0o600);
         }
-        let mut file = open_options
-            .open(&self.intent_path)
+        let mut file = crate::spool::change_tool_executions(|| open_options.open(&self.intent_path))
             .map_err(|error| match error.kind() {
                 std::io::ErrorKind::AlreadyExists => ClaimError::Race,
                 _ => ClaimError::Backend(format!("tool execution intent unavailable: {error}")),
@@ -5614,8 +5616,8 @@ pub(crate) fn parse_provider_chunk(raw: &str) -> Result<Option<ParsedProviderChu
             let content = choice
                 .pointer("/delta/content")
                 .or_else(|| choice.pointer("/message/content"))
-                .and_then(Value::as_str);
-            if let Some(content) = content {
+                .and_then(content_text);
+            if let Some(content) = content.as_deref() {
                 message.push_str(content);
                 choice_delta.content.push_str(content);
             }
@@ -6060,6 +6062,22 @@ impl Drop for AbortFinalizingStream {
                 }
             }
         }
+    }
+}
+
+/// The text of a message's `content`: a string, or the `text` of each
+/// text part when it is an array of content parts.
+fn content_text(content: &Value) -> Option<std::borrow::Cow<'_, str>> {
+    match content {
+        Value::String(text) => Some(std::borrow::Cow::Borrowed(text)),
+        Value::Array(parts) => Some(std::borrow::Cow::Owned(
+            parts
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect(),
+        )),
+        _ => None,
     }
 }
 
