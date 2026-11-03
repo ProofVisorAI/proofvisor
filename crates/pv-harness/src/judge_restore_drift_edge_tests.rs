@@ -25,7 +25,8 @@ fn judge_toml(drift_state: Option<&std::path::Path>) -> JudgeConfig {
     let drift = drift_state
         .map(|path| {
             format!(
-                "[drift]\nstate_file = \"{}\"\nsample_every = 1\nmin_reviews_per_band = 2\n",
+                // A TOML literal string: a Windows path holds backslashes.
+                "[drift]\nstate_file = '{}'\nsample_every = 1\nmin_reviews_per_band = 2\n",
                 path.display()
             )
         })
