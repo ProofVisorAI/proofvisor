@@ -92,9 +92,8 @@ pvctl
 
 > Plain `cargo install pv-harness pv-cli` (crates.io, no `--git`)
 > does not work yet: the crates are not published to crates.io. The
-> latest GitHub release is the `v0.1.0-rc.8` pre-release (2026-11-01),
-> which is the version the installer pins; there is no final `v0.1.0`
-> release yet.
+> latest GitHub release is `v0.1.0` (2026-11-12), the first final
+> release, and it is the version the installer pins.
 > Use the `--git` lines above or [Install from source](#install-from-source).
 
 Bare `pvctl` launches a guided setup: pick your AI provider from a

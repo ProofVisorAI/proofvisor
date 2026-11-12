@@ -3,7 +3,7 @@
 This is a dated record from 2026-09-24, and its present-tense statements
 describe the state at that time. For the current state (the live
 deployment on Render, Resend mail, Google sign-in, release
-`v0.1.0-rc.8`) and newer test results, see `docs/FEATURES.md` sections
+`v0.1.0`) and newer test results, see `docs/FEATURES.md` sections
 7 to 10. Live runs against Anthropic, Gemini and a real enterprise
 identity provider are still owed.
 

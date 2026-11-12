@@ -309,9 +309,11 @@ with demonstration data, which is what the public site shows by default.
   customer Windows hardware, and the installer, service unit and
   containers stay Unix-only, so Windows is listed here rather than among
   the Tier 1 platforms.
-- **Release state.** The latest release is the pre-release
-  `v0.1.0-rc.8` (2026-11-01; the installer pins it); nothing is on
-  crates.io yet. Publishing needs explicit approval.
+- **Release state.** The latest release is `v0.1.0` (2026-11-12), the
+  first final release; the installer pins it. Nothing is on crates.io
+  yet: the release run rehearsed the upload successfully, and the
+  upload itself stopped because the repository has no
+  `CARGO_REGISTRY_TOKEN` secret.
 - **Native Anthropic and Gemini have not reached the real APIs yet.**
   They were tested against local servers that speak each vendor's wire
   format as documented. A run against api.anthropic.com and the Gemini
