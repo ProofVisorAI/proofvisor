@@ -2,10 +2,10 @@
 
 All notable changes are documented here. The project follows Semantic Versioning.
 
-## 0.1.0 - Unreleased
+## 0.1.0 - 2026-11-12
 
-The latest build is the GitHub pre-release v0.1.0-rc.8 (2026-11-01). There
-is no final v0.1.0 release yet, and nothing is published on crates.io.
+This is the first final release. It follows the GitHub pre-release
+v0.1.0-rc.8 (2026-11-01).
 
 Ahead of this release, a comprehensive third-party engineering review
 (August 2026) covered the full codebase, deployment artifacts, and
