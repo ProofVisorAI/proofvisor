@@ -26,10 +26,18 @@ const BRIDGE_TOPICS: [&str; 7] = [
     "agent.compression",
     "agent.identity",
     "agent.receipt",
-    // Added with scheme 2: sessions numbered under an earlier scheme
-    // skip it (see `bridge_seq`).
+    // Added with scheme 2. Sessions numbered under an earlier scheme
+    // number it in the slot of `agent.receipt` (see `bridge_seq`).
     "agent.judge",
 ];
+
+/// Index of `agent.receipt` in `BRIDGE_TOPICS`. Its records never
+/// become events: `scan_bridge_candidates` banks their offsets before
+/// mapping (receipts are uploaded from the spool, not from this topic),
+/// so its seq slot is free in every scheme.
+const RECEIPT_TOPIC_IDX: usize = 5;
+/// Index of `agent.judge` in `BRIDGE_TOPICS`.
+const JUDGE_TOPIC_IDX: usize = 6;
 
 /// Topics numbered by scheme 1: the first six of `BRIDGE_TOPICS`.
 const SCHEME_1_TOPICS: u64 = 6;
@@ -777,6 +785,13 @@ async fn sync_bridge_candidate(
                 .or_default();
             session_state.last_synced_seq = session_state.last_synced_seq.max(max_seq);
             session_state.synced_any = true;
+            // Pin the scheme with the first acknowledged batch. A later
+            // batch may fail; were the pin left for the end, the next
+            // scan would read "synced, no scheme" as the legacy scheme
+            // and post the acknowledged events again under other seqs.
+            if session_state.bridge_seq_scheme.is_none() {
+                session_state.bridge_seq_scheme = Some(candidate.seq_scheme);
+            }
             changed = true;
         }
     }
@@ -875,13 +890,15 @@ struct SessionSyncState {
     ///   * `Some(0)` / legacy — `topic_idx*1e6 + offset`, which
     ///     COLLIDES across topics once any partition's offset reaches
     ///     1e6 (and mass-collides at the MAX_SEQ clamp); kept only for
-    ///     sessions that already synced under it.
+    ///     sessions that already synced under it. `agent.judge` records
+    ///     take the slot of `agent.receipt` (`5e6 + offset`).
     ///   * `Some(1)` — interleaved `offset*6 + topic_idx` over the six
     ///     topics before `agent.judge`, collision-free across topics
     ///     for the same session (a session's records sit in ONE
     ///     partition per topic — the broker partitions by session
-    ///     key). `agent.judge` records are not uploaded for it: index 6
-    ///     would collide with topic 0.
+    ///     key). `agent.judge` records take the slot of `agent.receipt`
+    ///     (index 5), which never carries an event; index 6 would
+    ///     collide with topic 0.
     ///   * `Some(2)` — the same interleave over all seven topics.
     ///   * `None` — never bridge-synced; resolved at scan time
     ///     (legacy iff the session already synced under legacy).
@@ -1698,8 +1715,10 @@ fn bridge_record_to_event(
     if occurred_ms > now_ms.saturating_add(INGEST_FUTURE_SKEW_MS) {
         return BridgeRecordMapping::FutureSkew;
     }
-    // Sessions numbered before `agent.judge` existed have no seq for it.
-    if topic == "agent.judge" && seq_scheme < 2 {
+    // `agent.receipt` records never become events. Refusing them here,
+    // before a seq is computed, keeps their slot free for the judge
+    // records of sessions numbered under scheme 0 or 1 (see `bridge_seq`).
+    if topic == "agent.receipt" {
         return BridgeRecordMapping::Skipped;
     }
     let Some(seq) = bridge_seq(seq_scheme, topic_idx, stored.offset) else {
@@ -1925,6 +1944,17 @@ fn bridge_occurred_at(value: &serde_json::Value, stored_at: u64) -> Option<(u64,
 }
 
 fn bridge_seq(scheme: u8, topic_idx: usize, offset: u64) -> Option<u64> {
+    // Schemes 0 and 1 were defined before `agent.judge` existed, and a
+    // session's mapping can never change. Their judge records take the
+    // slot of `agent.receipt`, which no event ever uses: the seqs
+    // already posted for the session stay as they are, and a judge seq
+    // cannot equal any of them under scheme 1 (under scheme 0 it shares
+    // that scheme's documented collisions past the stride).
+    let topic_idx = if scheme < 2 && topic_idx == JUDGE_TOPIC_IDX {
+        RECEIPT_TOPIC_IDX
+    } else {
+        topic_idx
+    };
     let topic = u64::try_from(topic_idx).unwrap_or(u64::MAX);
     if scheme == 0 {
         // Legacy mapping, kept ONLY for sessions that already posted
@@ -3222,10 +3252,27 @@ mod tests {
         // Past the server cap: refuse, never clamp (clamping collides).
         assert_eq!(bridge_seq(1, 0, MAX_SEQ), None);
         assert_eq!(bridge_seq(1, 5, u64::MAX), None);
-        // Scheme 1 numbers only the six topics it was defined over, so
-        // its seqs never change; the seventh topic has none.
-        assert_eq!(bridge_seq(1, 6, 0), None);
+        // Scheme 1 numbers the six topics it was defined over, so its
+        // seqs never change. The seventh topic (`agent.judge`) takes the
+        // slot of `agent.receipt`, which never carries an event; an
+        // index past it has no seq.
+        assert_eq!(bridge_seq(1, JUDGE_TOPIC_IDX, 0), Some(5));
+        assert_eq!(bridge_seq(1, JUDGE_TOPIC_IDX, 3), Some(23));
+        assert_eq!(bridge_seq(1, 7, 0), None);
         assert_eq!(bridge_seq(1, 0, 1), Some(6));
+        let mut seen = std::collections::HashSet::new();
+        for topic_idx in [0, 1, 2, 3, 4, JUDGE_TOPIC_IDX] {
+            for offset in [0u64, 1, 999_999, 1_000_000, 5_000_000] {
+                assert!(
+                    seen.insert(bridge_seq(1, topic_idx, offset).unwrap()),
+                    "collision at topic {topic_idx} offset {offset}"
+                );
+            }
+        }
+        // Scheme 0 numbers judge records in the receipt slot as well.
+        assert_eq!(bridge_seq(0, JUDGE_TOPIC_IDX, 7), Some(5_000_007));
+        assert_eq!(BRIDGE_TOPICS[RECEIPT_TOPIC_IDX], "agent.receipt");
+        assert_eq!(BRIDGE_TOPICS[JUDGE_TOPIC_IDX], "agent.judge");
         // Scheme 2: the same interleave over seven topics.
         assert_eq!(bridge_seq(2, 6, 0), Some(6));
         assert_eq!(bridge_seq(2, 0, 1), Some(7));
@@ -3352,11 +3399,11 @@ mod tests {
 
     /// `agent.judge` was added as a seventh topic. A session already
     /// numbered under scheme 1 keeps that numbering (the server dedups
-    /// on (session, seq)) and skips judge records, whose index would
-    /// collide with topic 0; a session that never synced is numbered
-    /// under scheme 2 and uploads them.
+    /// on (session, seq)) and numbers its judge records in the slot of
+    /// `agent.receipt`, which never carries an event; a session that
+    /// never synced is numbered under scheme 2. Both upload them.
     #[test]
-    fn judge_events_upload_only_for_sessions_numbered_under_scheme_2() {
+    fn judge_events_upload_under_every_seq_scheme() {
         let dir = test_tempdir("bridge-judge");
         write_bridge_manifest(dir.path());
         let event = |class: &str, uid: &str, session: &str, payload: serde_json::Value| {
@@ -3422,11 +3469,16 @@ mod tests {
         };
         let old = find("old-s");
         assert_eq!(old.seq_scheme, 1);
-        assert!(
-            old.events.iter().all(|e| e.tag != "judge"),
-            "scheme 1 must skip judge records"
-        );
-        assert_eq!(old.events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![0]);
+        let old_judge = old
+            .events
+            .iter()
+            .find(|e| e.tag == "judge")
+            .expect("scheme 1 uploads judge records");
+        assert_eq!(old_judge.kind, EventKind::Audit);
+        assert_eq!(old_judge.seq, 5, "offset 0 in the receipt slot of six topics");
+        // The open event keeps the seq it was posted under.
+        assert_eq!(old.events.iter().find(|e| e.tag == "open").unwrap().seq, 0);
+        assert_eq!(old.events.len(), 2);
         let new = find("new-s");
         assert_eq!(new.seq_scheme, 2);
         let judge = new
@@ -3438,8 +3490,7 @@ mod tests {
         assert_eq!(judge.sub.as_deref(), Some("trace"));
         assert_eq!(judge.seq, 7 + 6, "offset 1 of topic 6 under seven topics");
         assert_eq!(new.events.iter().find(|e| e.tag == "open").unwrap().seq, 7);
-        // Both judge records were read, the skipped one included, so
-        // neither is read again.
+        // Both judge records were read, so neither is read again.
         assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&1));
     }
 
@@ -4214,6 +4265,155 @@ mod tests {
         assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&offset));
     }
 
+    /// The judge slot of schemes 0 and 1 is free only because
+    /// `agent.receipt` records never become events. A receipt record
+    /// and a judge record at the same offset yield one event, the
+    /// judge's, in every scheme.
+    #[test]
+    fn edge_a_receipt_record_never_takes_the_slot_judge_records_use() {
+        for (scheme, expected) in [(Some(1), 5u64), (None, 5_000_000)] {
+            let dir = test_tempdir("bridge-receipt-slot");
+            write_bridge_manifest(dir.path());
+            let mut receipt = edge_judge_record(0, "slot-s");
+            receipt.value["class_name"] = json!("agent.receipt");
+            append_bridge_event(dir.path(), "agent.receipt", receipt.clone());
+            append_bridge_event(dir.path(), "agent.judge", edge_judge_record(0, "slot-s"));
+            let mut state = SyncState::default();
+            state.sessions.insert(
+                "slot-s".to_owned(),
+                SessionSyncState {
+                    last_synced_seq: 0,
+                    receipt_synced: false,
+                    quarantined: false,
+                    synced_any: true,
+                    atif_synced: false,
+                    bridge_seq_scheme: scheme,
+                },
+            );
+            let scan = scan_bridge_candidates(dir.path(), &state, &BTreeSet::new());
+            let events: Vec<_> = scan.candidates.iter().flat_map(|c| c.events.iter()).collect();
+            assert_eq!(events.len(), 1, "scheme {scheme:?}");
+            assert_eq!(events[0].tag, "judge");
+            assert_eq!(events[0].seq, expected);
+            assert_eq!(scan.max_seen_offsets.get("agent.receipt/p0"), Some(&0));
+            // Asked directly, the mapping refuses a receipt record.
+            assert!(matches!(
+                bridge_record_to_event(
+                    RECEIPT_TOPIC_IDX,
+                    1,
+                    "agent.receipt",
+                    &receipt,
+                    pv_core::time::now_ms()
+                ),
+                BridgeRecordMapping::Skipped
+            ));
+        }
+    }
+
+    /// Judge records of older schemes at the server's seq cap: scheme 1
+    /// refuses the first offset whose seq would pass the cap, and scheme
+    /// 0 clamps as it does for every topic.
+    #[test]
+    fn edge_judge_seq_of_older_schemes_at_the_server_cap() {
+        assert_eq!(bridge_seq(1, JUDGE_TOPIC_IDX, 16_666_665), Some(99_999_995));
+        assert_eq!(bridge_seq(1, JUDGE_TOPIC_IDX, 16_666_666), None);
+        assert_eq!(bridge_seq(0, JUDGE_TOPIC_IDX, 94_999_999), Some(99_999_999));
+        assert_eq!(bridge_seq(0, JUDGE_TOPIC_IDX, 95_000_000), Some(MAX_SEQ));
+        assert_eq!(bridge_seq(0, JUDGE_TOPIC_IDX, u64::MAX), Some(MAX_SEQ));
+    }
+
+    /// A session whose first batch is acknowledged and whose second
+    /// fails keeps the scheme its acknowledged events were posted under.
+    #[tokio::test]
+    async fn the_seq_scheme_is_pinned_by_the_first_acknowledged_batch() {
+        let posts = Arc::new(Mutex::new(0usize));
+        async fn events(
+            State(posts): State<Arc<Mutex<usize>>>,
+            Json(_body): Json<Value>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            let mut posts = posts.lock().unwrap();
+            *posts += 1;
+            if *posts == 1 {
+                (AxumStatusCode::OK, Json(json!({"inserted": 500})))
+            } else {
+                (
+                    AxumStatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "down"})),
+                )
+            }
+        }
+        async fn sessions(Json(_body): Json<Value>) -> Json<Value> {
+            Json(json!({"ok": true}))
+        }
+        let app = Router::new()
+            .route("/api/v1/ingest/sessions", post(sessions))
+            .route(
+                "/api/v1/ingest/events",
+                post(events).with_state(Arc::clone(&posts)),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let dir = test_tempdir("scheme-pin");
+        let client = ConsoleClient::new(&ResolvedSyncConfig {
+            spool_dir: dir.path().to_path_buf(),
+            bridge_dir: None,
+            state_file: dir.path().join("state.json"),
+            console_url: format!("http://{address}"),
+            deployment: "dep-1".to_owned(),
+            token: "secret".to_owned(),
+        })
+        .unwrap();
+        let events: Vec<IngestEvent> = (0..501u64)
+            .map(|offset| {
+                bridge_ingest_event(
+                    "pin-s",
+                    bridge_seq(2, 1, offset).unwrap(),
+                    EventKind::Audit,
+                    "judge",
+                    None,
+                    "body".to_owned(),
+                    "2026-01-01T00:00:00.000Z".to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(event_batches(&events).len(), 2);
+        let candidate = BridgeSessionCandidate {
+            session: SessionUpsert {
+                external_id: "pin-s".to_owned(),
+                agent: "agent".to_owned(),
+                workflow: Workflow::Signed,
+                status: SessionStatus::Live,
+                policy_version: 1,
+                opened_at: "2026-01-01T00:00:00.000Z".to_owned(),
+                closed_at: None,
+            },
+            events,
+            seq_scheme: 2,
+        };
+        let mut state = SyncState::default();
+        assert!(sync_bridge_candidate(&client, &mut state, candidate)
+            .await
+            .is_err());
+        assert_eq!(*posts.lock().unwrap(), 2);
+        let session = state.sessions.get("pin-s").expect("session state");
+        assert!(session.synced_any);
+        assert_eq!(
+            session.bridge_seq_scheme,
+            Some(2),
+            "the acknowledged batch fixes the numbering"
+        );
+        let _ = tx.send(());
+    }
+
     #[test]
     fn edge_a_scheme_1_session_with_only_judge_records() {
         let dir = test_tempdir("bridge-judge-only");
@@ -4237,31 +4437,27 @@ mod tests {
                 bridge_seq_scheme: Some(1),
             },
         );
-        let scan = scan_bridge_candidates(dir.path(), &state, &BTreeSet::new());
-        // Every record is read (banked) and none is uploaded.
-        assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&2));
-        let candidate = scan
-            .candidates
-            .iter()
-            .find(|candidate| candidate.session.external_id == "old-judge-only");
-        if let Some(candidate) = candidate {
-            assert!(candidate.events.is_empty());
-        }
-        eprintln!(
-            "candidate for a judge-only scheme 1 session: {}",
-            candidate.is_some()
-        );
-        // The same with no stored scheme but an earlier sync (scheme 0).
+        let judge_seqs = |state: &SyncState| {
+            let scan = scan_bridge_candidates(dir.path(), state, &BTreeSet::new());
+            // Every record is read (banked).
+            assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&2));
+            let candidate = scan
+                .candidates
+                .iter()
+                .find(|candidate| candidate.session.external_id == "old-judge-only")
+                .expect("a candidate for the judge-only session");
+            assert!(candidate.events.iter().all(|event| event.tag == "judge"));
+            candidate.events.iter().map(|event| event.seq).collect::<Vec<_>>()
+        };
+        // Scheme 1: the receipt slot of the six-topic interleave.
+        assert_eq!(judge_seqs(&state), vec![5, 11, 17]);
+        // No stored scheme but an earlier sync (scheme 0): the receipt
+        // slot of the legacy stride.
         state
             .sessions
             .get_mut("old-judge-only")
             .unwrap()
             .bridge_seq_scheme = None;
-        let scan = scan_bridge_candidates(dir.path(), &state, &BTreeSet::new());
-        assert!(scan
-            .candidates
-            .iter()
-            .all(|candidate| candidate.events.iter().all(|event| event.tag != "judge")));
-        assert_eq!(scan.max_seen_offsets.get("agent.judge/p0"), Some(&2));
+        assert_eq!(judge_seqs(&state), vec![5_000_000, 5_000_001, 5_000_002]);
     }
 }
