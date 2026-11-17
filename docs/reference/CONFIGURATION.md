@@ -3,7 +3,7 @@
 The harness reads its TOML from the first path that exists in this
 order:
 
-1. `$PV_CONFIG` (an absolute path to a specific file)
+1. `$PV_CONFIG` (an explicit path to a specific file; a missing file is an error)
 2. `./proofvisor.toml`
 3. `./config/harness.toml`
 4. `./agentvisor.toml` (the file name used before the ProofVisor rename)
@@ -15,9 +15,11 @@ order:
 searched — see engineering review round 51 §9.4. If you were relying
 on that rank swap, copy it to one of the searched paths.
 
-`pvctl config-validate path/to/harness.toml` runs the same parser,
-`validate()` gates, and JSON-schema fidelity checks that `proofvisord`
-runs at startup and fails with the same diagnostics.
+`pvctl config-validate path/to/harness.toml` runs the TOML parser and
+configuration validation, then checks whether this build includes the selected
+backends. `--structural-only` skips the build-feature check. It does not prove
+that external services, model files, tool schemas or policies can be loaded;
+those checks still run when the daemon starts.
 
 ## Environment variables
 
@@ -27,7 +29,7 @@ source. All are optional.
 | Variable | Read by | Meaning |
 | --- | --- | --- |
 | `PV_SIGNING_SEED_FILE` | `proofvisord` | Path to the 32-byte Ed25519 signing seed — **the root of the entire trust story**. Default `config/signing.seed` relative to the working directory. If the file is missing, a fresh seed is generated and a WARN names the new key id: every receipt signed after an unintended regeneration verifies only against the NEW key, so mount this from a Secret in production and treat the WARN as a compliance incident outside first boot. |
-| `PV_CONFIG` | `proofvisord`, `pvctl` | Absolute path to the config file; rank 1 in the search order above. |
+| `PV_CONFIG` | `proofvisord`, `pvctl` | Explicit path to the config file; rank 1 in the search order above. |
 | `PV_UPSTREAM_URL` | `proofvisord` | Overrides `upstream_url` (useful in containers where the config file is baked). |
 | `PV_LISTEN` | `proofvisord` | Overrides `listen`. |
 | `PV_UPSTREAM_CHAT_PATH` | `proofvisord` | Overrides `upstream_chat_path`. |

@@ -1,6 +1,8 @@
 # Limits, Bounds, and Refusal Points
 
-This document enumerates every hard limit the harness enforces. If
+This document describes the main runtime limits the harness enforces. The
+[judge configuration](CONFIGURATION.md#semantic-judge-judge) separately lists
+model input, concurrency, deadline and trace-window limits. If
 you're hitting one, the fix is almost always in
 `docs/reference/CONFIGURATION.md` — but you need to know the ceiling
 before you know the knob.
@@ -25,13 +27,13 @@ before you know the knob.
 | Identity string fields (`instance_uid`, `version`, `sub`, `iss`, `jti`) | 256 UTF-8 code points each | Same cap and refusal path as `charter`. Each of these binds into every signed receipt's JCS-canonicalized signing input and into every log line for the session, so an unbounded (up to the ~7 KiB per-claim JWT budget) attacker-chosen field would bloat both. |
 | Identity scopes | 64 entries × 256 UTF-8 code points each | Bounded so delegation-chain subset checks stay per-request cheap and no single scope pollutes logs. |
 | Concurrent sessions per process | unbounded (RAM-limited) | Idle sweeper reaps at `session_idle_close_s`. |
-| Concurrent worker slots | `worker_channel_capacity` (default 32768), sharded over `max(16, available_parallelism)` shards | Additional concurrency queues in the request pipeline. |
+| Concurrent worker slots | `worker_channel_capacity` (default 32768), sharded over `max(16, available_parallelism)` shards | Admission reserves capacity without waiting; a full worker queue refuses new work. |
 | Concurrent response slots | mirrors worker capacity | Backpressure surfaces as `pv_events_dropped_total{stage="response_slot"}`. |
 
 ## Budgets
 
 Budgets are two-ledger (session + optional principal). Each ledger
-tracks absolute per-session quotas — there is NO sliding-window refill
+tracks cumulative quotas in its own scope — there is NO sliding-window refill
 and NO time-based recovery. A session's quota is consumed as tokens
 land against `compression.tokens_after` and as tools are called; the
 only way a quota drops back down is on explicit refund (upstream
@@ -46,16 +48,24 @@ per principal over a sliding window and refuse with 403.
 | Per-tool call count | `max_tool_calls.<tool>` | `BTreeMap<String, u64>` |
 | Total tool calls across the session | `max_total_tool_calls` | `Option<u64>` |
 
+Prompt tokens are estimated after compression at admission and reconciled with
+the provider's reported usage. Completion tokens are checked as the response
+arrives. A buffered response can be refused before delivery; a stream can be
+stopped after earlier content has reached the client. These checks cannot undo
+generation or charges already incurred at the provider. The payout axis checks
+the configured tool argument and does not cap the provider's dollar bill.
+
 * Both ledgers are checked **after** compression against
   `compression.tokens_after`. Compression engages at 512 approximate
   tokens; only the middle-stubbing pass waits for 50,000.
 * **Backend counter TTL**: the Redis backend expires every budget
   counter after 24 hours of key inactivity (`counter_ttl_secs()` on
   the `StateStore` trait; logged at startup as
-  `state_counter_ttl_s`). A session ACTIVE past that window has its
-  budget silently reset — against Redis only; the in-memory backend
-  never expires. Bound session lifetimes to the TTL or close/reopen
-  long-running conversations.
+  `state_counter_ttl_s`). Successful spends, refunds and refused spends
+  refresh existing counters. An inactive counter can expire after that
+  window, resetting its budget if reused; continuous activity does not
+  itself reset the counter. The in-memory backend never expires counters.
+  Account for this difference when choosing principal budget lifetimes.
 * The principal ledger is checked FIRST; the session ledger is
   checked second. If the session refuses, the principal debit is
   refunded so a client rotating session ids can't drain the
@@ -107,7 +117,7 @@ tests exercised.
 
 | Limit | Default | Notes |
 | --- | --- | --- |
-| Kafka payload | 1 MiB per record | Set by broker; the harness never emits records larger than 512 KiB. |
+| Kafka payload | Broker-configured | Size limits depend on broker and topic configuration. Provider capture limits do not guarantee that a serialized audit event fits a 1 MiB broker limit. |
 | Kafka compression | None, gzip, LZ4 or Snappy when reading | The harness writes uncompressed records. Reading a zstd-compressed batch fails with "Unimplemented compression", because the zstd version our Kafka client depends on has open security advisories. Do not set `compression.type=zstd` on ProofVisor topics. |
 | NATS payload | 1 MiB per message | Set by broker. |
 | Embedded Bridge record line | 16 MiB per line | Lines longer than this are refused when a segment is read back. Each partition is one JSONL segment file (`p<N>.jsonl`); retention rewrites it in place rather than rolling over to new files. |
@@ -116,9 +126,10 @@ tests exercised.
 
 | Limit | Default | Notes |
 | --- | --- | --- |
-| Concurrent HTTP/2 streams (server-side) | 128 | Hyper default. |
-| Concurrent HTTP/2 streams (upstream) | 100 | Hyper default. |
-| Client request read timeout | none | Rely on upstream to terminate stuck streams. |
+| Concurrent HTTP/2 streams | Transport defaults and peer settings | The daemon does not configure a fixed application limit on HTTP/2 streams; audit and MCP admission have their own capacity limits. |
+| Client header read timeout | 30 s | The accept loop bounds initial client silence and HTTP/1 header reads. |
+| Client request-body silence | 30 s between frames | A stalled upload is terminated; progress resets the interval. This is not a whole-request deadline. |
+| HTTP/2 keepalive | 20 s interval, 30 s grace | Unresponsive peers are disconnected. |
 | Upstream request read timeout | `upstream_read_timeout_s` | Unset = 60 s default. It is a read-idle timeout: every successful read restarts it, so it does not cap total stream length. Raise it only for upstreams that can stay silent for longer than the timeout. |
 
 ## Cryptography
@@ -156,7 +167,7 @@ intentional (round 51 §8.5).
   so the prompt is billed once per choice. See
   [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md#multiple-choices-n--1).
 
-## What the harness will NEVER limit
+## Limits without a dedicated configuration setting
 
 * Number of turns in a session — sessions are RAM-cost bounded but
   have no hard turn cap.
@@ -165,7 +176,6 @@ intentional (round 51 §8.5).
 * Model choice — the harness forwards `model` verbatim; the upstream
   decides which are supported.
 
-If you want caps on any of the above, add them at the identity
-scope layer (JWT claims → policy) or at an ingress layer above the
-harness. Adding them to the harness would break the "cryptographic
-audit of what actually happened" posture.
+If you need these limits, enforce them in application logic, a suitable policy,
+or an ingress layer. Their absence is a current implementation limit, not a
+requirement of cryptographic auditing.

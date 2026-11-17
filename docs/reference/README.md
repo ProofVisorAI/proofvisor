@@ -22,13 +22,19 @@ the latter, start with `ARCHITECTURE.md` at the repo root.
   the refusal points on request size, budgets, loops, and
   compression.
 
+The optional semantic judge is covered in
+[configuration](CONFIGURATION.md#semantic-judge-judge) and
+[operations](OPERATIONS.md#semantic-judge). The
+[current feature inventory](../FEATURES.md) distinguishes implemented behavior,
+recorded test results, and remaining limitations.
+
 Other repo-root docs:
 
 * `README.md` — quickstart and marketing surface.
 * `ARCHITECTURE.md` — high-level structure of the workspace.
 * `SECURITY.md` — vulnerability disclosure.
-* `SECURITY-AUDIT.md` — deferred security posture notes.
+* `SECURITY-AUDIT.md` — dated dependency advisory review and later updates.
 * [`CONFORMANCE-STATUS.md`](../../CONFORMANCE-STATUS.md) — the compliance / MVP verdict record.
-* `BENCHMARKS.md` — SLA measurements against 10k connections.
+* `BENCHMARKS.md` — dated measurements, fixture scope, and latency boundaries.
 * `CHANGELOG.md` — release history.
 * `EVOLUTION.md` — design decisions and their rationale.

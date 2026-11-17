@@ -18,12 +18,13 @@
 <body>
 <main>
   <p class="draft" style="background:#e8f5ec;border-color:#9fd4ae;color:#134b23">
-    <strong>What the public demo collects: nothing.</strong>
-    The demo console at proofvisor.com/app/ runs in your browser against
-    built-in sample data. It stores only your theme and the demo state in
-    your browser&rsquo;s localStorage, which &ldquo;Reset demo data&rdquo;
-    clears. The <em>hosted service</em> at api.proofvisor.com is live,
-    and the policy below describes it.
+    <strong>Demo mode uses sample data.</strong>
+    In mock mode, the console keeps its sample workspace and preferences in
+    your browser&rsquo;s localStorage and does not upload that workspace to
+    the hosted API. Selecting live mode connects to api.proofvisor.com;
+    that choice persists in your browser. Website hosting can process normal
+    request metadata such as IP addresses. The hosted service&rsquo;s
+    policy below describes it.
   </p>
   <p class="draft">
     <strong>Draft (not yet reviewed by counsel).</strong>
@@ -31,27 +32,27 @@
   </p>
 
   <h1>Privacy policy</h1>
-  <p>Last updated: 2026-11-01.</p>
+  <p>Last updated: 2026-11-17 (technical data-flow descriptions).</p>
 
   <h2>1. What we collect</h2>
   <ul>
     <li><strong>Account:</strong> email, display name, argon2id password hash, org name. If you sign in with Google, SAML or OIDC, we store the name and email address that the identity provider sends. If you register a passkey, we store its public key and credential ID.</li>
     <li><strong>Audit log:</strong> each recorded action in your organization, with the IP address and browser user agent of the person who performed it.</li>
-    <li><strong>Session receipts:</strong> summaries your daemon posts — session id, agent name, model, token counts, cost estimate, tool-call metadata, blocked-vs-allowed markers, Ed25519 receipt signatures.</li>
+    <li><strong>Session evidence:</strong> when you run <code>pvctl console-sync</code>, it uploads session summaries, recorded event bodies and signed receipts. Event bodies can contain prompts, model outputs, tool arguments, tool results and recorded judge inputs, after the daemon&rsquo;s configured redaction. The hosted API stores uploaded fields and restricts access by role.</li>
     <li><strong>Server logs:</strong> request method, path, status, latency, IP, request-id. Log lines never contain your password, session tokens, or reset tokens (verified with pino-redact + audit).</li>
     <li><strong>Uptime metrics:</strong> aggregate counts + latency histograms, no per-user granularity.</li>
   </ul>
 
-  <h2>2. What we do NOT collect</h2>
-  <ul>
-    <li>LLM prompt text</li>
-    <li>LLM completion text</li>
-    <li>Tool call arguments</li>
-    <li>Your customers' end-user PII</li>
-  </ul>
-
-  <p>These live inside your infrastructure. Our daemon runs in your
-  environment; only the summaries and receipts leave.</p>
+  <h2>2. What stays local unless you enable export</h2>
+  <p>The daemon can run without the hosted console. Its local audit files
+  stay in your infrastructure unless you enable console sync or another
+  export. Redaction removes configured patterns and paths; it does not
+  guarantee that all personal or confidential information is removed.
+  Review captured evidence before enabling uploads.</p>
+  <p>Model and tool requests still go to the providers you configure.
+  Optional cloud judge adapters send selected tool arguments or recorded
+  outputs to the configured judge service only after an explicit configuration
+  opt-in. These transfers are separate from console sync.</p>
 
   <h2>3. How we store it</h2>
   <p>Encrypted in transit (TLS 1.2+), encrypted at rest (managed
@@ -73,7 +74,7 @@
   <ul>
     <li><strong>Export:</strong> POST /api/v1/auth/me/export (organization owners only; password re-entry required) — a full export of your organization as NDJSON (one JSON record per line).</li>
     <li><strong>Delete:</strong> POST /api/v1/auth/me/delete-account (owner + password + confirmation string required) — cascading delete.</li>
-    <li><strong>Access + rectify:</strong> everything is editable in the console.</li>
+    <li><strong>Access + rectify:</strong> account and workspace settings can be edited in the console. Recorded audit events and signed receipts cannot be rewritten through those settings.</li>
     <li><strong>Object + restrict:</strong> email hello@proofvisor.com for anything you can't do in-app.</li>
   </ul>
 
@@ -93,15 +94,15 @@
   first two periods (0 keeps the data indefinitely). Account data is kept
   until you delete the account. Deleting your
   account triggers immediate cascade delete. Nightly backups are
-  retained for 30 days per <a href="https://github.com/ProofVisorAI/proofvisor/blob/main/.github/workflows/backup.yml">the backup workflow</a> — after that a
-  restore isn't possible.</p>
+  retained for 30 days per <a href="https://github.com/ProofVisorAI/proofvisor/blob/main/.github/workflows/backup.yml">the backup workflow</a> — those backups can retain deleted data until their retention period expires.
+  Other backups configured by an operator have their own retention policies.</p>
 
   <h2>8. Children</h2>
   <p>Not for anyone under 16.</p>
 
   <h2>9. Contact</h2>
   <p>Data protection questions or requests:
-  <a href="https://github.com/ProofVisorAI/proofvisor/issues/new?title=Privacy%20question">open a GitHub issue</a> (the mail domain goes live with the beta).
+  <a href="https://github.com/ProofVisorAI/proofvisor/issues/new?title=Privacy%20question">open a GitHub issue</a>.
   Security: <a href="../.well-known/security.txt">security.txt</a>.</p>
 </main>
 </body>

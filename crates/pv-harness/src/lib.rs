@@ -1,8 +1,10 @@
 //! The Agent Harness: the drop-in inline proxy wrapping agent → LLM traffic.
 //!
-//! Hot path (per request): validate identity → check token quota → sanitize →
-//! compress → dispatch a copy to the async workers (non-blocking `try_send`,
-//! bounded channels) → forward upstream → stream chunks back. Workers do the
+//! Chat admission validates identity, reserves bounded audit capacity, applies
+//! guardrails and transforms, compresses, then charges the token quota. A durable
+//! response marker precedes upstream dispatch. Tool calls instead pass schema,
+//! optional semantic-judge, policy, and budget gates before durable execution.
+//! Response policies and completion-token checks run as answers arrive. Workers do the
 //! heavy work: embeddings, loop delta, OCSF emission, bridge publish, ATIF
 //! appends. Receipts are signed once, at session close, asynchronously.
 //!

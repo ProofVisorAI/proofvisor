@@ -4272,7 +4272,7 @@
     var polRole = (state.session && state.session.org && state.session.org.role) || "member";
     var polCanWrite = polRole !== "member";
     var addPolBtn = polCanWrite ? '<button class="btn accent" id="addPol">+ New policy</button>' : "";
-    main.innerHTML = pageHeader("Policies", "Rules your daemons pull and enforce before any tool call or LLM egress.", addPolBtn) + loadingBlock("table");
+    main.innerHTML = pageHeader("Policies", "Rules your daemons pull to check tool calls, model requests and model responses.", addPolBtn) + loadingBlock("table");
     var pols, deps = [];
     try {
       pols = await state.ds.listPolicies();
@@ -4281,8 +4281,8 @@
     if (!pols.length) {
       main.innerHTML = pageHeader("Policies", "0 policies · none enabled", addPolBtn) +
         (polCanWrite
-          ? emptyState("No policies yet", "Write your first policy to start blocking risky tool calls, runaway spend, or off-list vendors. Daemons pull the enabled policies as one bundle and enforce them before any request reaches your model.", "+ Write a policy", null, "addPolCta")
-          : emptyState("No policies yet", "An owner or admin can write policies that block risky tool calls, runaway spend, or off-list vendors before any request reaches your model.", null, null, null));
+          ? emptyState("No policies yet", "Write your first policy to start blocking risky tool calls, runaway spend, or off-list vendors. Daemons pull enabled policies as one bundle. Admission rules check requests before forwarding; response rules check answers as they arrive.", "+ Write a policy", null, "addPolCta")
+          : emptyState("No policies yet", "An owner or admin can configure tool and token limits, vendor rules, and checks on model requests and responses.", null, null, null));
       // #addPol / #addPolCta are handled by the delegated listener above.
       return;
     }

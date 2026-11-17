@@ -6,13 +6,15 @@
 flowchart LR
     A[Agent] --> H[Axum Harness]
     H --> I[NHI validation]
-    I --> Q[Atomic quota]
-    Q --> P[WASM and schema policy]
-    P --> C[Context compression]
-    C --> W[Reserved audit worker]
+    I --> C[Chat guardrails, transforms and compression]
+    I --> P[Tool schema, optional judge and policy]
+    C --> Q[Atomic quota]
+    P --> Q
+    Q --> D[Durable local intent or response marker]
+    D --> U[Upstream provider or tool]
+    D -. audit records .-> W[Reserved audit worker]
     W --> J[Authenticated fsynced journal]
-    J --> B[Embedded, Redpanda, or NATS Bridge]
-    B --> U[Upstream provider]
+    W --> B[Embedded, Redpanda, or NATS Bridge]
     U --> H
     H -. bounded framed response capture .-> W
     W --> L[Loop breaker]
@@ -40,6 +42,8 @@ Receipt signing and ATIF serialization remain off the request path. Worker overl
 - `pv-loopdetect`: hash or ONNX embeddings, circuit breaker, Qdrant sink.
 - `pv-sandbox`: JSON-RPC parsing, JSON Schema, WASM policy. The crate also exports a native allow/deny tool-list type (`NativePolicy`) that is library-only. The daemon enforces JSON Schema and WASM policies from its configuration, plus the allowlist, schema, guardrail and transform rules pushed from the console (`pv_sandbox::pushed`).
 - `pv-redact`: sensitive-data redaction for persisted audit payloads (built-in and custom regex patterns, JSON pointer paths); it never touches the traffic forwarded to the model.
+- `pv-judge`: versioned predicates, pinned local or cloud model adapters,
+  probability-based verdicts, calibration, drift tracking, and decision replay.
 - `pv-harness`: proxy, routes, workers, sessions, reconciliation.
 - `pv-cli`: operational commands and load generation.
 
@@ -67,6 +71,27 @@ built-in hourly sweep (`Finalizer::prune_sealed_atif`, started from
 reconciler's periodic scan cost, so pruning is an operational
 requirement for long-lived, high-churn deployments, not merely a
 disk-space concern.
+
+## Optional semantic judge
+
+The `[judge]` configuration is absent by default. For configured tools, the
+daemon scores schema-validated arguments before policy and budget enforcement.
+Thresholds or version 2 WASM policies turn the scores into allow, ask, or deny.
+An ask response refuses execution with `APPROVAL_REQUIRED`; ProofVisor does not
+provide a human approval queue or an approval-token resume flow.
+
+Shadow mode records what judge-aware policy would do without enforcing that
+decision. Optional trace judging examines recorded outputs in the background;
+session close waits for accepted trace work. The loop breaker can ask for a
+second opinion, and standing rules can be restored after compression by exact
+text. Drift checks can make judged calls require approval. Input recording,
+export, calibration and replay support operator evaluation; no trained and
+production-calibrated local judge model is bundled. Cloud adapters require an
+explicit opt-in because selected arguments or outputs leave the daemon.
+
+See [configuration](docs/reference/CONFIGURATION.md#semantic-judge-judge),
+[operations](docs/reference/OPERATIONS.md#semantic-judge), and the
+[feature limitations](docs/FEATURES.md#7-not-yet-partial-or-needs-a-decision).
 
 ## Console policy push
 

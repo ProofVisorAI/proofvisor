@@ -11,6 +11,13 @@ ProofVisor treats request bodies, JWTs, MCP arguments, upstream responses, manif
 - MCP calls pass parse, JSON Schema, WASM policy, console-pushed allowlist, schema and guardrail rules, and atomic budget gates. Any failure blocks the call. Pushed transform rules can rewrite tool arguments before the verdict, and pushed guardrails can also refuse chat requests and model responses. (The `pv-sandbox` crate also contains a native allow/deny tool-list type, `NativePolicy`, which the daemon does not use; pushed allowlists are enforced through `pv_sandbox::pushed` instead.)
 - Multi-dimensional action budgets commit through one in-memory transaction or one Redis Lua script.
 - WASM policies have fuel and memory limits and fail closed on traps or ABI errors.
+- The optional semantic judge scores configured calls before policy. Enforce
+  mode refuses calls on judge failures according to its deny/ask configuration;
+  shadow mode records those decisions without enforcing them. A capped pilot
+  can allow score-based blocks after its daily cap, so it is not equivalent to
+  uncapped enforcement. Cloud judges require an explicit opt-in and receive
+  selected arguments or outputs after configured redaction. See the
+  [judge configuration](docs/reference/CONFIGURATION.md#semantic-judge-judge).
 - Receipt signatures cover RFC 8785 canonical JSON. `pvctl receipt-verify` requires an independently trusted public key; embedded receipt keys are not trust anchors.
 - Active journals use signer-derived HMAC envelopes with contiguous indexes and matched request/terminal response attempts. Recovery quarantines incomplete sessions without stopping unrelated recovery.
 - Receipt and close events persist actual broker acknowledgments. Tool executions use exact-request/principal-bound HMAC claims, disable redirects, and cache outcomes to prevent automatic duplicate effects.

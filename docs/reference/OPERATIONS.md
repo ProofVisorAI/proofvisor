@@ -155,6 +155,12 @@ also tails the embedded Bridge topic logs after the ATIF pass so signed
 workflow sessions (which have receipts but no ATIF trajectory) publish
 their durable OCSF events.
 
+The uploaded event bodies can contain prompts, model outputs, tool arguments,
+tool results and recorded judge inputs after the daemon's configured redaction.
+Redaction is pattern- and path-based; it does not guarantee removal of every
+sensitive value. Review the evidence and the destination before enabling sync.
+Use `--dry-run` to inspect the proposed upload without sending it.
+
 ```
 pvctl console-sync --spool-dir /var/lib/proofvisor/spool/atif \
   --bridge-dir /var/lib/proofvisor/data/bridge \

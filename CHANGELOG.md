@@ -9,8 +9,9 @@ v0.1.0-rc.8 (2026-11-01).
 
 Ahead of this release, a comprehensive third-party engineering review
 (August 2026) covered the full codebase, deployment artifacts, and
-documentation. All critical and high-severity findings were remediated,
-and the headline security properties — offline receipt verification with
+documentation. The changes and dated validation records document the resulting fixes and
+remaining limitations; they are not a blanket security certification. The
+headline security properties — offline receipt verification with
 tamper and forgery refusal, and the documented SDK quickstart — are
 exercised against release binaries in CI on every push
 (`scripts/live-verify.sh`).

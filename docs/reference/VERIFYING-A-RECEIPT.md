@@ -30,9 +30,9 @@ Two supported channels, ordered by trust:
    Pull
    these from your log store; check both the `key_id` you're pinning
    *and* the full `public_key_hex` — a `key_id` alone is only a
-   32-hex-char fingerprint of the encoded key and would collide under
-   a first-preimage attack against SHA-256, whereas the raw public
-   key is the actual verification input.
+   32-hex-character truncated hash used to select a key, whereas the full
+   public key is the actual verification input. A matching identifier alone
+   does not establish who owns the key.
 
 Never derive the trusted public key from the receipt itself. A
 tampered receipt could carry a public key it forged a signature
@@ -50,8 +50,12 @@ not the keys of real deployments.
 
 ### The browser verifier at proofvisor.com/verify/
 
-The page at [`/verify/`](https://proofvisor.com/verify/) runs the same
-JCS + Ed25519 check described below, entirely in your browser. Be clear
+The page at [`/verify/`](https://proofvisor.com/verify/) runs the
+JCS + Ed25519 signature check locally in your browser. Loading the page and
+its published key list requires network access, and console share links
+also look up the deployment's pinned key online. Receipt contents are not
+uploaded. The browser, Node script and Rust CLI are separate implementations;
+the Rust CLI requires an independently supplied trusted key. Be clear
 about what it proves. It checks that the signature verifies under the
 public key embedded in the receipt and that the receipt is internally
 consistent (`key_id` matches the embedded key, the framing matches

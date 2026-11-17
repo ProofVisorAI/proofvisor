@@ -32,8 +32,9 @@ The client-facing surface is always the OpenAI protocol. The
 | `"anthropic"` | Anthropic Messages API (`POST /v1/messages`), translated both ways | — |
 | `"gemini"` | Google Gemini `generateContent` / `streamGenerateContent`, translated both ways | — |
 
-With `provider = "openai"` the request body is forwarded unchanged to
-`upstream_url` + `upstream_chat_path`. With `anthropic` or `gemini` the
+With `provider = "openai"` the request keeps the OpenAI format when forwarded
+to `upstream_url` + `upstream_chat_path`. Compression and configured transforms
+can rewrite its contents; byte-for-byte passthrough is not the default. With `anthropic` or `gemini` the
 harness translates the OpenAI request into the provider's native API,
 sends it there, and translates the answer back, so an OpenAI client
 receives an ordinary `chat.completion` object or a stream of
