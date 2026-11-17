@@ -608,7 +608,7 @@
           <p class="result-title">${titleText}</p>
           <p class="result-sub">${subText}</p>
           ${state.pinLookupFailed ? `<p class="result-sub pin-note">The shared link names deployment <code>${esc(state.pinLookupFailed)}</code>, but its pinned key could not be fetched from the console, so the verdict above rests on the receipt's embedded key alone.</p>` : ""}
-          ${state.tamper ? `<p class="result-sub tamper-note"><strong>What just happened:</strong> one byte of the signed body changed (${esc(state.tamper.what)}: <code>${esc(state.tamper.before)}</code> → <code>${esc(state.tamper.after)}</code>) and the signature broke. That is the guarantee — nothing in a receipt can be edited after the fact without detection.</p>` : ""}
+          ${state.tamper ? `<p class="result-sub tamper-note"><strong>What just happened:</strong> one byte of the signed body changed (${esc(state.tamper.what)}: <code>${esc(state.tamper.before)}</code> → <code>${esc(state.tamper.after)}</code>) and the signature broke. That is the guarantee — changing the signed body is detected. Unsigned bundle metadata is not covered by the signature.</p>` : ""}
           ${drift.length ? `<p class="result-sub"><strong>Note:</strong> the bundle's unsigned metadata (${esc(drift.join(", "))}) does not match the signed body. The values below come from the signed body, which is what the signature attests. The unsigned copies were edited after signing.</p>` : ""}
           <dl class="kv">
             <dt>Session</dt><dd>${esc(displaySession)}</dd>

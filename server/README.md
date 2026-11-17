@@ -17,14 +17,12 @@ hostname `agentvisor-api.onrender.com` still answers). Nothing runs on Fly.io;
 ## Architecture
 
 ```
-┌────────────────┐        ┌───────────────────────┐        ┌──────────────┐
-│  proofvisord   │──HTTPS─▶  api.proofvisor.com  │──HTTPS─▶  console UI  │
-│ (self-hosted   │  ingest│  (this server)        │  read  │  (Pages)     │
-│  by customer)  │◀───────│  Postgres (any host)  │◀───────│              │
-└────────────────┘        └───────────────────────┘        └──────────────┘
-       │                          ▲                                 │
-       └── LLM + tool traffic stays local; captured evidence is uploaded
-                                  └── auth (JWT cookie) ────────────┘
+proofvisord → configured model and tool providers
+     │
+     └→ local evidence → pvctl console-sync → hosted API → PostgreSQL
+                               │                 ↑
+                               └─ pulls policy   └─ authenticated browser console
+                                  bundles           (static files on Pages)
 ```
 
 ## Requirements

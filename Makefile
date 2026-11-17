@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check lint lint-all-features test test-fast test-all bench fuzz-smoke sla schema-check compose-check ci doc clean run doctor
+.PHONY: fmt fmt-check lint lint-all-features test test-fast test-all bench fuzz-smoke sla schema-check compose-check ci doc docs-check clean run doctor
 
 run:
 	cargo run -p pv-harness --bin proofvisord
@@ -42,7 +42,10 @@ bench:
 fuzz-smoke:
 	python3 scripts/fuzz-smoke.py
 
-doc:
+docs-check:
+	python3 scripts/check-docs.py
+
+doc: docs-check
 	RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D warnings" cargo doc --workspace --all-features --no-deps
 
 schema-check:

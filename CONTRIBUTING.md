@@ -20,6 +20,7 @@ The project pins `rustc 1.97.1` via `rust-toolchain.toml` and uses stable
 tools throughout. The following runs the same gates as CI:
 
 ```bash
+python3 scripts/check-docs.py                       # links, crate and CLI coverage
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --lib                      # fast inner loop (~4 s)
@@ -28,6 +29,12 @@ cargo test --workspace --all-features             # feature matrix
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D warnings" \
   cargo doc --workspace --all-features --no-deps
 ```
+
+The documentation check requires Python 3.11 or newer. It checks local links
+and inventories without contacting external sites; it cannot establish that
+prose claims are true. When a behavior changes, update its reference guide,
+the feature inventory, and any website or console text describing it. Keep
+historical validation results dated and distinguish them from new verification.
 
 > `--all-features` builds `rdkafka-sys`, which needs libcurl headers:
 > `apt install libcurl4-openssl-dev` (Debian/Ubuntu) or

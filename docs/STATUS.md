@@ -3,7 +3,23 @@
 Service status and SLO targets, edited by hand. Nothing on this page is
 updated automatically.
 
-## Current status
+## Read-only checks on 2026-11-17
+
+The website's `build.txt` identifies source commit
+`3e1488a7d20d77255d348e4db7cf8e4e69824c6b`. The public HTML pages and
+published platform guide matched that source. The API's `/healthz` and
+`/readyz` returned HTTP 200 with version `0.1.0`; readiness reported both
+the database and notification bus healthy. The first bounded requests timed
+out, and subsequent requests succeeded. These are point-in-time observations,
+not uptime measurements. The public OAuth provider list advertised Google.
+
+The live verifier had missing layout styles, and the documentation audit
+found inconsistent descriptions of sync data, limits, and receipt verification.
+The corresponding source corrections require a Pages deployment before they
+change the live site. Account, billing, email delivery, backup configuration,
+and hosting control-panel settings were not revalidated in this read-only pass.
+
+## Deployment record from 2026-11-01
 
 **Demo surfaces operational · hosted API live (demo-scale)** — last
 verified: 2026-11-01.

@@ -16,8 +16,8 @@
 **AI agents you can hand to an auditor.**
 
 ProofVisor is a small Rust server you drop in front of your agent's
-LLM and tool calls. Every request is recorded, every limit you set is
-enforced before the call goes out, and every session can end with a
+LLM and tool calls. Requests routed through it are audited, configured
+admission limits are checked before forwarding, and every session can end with a
 signed receipt that anyone holding the deployment's public key can
 verify offline. The built-in default workflow is unsigned (sessions
 record ATIF trajectories), but every shipped config file, including the
@@ -25,6 +25,11 @@ one the `pvctl` setup wizard writes, sets `default_workflow = "signed"`;
 an unsigned session can also be promoted to a receipt later via
 `/promote`. Change one line in your OpenAI client. Nothing else in your
 app moves.
+
+Response policies and completion-token limits are checked as the provider's
+answer arrives. They can stop delivery, but cannot undo generation or charges
+at the provider. Tool payout caps apply to the configured tool argument; they
+are not a cap on the model provider's bill. See [limits](docs/reference/LIMITS.md).
 
 ```python
 client = OpenAI(
@@ -175,7 +180,8 @@ cargo install --path crates/pv-cli       # installs `pvctl`
 
 Your agent always speaks the OpenAI chat-completions format to
 ProofVisor. With `provider = "openai"` (the default, used by every preset
-except two) the request is forwarded to the upstream unchanged. The
+except two) the request keeps the OpenAI format. Compression and configured
+transform policies can change its contents before forwarding. The
 `anthropic` and `gemini` presets set `provider = "anthropic"` or
 `provider = "gemini"`. ProofVisor then translates each request into that
 vendor's native API (Anthropic Messages, Gemini `generateContent`) and
@@ -193,8 +199,10 @@ exact mapping and for how `n > 1` works with each provider.
 1. `PV_CONFIG=/path/to.toml` (error if missing)
 2. `./proofvisor.toml`
 3. `./config/harness.toml`
-4. `~/.proofvisor/proofvisor.toml` (written by the `pvctl` guided setup)
-5. built-in defaults (requires `PV_UPSTREAM_URL`)
+4. `./agentvisor.toml` (legacy filename)
+5. `~/.proofvisor/proofvisor.toml` (written by the `pvctl` guided setup),
+   or `~/.agentvisor/agentvisor.toml` when only the legacy file exists
+6. built-in defaults (requires `PV_UPSTREAM_URL`)
 
 `config/harness.example.toml` is documentation only — it is NOT
 searched. Copy it to one of the paths above to use it.
@@ -241,6 +249,10 @@ uncomment `ignore_client_authorization` — before sending traffic.
   identity validator is configured).
 - `POST /v1/introspect`: authenticated backend checks for token expiry and revocation.
 - `POST /admin/v1/revocations`: operator revocation by token id or agent instance (opt-in).
+- `POST /admin/v1/judge/reviews`, `GET /admin/v1/judge/drift`, and
+  `POST /admin/v1/judge/drift/reset`: submit reviewed verdicts, inspect drift,
+  and reset the drift gate. These require configured operator credentials and
+  a judge with drift tracking enabled.
 - `GET /.well-known/jwks.json`: public key that verifies exchanged tokens
   and intent tokens.
 - `GET /health`: liveness.
@@ -281,6 +293,14 @@ pvctl spool-prune --spool spool/atif --retention-days 30  # one-off sealed-ATIF 
 pvctl receipt-verify receipt.json --public-key-hex "$TRUSTED_ED25519_PUBLIC_KEY_HEX"  # repeatable; hex or base64
 pvctl loadgen --connections 500
 ```
+
+The optional semantic judge adds `judge-calibrate`, `judge-replay`, and
+`judge-export`. It scores configured tool calls and recorded outputs; policy
+uses those scores to allow, refuse, or require approval. It is disabled by
+default, and no production-calibrated local model ships with the project.
+See the [judge configuration](docs/reference/CONFIGURATION.md#semantic-judge-judge)
+and [operating guide](docs/reference/OPERATIONS.md#semantic-judge) for model
+selection, shadow mode, calibration, drift checks, and the limits of each mode.
 
 When identity enforcement is enabled, pass `--bearer-token-file /path/to/token` to `session-promote` and `loadgen`, or set `PV_BEARER_TOKEN_FILE`. Token contents are never accepted as command-line values.
 
@@ -341,9 +361,9 @@ single-instance:
 
 Concretely: a two-replica deployment with `state_backend = "memory"`
 lets a client rotate through both pods and effectively bypass every
-per-session budget. A two-replica deployment sharing an ATIF spool
-without session affinity will race on session close and land one
-audit event on the broker twice. If you're not sure which subsystem
+per-session budget. A second daemon pointing at an already locked ATIF
+spool refuses to start. Separate spools still need session affinity so
+one session's evidence remains on one replica. If you're not sure which subsystem
 is on which side of the line, run one replica.
 
 See [docs/reference/OPERATIONS.md](docs/reference/OPERATIONS.md) for

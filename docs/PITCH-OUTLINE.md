@@ -57,7 +57,7 @@ touches (LLM + tools):
 ## 4. Demo (1:10–2:30) — see DEMO-SCENARIO.md
 
 The $8,400 story: blocked mid-flight → compliant retry allowed →
-signed receipt → verified in the hosted console. Offline-safe.
+signed receipt → verified in the hosted console. The local fixture and CLI verification can run offline; the hosted console requires network access.
 
 ## 5. Why us / why now (2:30–2:50)
 
@@ -100,7 +100,7 @@ signed receipt → verified in the hosted console. Offline-safe.
 | Why not just prompts/guardrails in the agent? | The agent's process is the untrusted thing. Controls must live outside it, like a firewall vs. asking apps nicely. |
 | Receipts — blockchain? | No. Ed25519 signatures over a canonical event-chain frame; verify offline with the public key. Auditors get math, not consensus. |
 | Multi-tenant / team story? | Orgs, roles with rank guards, SAML + passkey MFA (incl. admin recovery), IP allowlists, retention windows, full audit trail with export. |
-| Data privacy? | Self-hosted daemon: prompts stay in your infra; console gets metadata + what you choose to sync. GDPR export and delete are self-serve in Settings: both ask for your password again, and delete also asks you to type a confirmation phrase. |
+| Data privacy? | The daemon keeps evidence locally until you enable export. Console sync can upload recorded prompts, outputs and tool payloads after configured redaction, as well as metadata and receipts. GDPR export and delete are self-serve in Settings: both ask for your password again, and delete also asks you to type a confirmation phrase. |
 | Policy management at fleet scale? | Policies written in the console are pushed to every daemon that pulls them, and each policy shows how many daemons enforce it. A guardrail or transform written as free text is documentation only, and the UI says so. |
 | What breaks if OpenAI changes the API? | We speak the wire shape, tested against provider adapters (the Anthropic and Gemini adapters only against local stand-ins so far, not the real vendor APIs); local Ollama works too (demo runs with zero network). |
 

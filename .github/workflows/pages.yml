@@ -45,6 +45,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
+      - name: Check documentation links and source coverage
+        run: python3 scripts/check-docs.py
       - name: Build rustdoc
         env:
           # Match the CI `Docs` job in ci.yml so broken intra-doc links are hard errors.
@@ -214,8 +216,8 @@ jobs:
           # Publish the assembled directory.
           rm -rf target/doc
           mv "$site" target/doc
-      # The monorepo is private and the org is on the free plan, so
-      # GitHub Pages cannot serve from here. The assembled site is
+      # The site continues to use its dedicated public snapshot repository.
+      # The monorepo is public; the assembled site is
       # force-pushed (content snapshot, no history) to the PUBLIC
       # ProofVisorAI/proofvisorai.github.io repo, whose Pages serves
       # proofvisor.com. Auth: write-scoped deploy key held as an
