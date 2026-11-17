@@ -57,6 +57,15 @@ use std::collections::{BTreeMap, HashMap};
 
 /// The request path for `model`. The model id must be a plain path
 /// segment; a `models/` prefix is tolerated and stripped.
+/// Where a tool call carries the thought signature Gemini issued for it,
+/// as in Google's OpenAI-compatible API.
+const THOUGHT_SIGNATURE_POINTER: &str = "/extra_content/google/thought_signature";
+
+/// The value Google documents for a function call whose signature is
+/// not available (a history built elsewhere, or a client that dropped
+/// the field): the model accepts the call without validating it.
+const UNSIGNED_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
 pub(crate) fn request_path(model: &str, stream: bool) -> Result<String, String> {
     let model = model.strip_prefix("models/").unwrap_or(model);
     if model.is_empty()
@@ -119,7 +128,7 @@ pub(crate) fn build_request(payload: &Value) -> Result<Value, String> {
                     }
                 }
                 if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-                    for call in calls {
+                    for (position, call) in calls.iter().enumerate() {
                         let name = call
                             .pointer("/function/name")
                             .and_then(Value::as_str)
@@ -128,7 +137,25 @@ pub(crate) fn build_request(payload: &Value) -> Result<Value, String> {
                             tool_names.insert(id.to_owned(), name.to_owned());
                         }
                         let args = arguments_object(call.pointer("/function/arguments"))?;
-                        parts.push(json!({"functionCall": {"name": name, "args": args}}));
+                        let mut part = json!({"functionCall": {"name": name, "args": args}});
+                        // Gemini 3 refuses a history whose first function
+                        // call of a turn carries no thought signature.
+                        // The signature it issued comes back in the tool
+                        // call (`THOUGHT_SIGNATURE_POINTER`); a client
+                        // that dropped it gets the placeholder Google
+                        // documents for calls it did not sign.
+                        let signature = call
+                            .pointer(THOUGHT_SIGNATURE_POINTER)
+                            .and_then(Value::as_str)
+                            .filter(|signature| !signature.is_empty());
+                        match signature {
+                            Some(signature) => set(&mut part, "thoughtSignature", json!(signature)),
+                            None if position == 0 => {
+                                set(&mut part, "thoughtSignature", json!(UNSIGNED_THOUGHT_SIGNATURE));
+                            }
+                            None => {}
+                        }
+                        parts.push(part);
                     }
                 }
                 if !parts.is_empty() {
@@ -381,14 +408,29 @@ fn gather_parts(candidate: &Value) -> Result<Gathered, String> {
                 .unwrap_or_else(|| json!({}));
             let arguments = serde_json::to_string(&args)
                 .map_err(|error| format!("function args are not serializable: {error}"))?;
-            gathered.tool_calls.push(json!({
+            let mut tool_call = json!({
                 "id": call.get("id").and_then(Value::as_str).map_or_else(fresh_tool_call_id, str::to_owned),
                 "type": "function",
                 "function": {
                     "name": call.get("name").and_then(Value::as_str).unwrap_or("unknown"),
                     "arguments": arguments,
                 },
-            }));
+            });
+            // The signature Gemini attaches to the part travels with the
+            // tool call, where Google's own OpenAI-compatible endpoint
+            // puts it, so the client sends it back with the history.
+            if let Some(signature) = part
+                .get("thoughtSignature")
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+            {
+                set(
+                    &mut tool_call,
+                    "extra_content",
+                    json!({"google": {"thought_signature": signature}}),
+                );
+            }
+            gathered.tool_calls.push(tool_call);
         }
         // inlineData, executableCode, codeExecutionResult: nothing the
         // OpenAI chat shape can carry.
@@ -693,7 +735,7 @@ mod tests {
         assert_eq!(contents[1]["parts"][0], json!({"text": "Looking."}));
         assert_eq!(
             contents[1]["parts"][1],
-            json!({"functionCall": {"name": "find", "args": {"q": "cat"}}})
+            json!({"functionCall": {"name": "find", "args": {"q": "cat"}}, "thoughtSignature": UNSIGNED_THOUGHT_SIGNATURE})
         );
         assert_eq!(contents[2]["role"], "user");
         assert_eq!(
@@ -931,6 +973,75 @@ mod tests {
         assert!(translator
             .frame("data: {\"candidates\":[{\"index\":0,\"content\":{\"parts\":\"x\"}}]}\n\n")
             .is_err());
+    }
+
+    /// Gemini 3 refuses a history whose function call lost the thought
+    /// signature it was issued with. The signature leaves in the tool
+    /// call and comes back from it; a call without one gets Google's
+    /// placeholder, on the first call of the turn only.
+    #[test]
+    fn thought_signatures_travel_with_tool_calls_in_both_directions() {
+        let response = json!({
+            "candidates": [{
+                "content": {"parts": [
+                    {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}, "thoughtSignature": "sig-A"},
+                    {"functionCall": {"name": "get_time", "args": {}}},
+                ]},
+                "finishReason": "STOP",
+                "index": 0,
+            }],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5},
+        });
+        let translated = translate_response(&response, "chatcmpl-1", 1, "gemini-3").unwrap();
+        let calls = translated["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(calls[0]["extra_content"]["google"]["thought_signature"], "sig-A");
+        assert!(calls[1].get("extra_content").is_none(), "no signature, no field");
+
+        // Sent back as received: the signature returns to its part, and
+        // the unsigned second call of the same turn stays unsigned.
+        let history = |tool_calls: Value| {
+            json!({"model": "gemini-3", "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": null, "tool_calls": tool_calls},
+                {"role": "tool", "tool_call_id": calls[0]["id"], "content": "{\"temp_c\": 17}"},
+            ]})
+        };
+        let body = build_request(&history(Value::Array(calls.clone()))).unwrap();
+        let parts = body["contents"][1]["parts"].as_array().unwrap();
+        assert_eq!(parts[0]["thoughtSignature"], "sig-A");
+        assert_eq!(parts[0]["functionCall"]["name"], "get_weather");
+        assert!(parts[1].get("thoughtSignature").is_none());
+
+        // A client that dropped the field, or sent it empty: the first
+        // call gets the placeholder, later ones nothing.
+        for dropped in [json!(null), json!({"google": {"thought_signature": ""}})] {
+            let mut stripped = calls.clone();
+            for call in &mut stripped {
+                let object = call.as_object_mut().unwrap();
+                if dropped.is_null() {
+                    object.remove("extra_content");
+                } else {
+                    object.insert("extra_content".to_owned(), dropped.clone());
+                }
+            }
+            let body = build_request(&history(Value::Array(stripped))).unwrap();
+            let parts = body["contents"][1]["parts"].as_array().unwrap();
+            assert_eq!(parts[0]["thoughtSignature"], UNSIGNED_THOUGHT_SIGNATURE);
+            assert!(parts[1].get("thoughtSignature").is_none());
+        }
+
+        // Streaming: the signature rides the tool-call delta.
+        let mut stream = GeminiStreamTranslator::new("chatcmpl-2".to_owned(), "gemini-3".to_owned(), 1);
+        let chunks = stream
+            .frame("data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"get_weather\",\"args\":{}},\"thoughtSignature\":\"sig-S\"}]},\"index\":0}]}")
+            .unwrap();
+        assert_eq!(
+            chunks[0]["choices"][0]["delta"]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            "sig-S"
+        );
     }
 
     #[test]
