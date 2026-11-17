@@ -19,7 +19,7 @@ RUN npm run build
 RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund \
     && node node_modules/prisma/build/index.js generate
 
-FROM gcr.io/distroless/nodejs22-debian13:nonroot@sha256:8ad9cc935b7843c4024b7e1487b5ef472c354ea847b97c667023e2618552607e AS runtime
+FROM gcr.io/distroless/nodejs22-debian13:nonroot@sha256:39c66687298417dbf3ff2fb8b6012c20554494e16414ef7afd07b9abbb45b501 AS runtime
 WORKDIR /app
 # Debian 13 Distroless includes libssl, zlib, libgcc, CA certificates, and
 # timezone data. Preserve its package metadata for complete vulnerability scans.
