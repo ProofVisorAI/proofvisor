@@ -548,7 +548,7 @@
       blocks24h: 0,
       updatedAt: iso(3 * 24 * HOUR),
       updatedBy: "olivia.tan@northwind.com",
-      description: "Cap total LLM + tool payout per session at $10 USD.",
+      description: "Cap configured tool payouts per session at $10 USD. This does not cap model-provider charges.",
       body: JSON.stringify({ max_payout_usd_micros: 10000000 }, null, 2),
     },
     {
