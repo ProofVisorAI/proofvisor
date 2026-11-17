@@ -615,7 +615,9 @@ directly, one request per predicate. As of October 2026 TypeSafe offers
 no service-level agreement and no known on-premises option, and its
 latency and pricing are not confirmed: do not promise it to customers. It was built from TypeSafe's
 published reference and tested against a local stand-in that speaks
-that format, not against the live service; a test runs against the live
+that format. It ran against the live service on 2026-11-17 (see
+`docs/FEATURES.md`, section 7, for what was measured); the contract
+test (built with the `cloud` feature of `pv-judge`) runs against the live
 API when `PV_TYPESAFE_API_KEY_FILE` names a file holding a key.
 
 - What is sent: the request rendered with the local classifier's
