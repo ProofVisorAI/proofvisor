@@ -72,7 +72,7 @@ enum Command {
         /// Gateway base URL [default: $PV_GATEWAY_URL].
         #[arg(long)]
         gateway: Option<String>,
-        /// Gateway audience [default: $PV_AUDIENCE, then proofvisor].
+        /// Gateway audience [default: $PV_AUDIENCE, then agentvisor-ai].
         #[arg(long)]
         audience: Option<String>,
         /// Loopback address to listen on [default: 127.0.0.1:8485].

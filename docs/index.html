@@ -46,8 +46,9 @@
       <h1>AI agents you can hand to an auditor.</h1>
       <p class="lede">
         ProofVisor is a small server you drop in front of your agent&rsquo;s LLM
-        and tool calls. Every request is recorded. Every limit you set is
-        enforced before the call goes out. Every session can end with a signed
+        and tool calls. Requests routed through it are audited. Configured
+        admission limits are checked before forwarding; response checks run
+        as answers arrive. Every session can end with a signed
         receipt (the shipped configs sign by default). Anyone who holds your
         deployment&rsquo;s public key can verify that receipt offline, without
         asking you or us for anything else.
@@ -59,7 +60,7 @@
         <a class="cta" href="verify/">Verify a receipt</a>
       </p>
       <p class="hero-meta">
-        v0.1.0&#8209;rc.8 (pre&#8209;release) &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
+        v0.1.0 &middot; Apache&#8209;2.0 &middot; Rust &middot; Runs on your machine, your VM, or your cluster
       </p>
     </div>
   </header>
@@ -82,7 +83,8 @@
             Works the same way for Ollama, LM&nbsp;Studio, Azure OpenAI,
             vLLM, LiteLLM, and anything else that speaks the OpenAI
             <code>chat/completions</code> wire format. Requests to those
-            servers are forwarded unchanged. With the <code>provider</code>
+            servers keep the OpenAI format, after configured compression and
+            transforms. With the <code>provider</code>
             setting <code>anthropic</code> or <code>gemini</code>, ProofVisor
             converts each request into that vendor&rsquo;s own API format
             and converts the answer back into the OpenAI format. These two
@@ -124,8 +126,9 @@
             </p>
             <p>
               Verification is one <code>pvctl receipt-verify</code> call with
-              your public key. Or about 30 lines of your language&rsquo;s Ed25519
-              library. You don&rsquo;t need to trust ProofVisor to trust the
+              your trusted public key. An independent implementation must
+              also check the receipt format, canonical JSON, and versioned
+              signature framing described in the verification guide. You don&rsquo;t need to trust ProofVisor to trust the
               receipt; you only need the public key, obtained from the
               operator out of band.
             </p>
@@ -187,8 +190,10 @@
               never contacted; the money was never spent.
             </p>
             <p>
-              Set caps on total tool calls, per-tool calls, spend in
-              micro-USD, and prompt tokens. Turn on the semantic loop
+              Set caps on total tool calls, per-tool calls,
+              tool payouts in micro-USD, and tokens. Completion limits can
+              stop a response, but cannot undo generation or charges already
+              incurred at the model provider. Turn on the semantic loop
               breaker if your agent tends to retry the same failing thing
               until you go broke.
             </p>
@@ -346,19 +351,20 @@ data/bridge/
           <article>
             <h3>The 3 AM cost spike</h3>
             <p>
-              Your agent gets stuck in a retry loop and burns $2,400 on a
-              Sunday. ProofVisor&rsquo;s loop breaker plus the payout cap would
-              have cut it off at $10, logged what happened, and let your
-              on-call sleep.
+              Your agent gets stuck retrying a failing task. Token budgets and
+              the loop breaker can refuse later requests and record why.
+              A separate payout cap can block configured tool payments.
+              These controls do not guarantee a dollar cap on model-provider charges.
             </p>
           </article>
           <article>
             <h3>The compliance email</h3>
             <p>
               An auditor asks which customers&rsquo; data your agent touched
-              last quarter. Instead of running a scavenger hunt through
-              LangSmith and provider dashboards, you hand over a
-              directory of receipts and a public key.
+              last quarter. You provide the relevant captured events, their
+              signed receipts, and a trusted public key. Receipts authenticate
+              the captured evidence; the events provide the activity details,
+              subject to your capture and redaction settings.
             </p>
           </article>
           <article>
@@ -366,8 +372,10 @@ data/bridge/
             <p>
               A customer wants to know whether the agent you built for
               them called any model or tool other than the ones you
-              promised. You give them a session receipt and about 30 lines
-              of verification code.
+              promised. You give them the recorded events, a session receipt,
+              and the verification guide. The receipt authenticates the recorded
+              activity; preventing unrecorded calls also requires deployment
+              controls that stop agents from bypassing the gateway.
             </p>
           </article>
         </div>
@@ -432,7 +440,7 @@ data/bridge/
         <p class="section-kicker">Under the hood</p>
         <h2>Boring, on purpose.</h2>
         <p class="lede lede-secondary">
-          ProofVisor is a Rust workspace of thirteen crates. The daemon
+          ProofVisor is a Rust workspace of 14 crates. The daemon
           never phones home and needs no hosted service: it writes files,
           and you keep the signing key. The hosted console is opt-in; your
           daemon only talks to it if you run <code>pvctl console-sync</code>.
@@ -467,8 +475,8 @@ data/bridge/
           <div>
             <h3>Tested and dependency-checked</h3>
             <p>
-              Every fix is regression-tested. The full suite runs on
-              every code push; supply-chain policy is enforced by
+              CI runs automated tests and documentation checks on pushes
+              and pull requests; supply-chain policy is checked by
               <code>cargo&#8209;deny</code>. Read the security model
               before you deploy it. It&rsquo;s honest about what it
               does and does not defend against.
@@ -484,6 +492,8 @@ data/bridge/
         <h2>Everything else.</h2>
         <ul class="link-columns">
           <li><a href="https://github.com/ProofVisorAI/proofvisor#readme">README</a>. Full setup, configuration, CLI reference.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/docs/FEATURES.md">Current features and limitations</a>. What the released code includes and what remains unverified.</li>
+          <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/docs/reference/CONFIGURATION.md#semantic-judge-judge">Optional semantic judge</a>. Score selected tool calls and recorded outputs, evaluate in shadow mode, and apply thresholds. You supply and calibrate the model; no production-calibrated local model is bundled.</li>
           <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/ARCHITECTURE.md">Architecture</a>. How the pipeline fits together.</li>
           <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/SECURITY.md">Security model</a>. Trust boundaries and threat model.</li>
           <li><a href="https://github.com/ProofVisorAI/proofvisor/blob/main/docs/reference/VERIFYING-A-RECEIPT.md">Verifying a receipt</a>. Verifying a receipt from scratch.</li>

@@ -1,11 +1,9 @@
 # ProofVisor — what exists today
 
-Dated 2026-10-31, rechecked on 2026-11-01 (last pass in the evening,
-on `main`). Sections 1 to 6 list only features that an automated
-end-to-end test drives through the real server or binary and that
-passed on every run recorded in sections 8 to 10: the Rust test suites,
-the API and console test suites, the browser drills, the real-binary
-drills and the interop tests. Where the far end of a test is a stand-in
+This inventory describes the `v0.1.0` source and was checked for documentation
+consistency on 2026-11-17. Sections 8 to 10 retain their dated test results;
+the documentation check does not rerun or renew those results. Section 11
+describes the optional semantic judge added in November. Where a test uses a stand-in
 rather than the real service (a local server speaking a vendor's wire
 format, fixture certificates for Cloud Foundry, a scripted identity
 provider), the item says so. Anything that is built but not proven
@@ -20,7 +18,8 @@ chat-completions format.
 
 - **Drop-in for OpenAI, Anthropic and Gemini.** The daemon serves
   `POST /v1/chat/completions`. OpenAI-compatible upstreams receive the
-  request unchanged. With `provider = "anthropic"` or `"gemini"` the
+  request in the OpenAI format, after any configured compression or
+  transforms. With `provider = "anthropic"` or `"gemini"` the
   daemon translates the request into the vendor's native API (Anthropic
   Messages, Gemini `generateContent`) and translates the answer back,
   including streaming, tool calls, stop reasons, usage and errors.
@@ -31,9 +30,9 @@ chat-completions format.
   found two defects, since fixed (section 7). Sixteen presets exist in `pvctl init` (OpenAI, Azure,
   Anthropic and Gemini natively, Groq, Mistral, OpenRouter, Together,
   DeepSeek, xAI, Ollama, LM Studio, vLLM, llama.cpp, LiteLLM, custom).
-- **Streaming passes through.** Server-sent events are relayed frame by
-  frame; `include_usage` is honoured; a failing first frame yields a
-  clean error.
+- **Streaming passes through.** Server-sent events are normally relayed frame
+  by frame; response transforms instead hold the stream until it can be
+  rewritten. `include_usage` is honoured; a failing first frame yields a clean error.
 - **The proxy holds the provider key.** Clients never see it. Keys come
   from an environment variable or a permission-restricted file.
   Provider key headers are stripped from responses.
@@ -43,6 +42,10 @@ chat-completions format.
   returns HTTP 403 and the provider is never contacted. Budgets can be
   pinned to the caller's identity so rotating session ids does not reset
   them.
+- **Completion-token limits.** Completion usage is checked while processing
+  provider responses. A refusal stops delivery; it cannot undo tokens the
+  provider has already generated or charged. Payout caps govern tool arguments,
+  not model-provider dollar spend. See [Limits](reference/LIMITS.md#budgets).
 - **Loop breaker.** Consecutive steps are compared semantically (hashed
   n-grams by default, optional ONNX MiniLM embeddings, optional Qdrant
   storage); a near-repeat run trips a circuit breaker.
@@ -65,8 +68,11 @@ chat-completions format.
   after a crash, and a lock that stops a second daemon on the same spool.
 - **Health and metrics.** `/health`, `/livez`, `/readyz` and Prometheus
   `/metrics`. An optional read-only operator dashboard can be enabled.
-- **Nothing phones home.** Every artifact is a plain file. Sending
-  evidence to the hosted console is a separate, opt-in command.
+- **No mandatory hosted console.** Sending evidence to the console is a
+  separate, opt-in command. Configured providers, remote storage, identity
+  services, telemetry sinks, and cloud judge adapters make their own network
+  requests. `console-sync` can upload recorded prompts, outputs and tool payloads
+  after the daemon's configured redaction, as well as summaries and receipts.
 
 ## 2. Evidence: signed receipts and trajectories
 
@@ -84,11 +90,12 @@ chat-completions format.
   Kafka/Redpanda with TLS and SASL, NATS JetStream with TLS. S3-compatible
   cold storage behind a build feature.
 - **Three verifiers agree:** `pvctl receipt-verify` (Rust), a Node
-  script, and the browser page at proofvisor.com/verify (Web Crypto, no
-  network). The browser page shows "trusted" only for keys it knows; for
-  a customer's own deployment it shows "internally consistent" and tells
-  the auditor to compare the key fingerprint with the deployment page in
-  the console.
+  script, and the browser page at proofvisor.com/verify. The browser checks
+  signatures locally; it fetches the published key list, the sample when
+  requested, and a deployment's pinned key when opened from a console share
+  link. Receipt contents are not uploaded. An unknown key is reported as
+  "internally consistent"; a matching deployment pin establishes the console's
+  recorded signer. Public demo keys are labelled as demo keys.
 
 ## 3. Identity, tokens and authorization
 
@@ -110,7 +117,7 @@ chat-completions format.
 
 ## 4. The CLI (`pvctl`)
 
-Twenty-three subcommands, none of them stubs: guided `setup`, `init` with
+The CLI has 24 subcommands: guided `setup`, `init` with
 presets, `doctor`, `health`, `start`, `sidecar`, `keygen`, `pubkey`,
 `receipt-locate`, `spool-prune`, `receipt-verify`, `atif-validate`,
 `manifest-validate`, `bridge-provision`, `event-tail`,
@@ -175,8 +182,8 @@ with demonstration data, which is what the public site shows by default.
   metrics, encrypted nightly database dumps with a restore drill. The
   API runs on Render; the site and console are served by GitHub Pages.
 - **Console quality:** command palette, keyboard shortcuts, dark and
-  light themes, zero serious accessibility findings, works on phone,
-  tablet and the three browser engines.
+  light themes. The dated browser runs below cover phone, tablet and three
+  browser engines and recorded no serious accessibility findings.
 
 ## 6. Added on 2026-10-31
 
@@ -287,8 +294,9 @@ with demonstration data, which is what the public site shows by default.
 
 ## 7. Not yet, partial, or needs a decision
 
-- **Billing is built but not switched on.** No Stripe account is
-  connected to the hosted API, and plan limits are off by default. The
+- **Billing is built and disabled by default.** The last hosted-configuration
+  check, on 2026-11-01, found no connected Stripe account. The documentation
+  audit did not inspect current billing credentials. Plan limits are off by default. The
   prices and the free-plan limits (2 deployments, 3 members, no SAML or
   SCIM) were proposed during development and need a business decision
   before anyone turns them on; they contradict today's "every
@@ -350,9 +358,11 @@ with demonstration data, which is what the public site shows by default.
   customer Windows hardware, and the installer, service unit and
   containers stay Unix-only, so Windows is listed here rather than among
   the Tier 1 platforms.
-- **Release state.** The latest release is the pre-release
-  `v0.1.0-rc.8` (2026-11-01; the installer pins it); nothing is on
-  crates.io yet. Publishing needs explicit approval.
+- **Release state.** The latest release is `v0.1.0` (2026-11-12), the
+  first final release; the installer pins it. Nothing is on crates.io
+  yet: the release run rehearsed the upload successfully, and the
+  upload itself stopped because the repository has no
+  `CARGO_REGISTRY_TOKEN` secret.
 - **Native Anthropic and Gemini were driven against the real APIs on
   2026-11-17.** The release build of that day passed all eleven checks
   of the provider drill against api.anthropic.com
@@ -507,7 +517,7 @@ with demonstration data, which is what the public site shows by default.
     - With Redis, the drift check (reviews, statistics and the switch
       to ask-by-default) is shared by every instance.
     - With `record_inputs = true`, records keep what the judge was
-      asked, and `pvctl judge-export` turns them into a labelled set
+      asked, and `pvctl judge-export` turns them into a data set
       for reviewers to label.
   - Still owed, and not something the code can provide:
     - A labelled data set (reviewers labelling exported calls from
@@ -581,7 +591,7 @@ Added later on 2026-11-01, after a second pass over the whole chain:
 | Live production checks on 2026-11-01 (after the merge, Render deploy and DNS): a throwaway account on `https://api.proofvisor.com`, a deployment, the real daemon (offline demo) uploading its session and Ed25519 receipt with `pvctl console-sync`, read back through the API | account, session cookie, `pv_live_` token, 14 events, 2 allowed and 1 blocked tool call, receipt stored and verified server-side, public key endpoint (CORS open), policies, SCIM settings (off) and billing answered; the account and its deployment were then deleted through the API. One check of my own (a `status` field the API does not return) was wrong, not the product |
 | Full verification of merged `main`, 2026-11-01 (second half of the day), one heavy job at a time | Rust workspace 1,734 passed, 0 failed (3 ignored); API tests 100 of 100; database drill battery 17 of 17; smoke suite; contract suite 141 of 141; policy push with the real daemon and `pvctl` 34 of 34 locally and 36 of 36 on production; interactive drill 35 of 35; browser end-to-end (sign-up through the real form, demo data, tour, checklist); quarantine drill 25 of 25; real daemon crash and restart reaching the console; console injection drill 207 checks, 0 failed; accessibility audit (0 serious or critical violations across 11 routes, 9 modal states, 3 static pages, both themes, forced colours); mobile drill (down to 280 px); strict security-policy drill (including verify and login under it). Several stages first failed because my runner passed them wrong settings (a base path, a relative binary path, a missing `SITE`); each was rerun correctly and passed |
 | Live production, feature by feature, with one throwaway account (24 later checks, 2 earlier runs) | API keys (create, use, revoke, then 401), invitations, retention and IP allow-list settings, a webhook (and a metadata-address target refused), SCIM end to end (token, provision, filter, deactivate, group, wrong token refused, delete), audit log and CSV, personal data export, sign out everywhere (needs the password again), the real daemon's receipt verified by the offline Node verifier and rejected when one byte changed, and on the live verify page in a real browser (genuine accepted, tampered rejected, pinned-key "Trusted" for the right deployment only). A wrong password gets the same `mfaRequired` reply as an account with a second factor and no session cookie. One workspace from this run could not be deleted (see STATUS notes) |
-| Release pipeline, tag `v0.1.0-rc.6` | exposed a real defect: the Windows build step ran under PowerShell and failed on a bash line continuation; fixed on `main` (`shell: bash`). No release was published; at that time the installer on the live site still pinned `0.1.0-rc.5`, whose files carry the old names, so prebuilt installs returned 404. Superseded: `v0.1.0-rc.8` was published on 2026-11-01 and the installer pins it (section 7) |
+| Release pipeline, tag `v0.1.0-rc.6` | exposed a real defect: the Windows build step ran under PowerShell and failed on a bash line continuation; fixed on `main` (`shell: bash`). No release was published; at that time the installer on the live site still pinned `0.1.0-rc.5`, whose files carry the old names, so prebuilt installs returned 404. Superseded: `v0.1.0-rc.8` was published on 2026-11-01; the installer now pins the final `v0.1.0` release (section 7) |
 | Production build and boot reproduced locally: the merged `server/Dockerfile` image with Render's real settings over a database at the old schema | four migrations applied, `/healthz` and `/readyz` 200, new endpoints present |
 | HTTPS and redirects on the public site | `https://proofvisor.com` presents its own Let's Encrypt certificate; `http` and `www` redirect to it; `/lander` redirects to the home page; `agentvisorai.me` and its `www` forward (301, front page only) |
 | The public console in a browser over HTTPS (`live-site-smoke.mjs`) | 11 checks passed: routes, populated tabs, link and media integrity, link previews, videos, installer |
@@ -688,24 +698,29 @@ daemon's AuthZEN client against the public Topaz and Cerbos servers.
 The judge scores questions that schemas and rules cannot answer, such
 as "do these arguments fit the agent's task?", and returns a probability
 for each label. Policy turns the probabilities into allow, ask or deny,
-and the signed audit trail records every verdict. The configuration is
+and the audit trail records verdicts. Signed workflows cover their recorded
+verdicts in the event chain; unsigned workflows record them in ATIF. Trace
+verdicts can trigger automatic promotion after close, subject to the restart
+and resource limits described in section 7. The configuration is
 in `docs/reference/CONFIGURATION.md` (section "Semantic judge") and the
 runbook in `docs/reference/OPERATIONS.md`. `scripts/judge-scenarios.py`
 runs 19 scenarios against the release binaries, with a stand-in model
 provider, billing backend and judge service. The numbers in the table
-refer to those scenarios.
+refer to those scenarios. An `ask` verdict returns `APPROVAL_REQUIRED`;
+there is no built-in approval queue or resume workflow. No trained, calibrated
+local model is bundled.
 
 | Feature | Proof |
 |---|---|
 | Tool calls on `/v1/mcp` for tools listed in `[[judge.tools]]` are scored after the schema gate and before policy; other tools take the same path as before. | `e2e_judge.rs`; scenarios 1 and 7a |
 | Thresholds and WASM policies (interface version 2, `evaluate_v2`) decide allow, ask (`APPROVAL_REQUIRED`) or deny (`JUDGE_DENIED`), naming the predicate. | `e2e_judge.rs`; version 2 policies in `e2e_judge_edges.rs` and `e2e_judge_full_stack.rs`; scenarios 2 and 3 |
 | A delegated agent retrying what an agent above it was refused is caught from the session's recorded refusals. | `e2e_judge.rs`; scenario 4 |
-| Timeouts, outages, malformed answers, saturation and model-pin mismatches refuse or hold the call, never allow it silently. | `e2e_judge_edges.rs`, `e2e_process_restart.rs` (`judge_enforces_across_kill_and_restart_and_fails_closed_when_it_dies`); scenarios 5, 6 and 7b |
-| Each verdict (all label probabilities, the model pin, the latency, the threshold that decided) is in the signed event chain and the trajectory; editing it breaks the receipt. | `e2e_judge.rs` (`the_receipt_signs_the_verdict_and_tampering_breaks_it`), `e2e_judge_full_stack.rs`; scenario 9 |
+| In enforce mode, timeouts, outages, malformed answers, saturation and model-pin mismatches refuse the call or return `APPROVAL_REQUIRED`. Shadow mode records runtime failures without blocking. | `e2e_judge_edges.rs`, `e2e_process_restart.rs` (`judge_enforces_across_kill_and_restart_and_fails_closed_when_it_dies`); scenarios 5, 6 and 7b |
+| Each recorded verdict includes label probabilities, the model pin, latency and the deciding threshold. Signed workflows cover it in the event chain; unsigned workflows record it in the trajectory and need promotion for a signed receipt. | `e2e_judge.rs` (`the_receipt_signs_the_verdict_and_tampering_breaks_it`), `e2e_judge_full_stack.rs`; scenario 9 |
 | A local ONNX scorer refuses to load a model or tokenizer whose hash differs from its pin; a cloud judge needs a per-tool opt-in and receives redacted input. | `local_onnx.rs`, `cloud_contract.rs`; scenario 9 (no personal data or prompt text reached the judge) |
 | `pvctl judge-calibrate` and a build-time test enforce a measured floor of separation between labels. | `calibrate.rs`, `e2e_judge_cli.rs`; scenario 11 |
-| Reviewed verdicts feed a drift check by confidence band; when accuracy stops rising with confidence, judged calls are held for approval, and this survives a restart. | `e2e_judge.rs`; scenario 8 |
-| Shadow mode scores and never blocks, and publishes each would-be block as an `agent.judge` event; a capped pilot blocks at most a set number of calls per tool per day. | `e2e_judge_background.rs`; scenarios 10, 12 and 14 |
+| Reviewed verdicts feed a drift check by confidence band; when accuracy stops rising with confidence, judged calls return `APPROVAL_REQUIRED` in enforce mode. Persisted drift state survives a restart. | `e2e_judge.rs`; scenario 8 |
+| Shadow mode records runtime decisions without blocking; invalid model configuration can still prevent startup. The pilot cap limits score-based blocks per tool and agent per day. Judge failures and calibration drift remain enforced after the cap. | `e2e_judge_background.rs`; scenarios 10, 12 and 14 |
 | Recorded tool outputs and model answers are judged in the background, and findings are published as `agent.judge` events (OCSF class 9907) that the receipt covers. A slow verdict does not delay the reply, and a session close waits for it. | `e2e_judge_background.rs`; scenario 13 |
 | The loop breaker asks the judge when a step's change is ambiguous: repetition that is progress is spared, and a real loop trips the breaker. | `e2e_judge_background.rs`, `crates/pv-loopdetect` unit tests; scenario 16 |
 | A standing rule that compression cut is put back after the leading system messages, and the token count is recomputed. | `e2e_judge_background.rs`; scenario 15 |
@@ -719,3 +734,52 @@ refer to those scenarios.
 | A session's seq scheme is fixed by its first acknowledged batch, so a later batch that fails cannot make the next pass post the acknowledged events again under other seqs. | `crates/pv-cli/src/console_sync.rs` (`the_seq_scheme_is_pinned_by_the_first_acknowledged_batch`) |
 
 What is not proven or not built is listed in section 7.
+
+## 12. Documentation consistency audit on 2026-11-17
+
+This pass compared the published `v0.1.0` functionality with the repository
+and website descriptions. Its base was `main` at
+`3e1488a7d20d77255d348e4db7cf8e4e69824c6b`, which matched the public site's
+`build.txt`. The public HTML pages and platform guide matched that source.
+Uncommitted development changes in another checkout were not treated as
+released features. The read-only hosted API observations are in
+[STATUS.md](STATUS.md#read-only-checks-on-2026-11-17).
+
+Corrections cover budget enforcement timing and provider charges, console-sync
+payloads and privacy descriptions, receipt trust and network lookups, semantic
+judge modes and limitations, configuration resolution and validation, transport
+limits, crate and CLI inventories, and outdated demo claims. The verifier's
+missing layout styles were also restored.
+
+The following checks passed on the corrected source:
+
+- `make docs-check` scanned 52 Markdown and HTML documents and checked 311
+  local links, 14 workspace crates, and 24 CLI commands. Deliberately removing
+  a crate entry, changing the CLI count, breaking a local link, and breaking an
+  anchor each caused the checker to fail before the fixture edit was restored.
+- Existing source tests checked all 95 top-level configuration fields, operator
+  environment variables, client routes, judge record fields, CLI presets and
+  flags, operational commands and metrics, and compression defaults. The four
+  commands below ran 20 tests with no failures. These filters also include a
+  few adjacent behavior tests; they are not the full runtime suite.
+- `cargo doc --workspace --all-features --no-deps` passed with
+  `RUSTDOCFLAGS='-D rustdoc::broken_intra_doc_links -D warnings'`.
+- Rust formatting, JavaScript syntax checks for the changed files, and
+  `git diff --check` passed.
+- Browser checks accepted the sample receipt, rejected its tampered signed body,
+  and accepted the restored original. The layout fix was checked at widths of
+  320, 390, 768 and 1280 pixels without horizontal overflow. The final text was
+  checked in the local browser preview.
+
+```sh
+cargo test --workspace --lib doc
+cargo test -p pv-cli doc
+cargo test -p pv-harness --test operations_doc
+cargo test -p pv-compress limits_md_names_the_actual_compression_defaults
+```
+
+This audit does not renew the historical runtime, security or vendor-service
+results above. It did not exercise live billing, identity-provider integrations,
+email delivery or hosting administration, and it did not validate legal terms.
+The technical edits to the privacy and terms pages retain their draft status.
+The source corrections require deployment before they change the public site.

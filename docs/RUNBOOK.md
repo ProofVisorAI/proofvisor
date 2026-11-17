@@ -395,14 +395,19 @@ Verified end-to-end:
    `POST /ingest/receipts` with `{sigB64, keyIdHex, body}`.
 4. Console fetches `GET /receipts/:sessionId` → server returns the
    deployment's `publicKeyHex` alongside the receipt.
-5. Console-side (or a third-party auditor) runs `crypto.subtle.verify`
-   with the returned `publicKeyHex` + `sigB64` against `body` — returns
-   true.
+5. Console-side (or a third-party auditor) verifies the signature with the
+   returned public key and the correct signed message: raw signed bytes for
+   legacy bundles, or the canonical body with receipt-version framing for
+   current daemon receipts.
 6. Tampered body (single byte flip) → verify returns false.
 
-No trust in the server anywhere in the chain — the customer's
-console verifies the daemon's signature using only the daemon's own
-public key.
+The signature check establishes that the signed body matches the signing key.
+When the key comes from the console, this also relies on the console's pinned
+key record. For verification independent of the hosted service, obtain the
+public key from the operator through a separate trusted channel. Current daemon
+receipts also require versioned signature framing; use the
+[verification guide](reference/VERIFYING-A-RECEIPT.md) rather than treating an
+arbitrary JSON body as the bytes to verify.
 
 ### Role enforcement
 

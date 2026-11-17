@@ -4,9 +4,12 @@
 //! questions such as "do these arguments fit the task this agent was
 //! given?". The judge answers them as probabilities over a fixed label
 //! set, and never decides: policy thresholds turn the probabilities
-//! into allow, ask, or deny. Every verdict, with its full distribution
-//! and the pinned model (name, version, weights SHA-256), is written
-//! into the signed audit trail so a decision can be replayed.
+//! into allow, ask, or deny. Recorded verdicts include the full
+//! distribution and model pin so decisions can be replayed. The harness
+//! records them in the event chain for signed workflows and in ATIF for
+//! unsigned workflows. An unsigned trajectory needs promotion to obtain
+//! a signed receipt. The pin's guarantees depend on the adapter; a cloud
+//! model's version identifier is not necessarily a hash of its weights.
 //!
 //! Layers:
 //! * [`model`], [`predicate`], [`adapter`] — the data model, the named

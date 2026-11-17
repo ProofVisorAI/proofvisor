@@ -357,7 +357,7 @@ pointing at get.proofvisor.com, a host that never existed in DNS —
 the installer now lives at proofvisor.com/install.sh (same Pages
 artifact, no DNS dependency), installs proofvisord + pvctl from the
 prebuilt GitHub release binaries (SHA-256 checked; pinned to
-v0.1.0-rc.8) and falls back to `cargo install --git` from the public
+v0.1.0) and falls back to `cargo install --git` from the public
 repo on other platforms, and smoke check 11
 fetches the EXACT URL the deployed app.js prints. Public-consumer
 chain certified BY EXECUTION (R270–R272): fresh clone compiles; real

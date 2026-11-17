@@ -16,7 +16,7 @@
 #   3. Prints the one guided next step (`pvctl setup`).
 #
 # Environment overrides:
-#   PV_VERSION=0.1.0-rc.8   release to install (default: pinned below)
+#   PV_VERSION=0.1.0   release to install (default: pinned below)
 #   PV_INSTALL_DIR=~/bin    where prebuilt binaries land
 #   PV_INSTALL_SOURCE=1     skip prebuilt path, build from source
 #
@@ -28,7 +28,7 @@ set -eu
 REPO="https://github.com/ProofVisorAI/proofvisor"
 RELEASE_REPO="https://github.com/ProofVisorAI/proofvisor"
 # Pinned to the latest published release; bump alongside each tag.
-PV_VERSION="${PV_VERSION:-0.1.0-rc.8}"
+PV_VERSION="${PV_VERSION:-0.1.0}"
 
 say()  { printf '\033[1m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }

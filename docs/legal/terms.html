@@ -18,12 +18,13 @@
 <body>
 <main>
   <p class="draft" style="background:#e8f5ec;border-color:#9fd4ae;color:#134b23">
-    <strong>What the public demo collects: nothing.</strong>
-    The demo console at proofvisor.com/app/ runs in your browser against
-    built-in sample data. It stores only your theme and the demo state in
-    your browser&rsquo;s localStorage, which &ldquo;Reset demo data&rdquo;
-    clears. The <em>hosted service</em> at api.proofvisor.com is live,
-    and the terms below apply to it.
+    <strong>Demo mode uses sample data.</strong>
+    In mock mode, the console keeps its sample workspace and preferences in
+    your browser&rsquo;s localStorage and does not upload that workspace to
+    the hosted API. Selecting live mode connects to api.proofvisor.com;
+    that choice persists in your browser. Website hosting can process normal
+    request metadata such as IP addresses. The hosted service&rsquo;s
+    terms below apply to it.
   </p>
   <p class="draft">
     <strong>Draft (not yet reviewed by counsel).</strong>
@@ -32,7 +33,7 @@
   </p>
 
   <h1>Terms of service</h1>
-  <p>Last updated: 2026-11-01.</p>
+  <p>Last updated: 2026-11-17 (technical data-flow descriptions).</p>
 
   <p>By signing up for ProofVisor (the "Service"), you agree to
   these terms. If you don't agree, don't sign up.</p>
@@ -41,14 +42,17 @@
   <p>ProofVisor is a policy enforcement + audit-receipt layer for AI
   agents. You install a small daemon in your infrastructure; it enforces
   the guardrails you configure. If you run <code>pvctl console-sync</code>,
-  it uploads session summaries and signed receipts to the hosted
+  it uploads session summaries, recorded event bodies and signed receipts to the hosted
   control plane at <a href="https://api.proofvisor.com">api.proofvisor.com</a>.</p>
 
   <h2>2. Your data</h2>
-  <p>We store the metadata your daemon posts (session summaries, tool
-  invocations, receipt signatures). We do NOT store the plaintext LLM
-  prompts, completions, or tool arguments. Password hashes use argon2id. Everything is
-  encrypted in transit (TLS) and at rest (managed provider defaults).</p>
+  <p>We store the session evidence uploaded to the hosted API. Along with
+  summaries and receipt signatures, this can include prompts, completions,
+  tool arguments, tool results and recorded judge inputs after the daemon&rsquo;s
+  configured redaction. Redaction is not a guarantee that every sensitive value
+  has been removed. See the <a href="privacy.html">privacy policy</a> for the
+  data flow. Password hashes use argon2id; hosted traffic uses TLS and the
+  database uses its managed provider&rsquo;s encryption at rest.</p>
 
   <p>An organization owner can export all of the organization&rsquo;s data
   at any time with Settings → General → &ldquo;Download my data&rdquo;. An
@@ -88,7 +92,7 @@
   the courts of Paris.</p>
 
   <h2>9. Contact</h2>
-  <p>Questions? <a href="https://github.com/ProofVisorAI/proofvisor/issues/new">open a GitHub issue</a> (the mail domain goes live with the beta).
+  <p>Questions? <a href="https://github.com/ProofVisorAI/proofvisor/issues/new">open a GitHub issue</a>.
   Security disclosures: <a href="https://github.com/ProofVisorAI/proofvisor/security/advisories/new">a private GitHub security advisory</a>
   or see our <a href="../.well-known/security.txt">security.txt</a>.</p>
 </main>

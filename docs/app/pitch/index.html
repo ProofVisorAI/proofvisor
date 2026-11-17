@@ -17,7 +17,7 @@
 
   <nav class="topbar" aria-label="Console">
     <div class="topbar-inner">
-      <a class="brand" href="../../"><img src="../../logo.png" alt="" width="22" height="22">ProofVisor <span class="ver">v0.1.0-rc.8</span></a>
+      <a class="brand" href="../../"><img src="../../logo.png" alt="" width="22" height="22">ProofVisor <span class="ver">v0.1.0</span></a>
       <ol class="stepper" id="stepper">
         <li data-step="onboard"><button type="button">Setup</button></li>
         <li data-step="integrate"><button type="button">Connect</button></li>
@@ -41,11 +41,16 @@
     <!-- ============ SETUP ============ -->
     <section class="step-panel" id="panel-onboard">
       <div class="wrap">
-        <p class="kicker">Setup</p>
+        <p class="kicker">Scripted demonstration</p>
+        <p>This walkthrough uses sample data. Its controls do not configure a
+          running daemon. See the <a href="../../app/">current console</a> and
+          <a href="https://github.com/ProofVisorAI/proofvisor/blob/main/docs/FEATURES.md">feature list</a>
+          for the implemented behavior and limitations.</p>
         <h1>Set up your checkpoint</h1>
-        <p class="lede">ProofVisor is a policy checkpoint for LLM and tool traffic. Every request
-          runs through identity, quota, size, and safety gates <em>before</em> it leaves your
-          network. So an agent can never call a model or a tool you did not authorize.</p>
+        <p class="lede">ProofVisor applies configured checks to traffic routed
+          through it. Admission checks run before forwarding; response checks
+          run as answers arrive. Preventing an agent from bypassing the gateway
+          also requires network and credential controls in your deployment.</p>
 
         <div class="wizard-grid">
           <div class="wizard card">

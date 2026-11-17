@@ -18,13 +18,13 @@
   <link rel="stylesheet" href="verify.css">
   <link rel="icon" type="image/png" href="../logo.png">
   <meta property="og:title" content="Verify a ProofVisor receipt in your browser">
-  <meta property="og:description" content="Drop a receipt JSON in your browser. Ed25519 signature verified offline in ~1 ms. No account, no upload.">
+  <meta property="og:description" content="Drop a receipt JSON in your browser. Local Ed25519 signature checks. No account or receipt upload.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://proofvisor.com/verify/">
   <meta property="og:image" content="https://proofvisor.com/social-preview.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Verify a ProofVisor receipt in your browser">
-  <meta name="twitter:description" content="Drop a receipt JSON in your browser. Ed25519 signature verified offline in ~1 ms.">
+  <meta name="twitter:description" content="Drop a receipt JSON in your browser. Check its signature locally without an account.">
   <meta name="twitter:image" content="https://proofvisor.com/social-preview.png">
 </head>
 <body class="verify-page">
@@ -49,10 +49,11 @@
         its Ed25519 signature against the public key inside it. Nothing is
         uploaded and no account is needed.
       </p>
-      <ul class="trust-strip" aria-label="What happens to your file">
+      <p class="network-note">The page loads a public key list. A console share link also checks the deployment&rsquo;s pinned key online; the receipt itself stays in your browser.</p>
+      <ul class="trust-strip" role="list" aria-label="What happens to your file">
         <li>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.4 3.4 8.5 8 9.6 4.6-1.1 8-5.2 8-9.6V6l-8-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span><b>Offline</b> The check runs in this tab with Web Crypto.</span>
+          <span><b>Local check</b> Web Crypto checks the signature in this tab.</span>
         </li>
         <li>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4 8 8 5 8-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m3 3 18 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -60,7 +61,7 @@
         </li>
         <li>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span><b>Instant</b> One signature check, about a millisecond.</span>
+          <span><b>No account</b> Use your receipt or try the sample.</span>
         </li>
       </ul>
     </section>
@@ -91,21 +92,21 @@
 
     <section class="how" aria-labelledby="howHead">
       <h3 id="howHead">How this works</h3>
-      <ol class="steps">
+      <ol class="steps" role="list">
         <li>
           <span class="step-n">1</span>
           <h4>A session ends with a receipt</h4>
-          <p>The receipt is a signed JSON that commits to every event, token, tool call and policy decision of the session. It carries the Ed25519 public key that signed it.</p>
+          <p>A daemon receipt commits to the recorded event chain or an ATIF trajectory, plus the signed usage and tool-call totals. A console bundle also contains unsigned display metadata. Both include the signing public key.</p>
         </li>
         <li>
           <span class="step-n">2</span>
           <h4>Your browser checks the signature</h4>
-          <p>Web Crypto verifies the raw signed body against that key. Change a single byte anywhere and the check fails. After a green result, press <em>Now tamper with one byte</em> to see it.</p>
+          <p>Web Crypto checks the signed body against that key. Changing a signed value makes verification fail; formatting or unsigned bundle metadata is not covered by that claim. After a green result, press <em>Now tamper with one byte</em> to see it.</p>
         </li>
         <li>
           <span class="step-n">3</span>
           <h4>You confirm who owns the key</h4>
-          <p>A valid signature proves the receipt was not altered. It does not say who holds the key. Compare the key fingerprint shown above with the deployment page in the console, or with the key the operator gave you.</p>
+          <p>A valid signature proves that the signed body matches the signing key. You still need to establish who owns that key. Compare the key fingerprint shown above with the deployment page in the console, or with the key the operator gave you.</p>
         </li>
       </ol>
 
@@ -115,12 +116,13 @@
           <ul>
             <li>The signed body is byte for byte what the signer produced.</li>
             <li>The signature was made with the private half of the embedded key.</li>
-            <li>For keys on this page's trust list, or pinned by the console, that the signer is the deployment the console recorded.</li>
+            <li>For keys on this page's trust list, or pinned by the console, that the signature matches that listed or pinned key.</li>
           </ul>
         </div>
         <div class="proves-col proves-no">
           <h4>It does not prove</h4>
           <ul>
+            <li>That a sample or demo receipt is production evidence. Its key is listed to demonstrate verification.</li>
             <li>Who owns an unknown key. Such a receipt is shown as internally consistent, trust anchor not verified.</li>
             <li>That the events are true. It proves they were recorded and sealed, not that the agent did the right thing.</li>
           </ul>
@@ -128,9 +130,12 @@
       </div>
 
       <p class="cli">
-        The same check runs offline in Node, on the same code path:
+        A separate Node implementation checks signatures offline:
         <code>node server/scripts/verify-receipt.mjs receipt.json</code>
       </p>
+      <p>Configure its trusted keys before relying on the result. The Node verifier
+        refuses sample and demo keys as production evidence. For daemon receipts,
+        <code>pvctl receipt-verify</code> accepts your trusted public key explicitly.</p>
     </section>
   </main>
 
@@ -143,7 +148,7 @@
         <a href="../legal/privacy.html">Privacy</a> &middot;
         <a href="../legal/terms.html">Terms</a>
       </p>
-      <p class="muted">Open source under Apache 2.0. The verifier on this page is the same code every ProofVisor deployment ships.</p>
+      <p class="muted">Open source under Apache 2.0. The browser, Node and Rust verifiers are separate implementations of the documented receipt format.</p>
     </div>
   </footer>
 

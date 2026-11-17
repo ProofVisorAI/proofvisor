@@ -3,10 +3,10 @@
 This is a dated record from 2026-09-24, and its present-tense statements
 describe the state at that time. For the current state (the live
 deployment on Render, Resend mail, Google sign-in, release
-`v0.1.0-rc.8`) and newer test results, see `docs/FEATURES.md` sections
+`v0.1.0`) and newer test results, see `docs/FEATURES.md` sections
 7 to 10. Anthropic and Gemini were driven live on 2026-11-17 (results,
-and two defects since fixed, in `docs/FEATURES.md`, section 7); a run against a real enterprise identity provider is still
-owed.
+and two defects since fixed, in `docs/FEATURES.md`, section 7); a run
+against a real enterprise identity provider is still owed.
 
 This record describes the recovered implementation and local verification of
 the daemon, CLI, console, storage adapters, and deployment artifacts. It is

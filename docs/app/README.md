@@ -29,8 +29,8 @@ and receipts, headline KPIs. Any email + password combination signs you in.
 
 This is what powers the investor pitch and the public demo. The backend is
 deployed (see [Live mode](#live-mode)), but mock mode stays the default so a
-visitor needs no account. Mock mode also ships three investor-facing extras
-(all inert in live mode):
+visitor needs no account. Mock mode includes three demonstration features;
+their live-mode versions use the real state and permissions described below:
 
 - **Guided tour** ([`tour.js`](./tour.js)) — a six-step spotlight walkthrough
   of the money story: prevented losses → the blocked session → the exact
@@ -130,9 +130,9 @@ See [`server/README.md`](../../server/README.md) for the full deploy runbook.
   SCIM provisioning),
   `webhooks` (endpoints and deliveries; the server emits `test`,
   `member.invited`, `policy.block`, `session.blocked` and
-  `apikey.created`), `audit` (trail + CSV export), `billing` (free
-  preview; the Team and Enterprise plans shown there are not purchasable
-  yet)
+  `apikey.created`), `audit` (trail + CSV export), `billing` (Stripe checkout and the customer
+  portal when the API's billing configuration enables them; otherwise a
+  free preview). Plan limits are separately controlled by the operator.
 
 ## The scripted pitch demo
 

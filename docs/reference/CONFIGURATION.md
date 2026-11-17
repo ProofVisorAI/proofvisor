@@ -3,7 +3,7 @@
 The harness reads its TOML from the first path that exists in this
 order:
 
-1. `$PV_CONFIG` (an absolute path to a specific file)
+1. `$PV_CONFIG` (an explicit path to a specific file; a missing file is an error)
 2. `./proofvisor.toml`
 3. `./config/harness.toml`
 4. `./agentvisor.toml` (the file name used before the ProofVisor rename)
@@ -15,9 +15,11 @@ order:
 searched — see engineering review round 51 §9.4. If you were relying
 on that rank swap, copy it to one of the searched paths.
 
-`pvctl config-validate path/to/harness.toml` runs the same parser,
-`validate()` gates, and JSON-schema fidelity checks that `proofvisord`
-runs at startup and fails with the same diagnostics.
+`pvctl config-validate path/to/harness.toml` runs the TOML parser and
+configuration validation, then checks whether this build includes the selected
+backends. `--structural-only` skips the build-feature check. It does not prove
+that external services, model files, tool schemas or policies can be loaded;
+those checks still run when the daemon starts.
 
 ## Environment variables
 
@@ -27,7 +29,7 @@ source. All are optional.
 | Variable | Read by | Meaning |
 | --- | --- | --- |
 | `PV_SIGNING_SEED_FILE` | `proofvisord` | Path to the 32-byte Ed25519 signing seed — **the root of the entire trust story**. Default `config/signing.seed` relative to the working directory. If the file is missing, a fresh seed is generated and a WARN names the new key id: every receipt signed after an unintended regeneration verifies only against the NEW key, so mount this from a Secret in production and treat the WARN as a compliance incident outside first boot. |
-| `PV_CONFIG` | `proofvisord`, `pvctl` | Absolute path to the config file; rank 1 in the search order above. |
+| `PV_CONFIG` | `proofvisord`, `pvctl` | Explicit path to the config file; rank 1 in the search order above. |
 | `PV_UPSTREAM_URL` | `proofvisord` | Overrides `upstream_url` (useful in containers where the config file is baked). |
 | `PV_LISTEN` | `proofvisord` | Overrides `listen`. |
 | `PV_UPSTREAM_CHAT_PATH` | `proofvisord` | Overrides `upstream_chat_path`. |
@@ -76,7 +78,7 @@ unset or empty, and a warning on stderr names the variables it copied.
 | `config_version` | `1` | Config format version; unknown versions are refused at boot. |
 | `upstream_url` | required | Base URL of the model backend (OpenAI, vLLM, LiteLLM, Ollama, …). For `provider = "anthropic"` use `https://api.anthropic.com`; for `provider = "gemini"` use `https://generativelanguage.googleapis.com`. |
 | `upstream_chat_path` | `/v1/chat/completions` | Path appended to `upstream_url` for chat traffic when `provider = "openai"`. The native adapters own their paths (`/v1/messages` for Anthropic, `/v1beta/models/{model}:generateContent` or `:streamGenerateContent?alt=sse` for Gemini) and ignore this key. |
-| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters, which translate each OpenAI request into the provider's own API and translate the response back into OpenAI chat-completion objects and chunks (see [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md)). The native adapters have been tested only against local stand-ins, not against the live Anthropic or Gemini APIs. |
+| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters, which translate each OpenAI request into the provider's own API and translate the response back into OpenAI chat-completion objects and chunks (see [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md)). The native adapters are tested against local stand-ins, and were also driven against the live Anthropic and Gemini APIs on 2026-11-17 (`docs/FEATURES.md`, section 7). |
 | `provider_default_max_tokens` | `4096` | Output-token limit sent to Anthropic when a request sets neither `max_tokens` nor `max_completion_tokens`; the Anthropic Messages API refuses requests without one. Must be at least 1. Other providers ignore it. |
 | `upstream_authorization_passthrough` | `false` | Forward the client's `Authorization` header verbatim to the upstream. **Incompatible with `require_identity = true`** (the header carries the NHI identity token there, not an upstream credential) and with the static upstream key options — boot refuses those combinations. |
 | `ignore_client_authorization` | `false` | Accept and DISCARD a client `Authorization` bearer when no identity validator is configured (stock OpenAI SDKs always send a placeholder key; without this a keyless dev upstream 401s the documented quickstart on request one). The header never reaches the upstream. Refused in combination with `require_identity = true` or `upstream_authorization_passthrough = true`. |
