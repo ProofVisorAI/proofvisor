@@ -4503,11 +4503,21 @@ impl AbortFinalizingStream {
                 // ActiveJournalRecord fold) attest the provider-true
                 // prompt count; CJK-heavy workloads previously
                 // over-reported 3-4× into the signed receipt.
-                prompt_token_correction: self.response_metrics.prompt_tokens.map_or(0i64, |provider| {
-                    let provider = i64::try_from(provider).unwrap_or(i64::MAX);
+                //
+                // An answer with an error status and no usage is a
+                // request the provider refused: it read no prompt it
+                // bills for, so the whole estimate is taken back and the
+                // receipt counts nothing for it. An answer without usage
+                // under a success status keeps the estimate: tokens
+                // were consumed and the estimate is all there is.
+                prompt_token_correction: {
                     let billed = i64::try_from(self.billed_prompt_tokens).unwrap_or(i64::MAX);
-                    provider.saturating_sub(billed)
-                }),
+                    match self.response_metrics.prompt_tokens {
+                        Some(provider) => i64::try_from(provider).unwrap_or(i64::MAX).saturating_sub(billed),
+                        None if !self.upstream_status.is_success() => billed.saturating_neg(),
+                        None => 0,
+                    }
+                },
                 atif: Some(crate::worker::AtifCapture {
                     source: pv_atif::Source::Agent,
                     message,

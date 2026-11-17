@@ -43,8 +43,14 @@ chain (receipts, ATIF trajectories, stop-reason taxonomy, provider-true
 token totals) is built from the translated OpenAI frames and therefore
 has the same shape for every provider. Unsupported `provider` values are
 refused at pre-flight by `pvctl config-validate` and at boot by the
-daemon. The native adapters have been tested only against local
-stand-ins, not against the live Anthropic or Gemini APIs.
+daemon. The native adapters are tested against local
+stand-ins. Both were also driven against the live Anthropic and Gemini
+APIs on 2026-11-17 (see `docs/FEATURES.md`, section 7). A Gemini tool
+call carries the model's thought signature at
+`extra_content.google.thought_signature`; send the tool call back as
+received, as Gemini 3 models require the signature with the history. A
+call that arrives without it is sent with the placeholder Google
+documents for unsigned calls.
 
 ### What the native adapters translate
 

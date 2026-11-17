@@ -1377,3 +1377,488 @@ deny_above = 0.7
         "boot error should mention {expected:?}: {stderr}"
     );
 }
+
+/// A judge speaking `proofvisor.judge.v1` that counts the outputs it is
+/// asked to score (`output_safe@1`) and answers each after `delay`. The
+/// count rises when the request arrives, before the delay.
+fn spawn_trace_judge(delay: Duration) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let traces = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&traces);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let counter = std::sync::Arc::clone(&counter);
+            std::thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let header_end = loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            buffer.extend_from_slice(chunk.get(..n).unwrap());
+                            if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break pos + 4;
+                            }
+                        }
+                    }
+                };
+                let headers = String::from_utf8_lossy(buffer.get(..header_end).unwrap()).to_string();
+                let content_length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().ok())?
+                    })
+                    .unwrap_or(0);
+                while buffer.len() < header_end + content_length {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buffer.extend_from_slice(chunk.get(..n).unwrap()),
+                    }
+                }
+                let request =
+                    String::from_utf8_lossy(buffer.get(header_end..).unwrap_or_default()).to_string();
+                let (first, second) = if request.contains("output_safe") {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(delay);
+                    ("safe", "unsafe")
+                } else {
+                    ("match", "mismatch")
+                };
+                let body = format!(
+                    r#"{{"model":{{"name":"proc-judge","version":"1","weights_sha256":"{hash}"}},"probs":[{{"label":"{first}","p":0.1}},{{"label":"{second}","p":0.9}}]}}"#,
+                    hash = "cd".repeat(32),
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    (port, traces)
+}
+
+/// `[judge]` with background judging of the model's answers by the
+/// judge on `judge_port`.
+fn trace_judge_section(judge_port: u16) -> String {
+    format!(
+        r#"
+[judge]
+mode = "enforce"
+
+[[judge.adapters]]
+name = "proc"
+kind = "cloud"
+endpoint = "http://127.0.0.1:{judge_port}/score"
+deadline_ms = 2000
+model_name = "proc-judge"
+model_version = "1"
+weights_sha256 = "{hash}"
+
+[judge.trace]
+adapter = "proc"
+sources = ["model"]
+allow_cloud = true
+"#,
+        hash = "cd".repeat(32)
+    )
+}
+
+/// The `agent.judge` events of kind `trace` that the embedded Bridge
+/// under `bridge_dir` holds for `session`. Reads the files without
+/// opening the Bridge, so it is safe while the daemon runs.
+fn trace_events(bridge_dir: &std::path::Path, session: &str) -> Vec<serde_json::Value> {
+    let Ok(yaml) = std::fs::read_to_string(bridge_dir.join("manifest.yaml")) else {
+        return Vec::new();
+    };
+    let manifest = pv_bridge::BridgeManifest::from_yaml(&yaml).expect("parse the Bridge manifest");
+    let partitions = manifest
+        .topics
+        .iter()
+        .find(|topic| topic.name == "agent.judge")
+        .map_or(0, |topic| topic.partitions);
+    let mut events = Vec::new();
+    for partition in 0..partitions {
+        let page = pv_bridge::EmbeddedBroker::fetch_read_only(bridge_dir, "agent.judge", partition, 0, 1_024)
+            .unwrap_or_default();
+        events.extend(page.into_iter().map(|stored| stored.value).filter(|value| {
+            value.pointer("/session_uid").and_then(serde_json::Value::as_str) == Some(session)
+                && value.pointer("/payload/kind").and_then(serde_json::Value::as_str) == Some("trace")
+        }));
+    }
+    events
+}
+
+fn wait_for(what: &str, budget: Duration, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + budget;
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// An answer judged before a SIGKILL is not judged again when the
+/// restarted daemon recovers the session: the judge is asked once, the
+/// Bridge holds one verdict, and answers given after the restart are
+/// judged as before.
+#[test]
+fn outputs_judged_before_a_kill_are_not_judged_again_after_the_restart() {
+    use std::sync::atomic::Ordering;
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let upstream_port = spawn_mock_upstream();
+    let (judge_port, traces) = spawn_trace_judge(Duration::ZERO);
+    let listen_port = free_port();
+    let config_path = judged_config(root, listen_port, upstream_port, &trace_judge_section(judge_port));
+    let seed_path = root.join("signing.seed");
+    let bridge = root.join("data/bridge");
+    let spool = root.join("spool/atif");
+
+    let mut daemon = start_daemon(&config_path, &seed_path);
+    wait_healthy(listen_port, &mut daemon);
+    let (status, body) = http_post_chat(listen_port, "judged-once").unwrap();
+    assert_eq!(status, 200, "{body}");
+    wait_for("the first verdict in the Bridge", Duration::from_secs(20), || {
+        trace_events(&bridge, "judged-once").len() == 1
+    });
+    assert_eq!(traces.load(Ordering::SeqCst), 1);
+    daemon.0.kill().unwrap();
+    daemon.0.wait().unwrap();
+    drop(daemon);
+
+    let mut daemon = start_daemon(&config_path, &seed_path);
+    wait_healthy(listen_port, &mut daemon);
+    // Recovery of the killed session runs to its end.
+    wait_for_spool_quiescence(&spool, Duration::from_millis(200), 5, Duration::from_secs(15));
+    assert_eq!(
+        traces.load(Ordering::SeqCst),
+        1,
+        "recovery must not send an already judged answer to the judge again"
+    );
+    assert_eq!(trace_events(&bridge, "judged-once").len(), 1);
+    // The killed session was recovered into a sealed trajectory that
+    // holds the verdict step once.
+    let recovered: Vec<String> = std::fs::read_dir(&spool)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter(|text| text.contains("judged-once"))
+        .collect();
+    assert_eq!(
+        recovered.len(),
+        1,
+        "one recovered trajectory for the killed session"
+    );
+    let recovered_text = recovered.first().expect("one recovered trajectory");
+    assert_eq!(
+        recovered_text.matches("semantic judge trace").count(),
+        1,
+        "the recovered trajectory holds the verdict step once"
+    );
+
+    let (status, body) = http_post_chat(listen_port, "judged-after-restart").unwrap();
+    assert_eq!(status, 200, "{body}");
+    wait_for("the verdict of the new session", Duration::from_secs(20), || {
+        trace_events(&bridge, "judged-after-restart").len() == 1
+    });
+    assert_eq!(traces.load(Ordering::SeqCst), 2);
+    assert_eq!(trace_events(&bridge, "judged-once").len(), 1);
+}
+
+/// An embedded Bridge provisioned before `agent.judge` existed gains the
+/// topic when a daemon with `[judge]` starts on it, and verdicts are
+/// recorded there. A daemon whose operator supplies a manifest without
+/// the topic refuses to start and names it.
+#[test]
+fn an_older_bridge_gains_the_judge_topic_and_a_manifest_without_it_stops_the_boot() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let upstream_port = spawn_mock_upstream();
+    let (judge_port, _traces) = spawn_trace_judge(Duration::ZERO);
+    let listen_port = free_port();
+    let bridge = root.join("data/bridge");
+
+    // The Bridge as a build without the semantic judge provisioned it.
+    let mut old = pv_bridge::BridgeManifest::default_for("upgrade");
+    old.topics.retain(|topic| topic.name != "agent.judge");
+    std::fs::create_dir_all(&bridge).unwrap();
+    drop(pv_bridge::EmbeddedBroker::provision(&bridge, &old).unwrap());
+    let old_yaml = std::fs::read_to_string(bridge.join("manifest.yaml")).unwrap();
+    assert!(!old_yaml.contains("agent.judge"));
+
+    let config_path = judged_config(root, listen_port, upstream_port, &trace_judge_section(judge_port));
+    let seed_path = root.join("signing.seed");
+    let mut daemon = start_daemon(&config_path, &seed_path);
+    wait_healthy(listen_port, &mut daemon);
+    assert!(std::fs::read_to_string(bridge.join("manifest.yaml"))
+        .unwrap()
+        .contains("agent.judge"));
+    let (status, body) = http_post_chat(listen_port, "upgraded").unwrap();
+    assert_eq!(status, 200, "{body}");
+    wait_for("a verdict in the added topic", Duration::from_secs(20), || {
+        trace_events(&bridge, "upgraded").len() == 1
+    });
+    drop(daemon);
+
+    // An operator's own manifest without the topic, on a new data
+    // directory: the daemon must not start.
+    let other = tempfile::tempdir().unwrap();
+    let other_root = other.path();
+    let manifest_path = other_root.join("bridge-manifest.yaml");
+    std::fs::write(&manifest_path, &old_yaml).unwrap();
+    let section = format!(
+        "bridge_manifest_path = '{}'\n{}",
+        manifest_path.display(),
+        trace_judge_section(judge_port)
+    );
+    let other_config = judged_config(other_root, free_port(), upstream_port, &section);
+    // Through `start_daemon`, so a daemon that wrongly starts is killed
+    // and the test fails instead of waiting on it for ever.
+    let mut refused = start_daemon(&other_config, &other_root.join("signing.seed"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Ok(Some(status)) = refused.0.try_wait() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon must refuse to boot, and it is still running"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!status.success(), "the daemon must refuse to boot");
+    let stderr = std::fs::read_to_string(other_config.with_extension("daemon.log")).unwrap_or_default();
+    assert!(
+        stderr.contains("has no `agent.judge` topic"),
+        "boot error should name the missing topic: {stderr}"
+    );
+}
+
+/// A graceful shutdown waits for a verdict the judge has not returned
+/// yet: the daemon exits 0 only after the verdict is in the Bridge and
+/// in the session's sealed trajectory.
+#[test]
+fn sigterm_waits_for_a_verdict_still_on_its_way() {
+    use std::sync::atomic::Ordering;
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let upstream_port = spawn_mock_upstream();
+    let (judge_port, traces) = spawn_trace_judge(Duration::from_millis(1_000));
+    let listen_port = free_port();
+    let config_path = judged_config(root, listen_port, upstream_port, &trace_judge_section(judge_port));
+    let seed_path = root.join("signing.seed");
+    let bridge = root.join("data/bridge");
+    let spool = root.join("spool/atif");
+
+    let mut daemon = start_daemon(&config_path, &seed_path);
+    wait_healthy(listen_port, &mut daemon);
+    let (status, body) = http_post_chat(listen_port, "slow-verdict").unwrap();
+    assert_eq!(status, 200, "{body}");
+    wait_for("the answer to reach the judge", Duration::from_secs(20), || {
+        traces.load(Ordering::SeqCst) == 1
+    });
+    assert!(
+        trace_events(&bridge, "slow-verdict").is_empty(),
+        "the judge has not answered yet"
+    );
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &daemon.0.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    assert!(killed.success());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Ok(Some(status)) = daemon.0.try_wait() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "daemon did not exit after SIGTERM");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(status.success(), "graceful shutdown must exit 0, got {status}");
+    let verdicts = trace_events(&bridge, "slow-verdict");
+    assert_eq!(
+        verdicts.len(),
+        1,
+        "the verdict was recorded before the daemon exited"
+    );
+    let verdict = verdicts.first().expect("one verdict");
+    // A scored verdict (the judge answers `unsafe` 0.9), not the record
+    // of a judge call that timed out.
+    assert_eq!(
+        verdict
+            .pointer("/payload/risk_ppm")
+            .and_then(serde_json::Value::as_u64),
+        Some(900_000),
+        "{}",
+        verdict
+    );
+    assert_eq!(
+        verdict
+            .pointer("/payload/complete")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    let sealed_with_verdict = std::fs::read_dir(&spool)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter(|entry| {
+            std::fs::read_to_string(entry.path())
+                .unwrap_or_default()
+                .contains("semantic judge trace")
+        })
+        .count();
+    assert_eq!(sealed_with_verdict, 1, "the sealed trajectory holds the verdict");
+}
+
+/// An upstream that answers 400 without usage when the request mentions
+/// "refuse-me", and the canned answer (5 prompt tokens, 3 completion
+/// tokens) otherwise.
+fn spawn_refusing_upstream() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            std::thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let header_end = loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            buffer.extend_from_slice(chunk.get(..n).unwrap());
+                            if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break pos + 4;
+                            }
+                        }
+                    }
+                };
+                let headers = String::from_utf8_lossy(buffer.get(..header_end).unwrap()).to_string();
+                let content_length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().ok())?
+                    })
+                    .unwrap_or(0);
+                while buffer.len() < header_end + content_length {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buffer.extend_from_slice(chunk.get(..n).unwrap()),
+                    }
+                }
+                let request =
+                    String::from_utf8_lossy(buffer.get(header_end..).unwrap_or_default()).to_string();
+                let (status, body) = if request.contains("refuse-me") {
+                    (
+                        "400 Bad Request",
+                        r#"{"error":{"message":"refused by the provider","type":"invalid_request_error"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"model":"mock","choices":[{"message":{"role":"assistant","content":"hello from mock"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    port
+}
+
+/// A request the provider refused (an error status, no usage) adds
+/// nothing to the session's prompt-token total: the estimate made when
+/// the request was admitted is taken back, so the sealed record counts
+/// what the provider counted.
+#[test]
+fn a_request_the_provider_refused_adds_no_prompt_tokens_to_the_record() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let upstream_port = spawn_refusing_upstream();
+    let listen_port = free_port();
+    let config_path = judged_config(root, listen_port, upstream_port, "");
+    let seed_path = root.join("signing.seed");
+    let spool = root.join("spool/atif");
+    let mut daemon = start_daemon(&config_path, &seed_path);
+    wait_healthy(listen_port, &mut daemon);
+
+    let post = |content: &str| {
+        let body = format!(r#"{{"model":"mock","messages":[{{"role":"user","content":"{content}"}}]}}"#);
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", listen_port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(
+            stream,
+            "POST /v1/chat/completions HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\nx-pv-session: refused-accounting\r\nx-pv-workflow: unsigned\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap()
+    };
+    assert_eq!(post("ping"), 200);
+    // A long prompt, so a kept estimate would be far from the 5 tokens
+    // the provider counted for the first request.
+    let long = format!("refuse-me {}", "padding words ".repeat(60));
+    assert_eq!(post(&long), 400);
+    assert_eq!(post("ping"), 200);
+
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &daemon.0.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    assert!(killed.success());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while daemon.0.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "daemon did not exit after SIGTERM");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let sealed: Vec<serde_json::Value> = std::fs::read_dir(&spool)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter(|text| text.contains("refused-accounting"))
+        .filter_map(|text| serde_json::from_str(&text).ok())
+        .collect();
+    assert_eq!(sealed.len(), 1, "one sealed trajectory for the session");
+    let trajectory = sealed.first().expect("one sealed trajectory");
+    let totals = trajectory
+        .pointer("/final_metrics")
+        .unwrap_or_else(|| panic!("no final_metrics in {}", trajectory));
+    assert_eq!(
+        totals
+            .pointer("/total_prompt_tokens")
+            .and_then(serde_json::Value::as_u64),
+        Some(10),
+        "two answered requests of 5 prompt tokens each, nothing for the refused one: {totals}"
+    );
+    assert_eq!(
+        totals
+            .pointer("/total_completion_tokens")
+            .and_then(serde_json::Value::as_u64),
+        Some(6),
+        "{totals}"
+    );
+}

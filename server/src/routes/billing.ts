@@ -134,6 +134,38 @@ async function orgForSubscription(sub: Stripe.Subscription): Promise<{ id: strin
 
 type Tx = Parameters<Parameters<typeof db.$transaction>[0]>[0];
 
+/** True when Stripe answered that the object named in the call does not exist. */
+function isStripeMissing(err: unknown, param?: string): boolean {
+  const e = err as { code?: string; param?: string; statusCode?: number } | null;
+  if (!e || e.code !== "resource_missing") return false;
+  return param === undefined || e.param === param;
+}
+
+/** A subscription that has ended and will never bill again. */
+function hasEnded(sub: Stripe.Subscription): boolean {
+  return sub.status === "canceled" || sub.status === "incomplete_expired";
+}
+
+/**
+ * The subscription as Stripe holds it now. Stripe does not deliver
+ * events in order, so an event's own snapshot can be older than what
+ * was already applied: an update sent before a cancellation may arrive
+ * after it. Reading the current object makes the order of arrival
+ * irrelevant. A subscription Stripe does not know keeps the event's
+ * snapshot; any other failure is thrown, so the webhook answers 500 and
+ * Stripe delivers the event again.
+ */
+async function currentSubscription(sub: Stripe.Subscription): Promise<Stripe.Subscription> {
+  const stripe = stripeClient();
+  if (!stripe) return sub;
+  try {
+    return await stripe.subscriptions.retrieve(sub.id);
+  } catch (err) {
+    if (isStripeMissing(err)) return sub;
+    throw err;
+  }
+}
+
 /** Apply one verified event. Returns the org it touched (for the audit row). */
 async function applyEvent(tx: Tx, event: Stripe.Event, log: FastifyRequest["log"]): Promise<string | null> {
   switch (event.type) {
@@ -162,7 +194,16 @@ async function applyEvent(tx: Tx, event: Stripe.Event, log: FastifyRequest["log"
       if (subscription) {
         try {
           const s = stripeClient();
-          if (s) renew = renewsAt(await s.subscriptions.retrieve(subscription));
+          if (s) {
+            const live = await s.subscriptions.retrieve(subscription);
+            // A completion that arrives after its subscription ended
+            // (cancelled in the meantime) grants nothing.
+            if (hasEnded(live)) {
+              log.info({ eventId: event.id, subscription }, "billing_checkout_subscription_already_ended");
+              return null;
+            }
+            renew = renewsAt(live);
+          }
         } catch (err) {
           log.warn({ err, subscription }, "billing_subscription_lookup_failed");
         }
@@ -182,11 +223,28 @@ async function applyEvent(tx: Tx, event: Stripe.Event, log: FastifyRequest["log"
     }
     case "customer.subscription.updated":
     case "customer.subscription.created": {
-      const sub = event.data.object as Stripe.Subscription;
-      const org = await orgForSubscription(sub);
+      const snapshot = event.data.object as Stripe.Subscription;
+      const org = await orgForSubscription(snapshot);
       if (!org) {
-        log.warn({ eventId: event.id, subscription: sub.id }, "billing_subscription_org_unknown");
+        log.warn({ eventId: event.id, subscription: snapshot.id }, "billing_subscription_org_unknown");
         return null;
+      }
+      const sub = await currentSubscription(snapshot);
+      if (hasEnded(sub)) {
+        // The subscription has ended at Stripe. Only the workspace's
+        // own subscription takes it back to free: a late event about an
+        // older one must not cancel the plan a newer one pays for.
+        const held = await tx.org.findUnique({ where: { id: org.id }, select: { plan: true, stripeSubscriptionId: true } });
+        if (held?.stripeSubscriptionId !== sub.id) {
+          log.info({ eventId: event.id, subscription: sub.id }, "billing_stale_subscription_event_ignored");
+          return null;
+        }
+        await tx.org.update({
+          where: { id: org.id },
+          data: { plan: "free", planStatus: "canceled", stripeSubscriptionId: null, planRenewsAt: null },
+        });
+        writeAudit({ orgId: org.id, event: "billing.plan_changed", actorId: "stripe", target: "free", metadata: { fromPlan: held.plan, toPlan: "free", via: event.type, eventId: event.id } }, log);
+        return org.id;
       }
       const priceId = sub.items?.data?.[0]?.price?.id;
       const plan = planForPrice(priceId) ?? (sub.metadata?.plan === "team" || sub.metadata?.plan === "enterprise" ? sub.metadata.plan : null);
@@ -219,7 +277,13 @@ async function applyEvent(tx: Tx, event: Stripe.Event, log: FastifyRequest["log"
       const sub = event.data.object as Stripe.Subscription;
       const org = await orgForSubscription(sub);
       if (!org) return null;
-      const before = await tx.org.findUnique({ where: { id: org.id }, select: { plan: true } });
+      const before = await tx.org.findUnique({ where: { id: org.id }, select: { plan: true, stripeSubscriptionId: true } });
+      // The end of an older subscription, arriving after the workspace
+      // subscribed again, must not cancel the plan the new one pays for.
+      if (before?.stripeSubscriptionId && before.stripeSubscriptionId !== sub.id) {
+        log.info({ eventId: event.id, subscription: sub.id }, "billing_stale_subscription_event_ignored");
+        return null;
+      }
       await tx.org.update({
         where: { id: org.id },
         data: { plan: "free", planStatus: "canceled", stripeSubscriptionId: null, planRenewsAt: null },
@@ -243,6 +307,19 @@ async function applyEvent(tx: Tx, event: Stripe.Event, log: FastifyRequest["log"
       }
       await tx.org.update({ where: { id: org.id }, data: { planStatus: "past_due" } });
       writeAudit({ orgId: org.id, event: "billing.payment_failed", actorId: "stripe", target: invoice.id ?? null, metadata: { eventId: event.id, amountDue: invoice.amount_due } }, log);
+      return org.id;
+    }
+    case "customer.deleted": {
+      // The billing account is gone at Stripe, with its subscriptions.
+      // Forget its id, so the next checkout creates a new customer.
+      const customer = event.data.object as Stripe.Customer;
+      const org = await db.org.findUnique({ where: { stripeCustomerId: customer.id }, select: { id: true, plan: true } });
+      if (!org) return null;
+      await tx.org.update({
+        where: { id: org.id },
+        data: { plan: "free", planStatus: "canceled", stripeCustomerId: null, stripeSubscriptionId: null, planRenewsAt: null },
+      });
+      writeAudit({ orgId: org.id, event: "billing.plan_changed", actorId: "stripe", target: "free", metadata: { fromPlan: org.plan, toPlan: "free", via: event.type, eventId: event.id } }, log);
       return org.id;
     }
     default:
@@ -299,32 +376,54 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         detail: `The ${body.data.plan} plan has no Stripe price configured on this instance (STRIPE_PRICE_${body.data.plan.toUpperCase()}_MONTHLY).`,
       });
     }
-    const org = await db.org.findUnique({ where: { id: claims.orgId }, select: { id: true, name: true, plan: true, stripeCustomerId: true } });
+    const org = await db.org.findUnique({
+      where: { id: claims.orgId },
+      select: { id: true, name: true, plan: true, stripeCustomerId: true, stripeSubscriptionId: true },
+    });
     if (!org) return reply.code(404).send({ error: "not_found" });
     if (normalizePlan(org.plan) === body.data.plan) return reply.code(409).send({ error: "already_on_plan" });
+    // A second checkout would open a second subscription beside the
+    // first, and the workspace would pay for both. A plan change on a
+    // running subscription goes through the billing portal.
+    if (org.stripeSubscriptionId && normalizePlan(org.plan) !== "free") {
+      return reply.code(409).send({
+        error: "already_subscribed",
+        detail: "This workspace already has a subscription. Change or cancel the plan from the billing portal.",
+      });
+    }
     const actor = await resolveActor(claims.sub);
 
-    let customerId = org.stripeCustomerId;
-    if (!customerId) {
+    const createCustomer = async (): Promise<string> => {
       const customer = await stripe.customers.create({
         ...(actor.actorEmail ? { email: actor.actorEmail } : {}),
         name: org.name,
         metadata: { orgId: org.id },
       });
-      customerId = customer.id;
-      await db.org.update({ where: { id: org.id }, data: { stripeCustomerId: customerId } });
+      await db.org.update({ where: { id: org.id }, data: { stripeCustomerId: customer.id } });
+      return customer.id;
+    };
+    const createSession = (customer: string) =>
+      stripe.checkout.sessions.create({
+        mode: "subscription",
+        customer,
+        client_reference_id: org.id,
+        line_items: [{ price, quantity: 1 }],
+        success_url: appUrl("/app/#/settings/billing?checkout=success"),
+        cancel_url: appUrl("/app/#/settings/billing?checkout=cancel"),
+        metadata: { orgId: org.id, plan: body.data.plan },
+        subscription_data: { metadata: { orgId: org.id, plan: body.data.plan } },
+        allow_promotion_codes: true,
+      });
+    const customerId = org.stripeCustomerId ?? (await createCustomer());
+    let session: Awaited<ReturnType<typeof createSession>>;
+    try {
+      session = await createSession(customerId);
+    } catch (err) {
+      // The stored customer was deleted at Stripe: start a new one.
+      if (!org.stripeCustomerId || !isStripeMissing(err, "customer")) throw err;
+      req.log.warn({ orgId: org.id }, "billing_customer_missing_recreated");
+      session = await createSession(await createCustomer());
     }
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: customerId,
-      client_reference_id: org.id,
-      line_items: [{ price, quantity: 1 }],
-      success_url: appUrl("/app/#/settings/billing?checkout=success"),
-      cancel_url: appUrl("/app/#/settings/billing?checkout=cancel"),
-      metadata: { orgId: org.id, plan: body.data.plan },
-      subscription_data: { metadata: { orgId: org.id, plan: body.data.plan } },
-      allow_promotion_codes: true,
-    });
     writeAudit(
       { orgId: org.id, event: "billing.checkout_started", ...actor, target: body.data.plan, metadata: { checkoutSessionId: session.id, price }, req },
       req.log,
@@ -347,10 +446,25 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         detail: "This workspace has never checked out, so there is no billing account to manage yet.",
       });
     }
-    const session = await stripe.billingPortal.sessions.create({
-      customer: org.stripeCustomerId,
-      return_url: appUrl("/app/#/settings/billing"),
-    });
+    let session: Stripe.BillingPortal.Session;
+    try {
+      session = await stripe.billingPortal.sessions.create({
+        customer: org.stripeCustomerId,
+        return_url: appUrl("/app/#/settings/billing"),
+      });
+    } catch (err) {
+      if (!isStripeMissing(err, "customer")) throw err;
+      // The stored customer was deleted at Stripe: there is no billing
+      // account to manage until the workspace checks out again.
+      await db.org.update({
+        where: { id: org.id },
+        data: { plan: "free", planStatus: "canceled", stripeCustomerId: null, stripeSubscriptionId: null, planRenewsAt: null },
+      });
+      return reply.code(409).send({
+        error: "no_billing_customer",
+        detail: "The billing account of this workspace no longer exists at Stripe. Start a checkout to create a new one.",
+      });
+    }
     writeAudit(
       { orgId: org.id, event: "billing.portal_opened", ...(await resolveActor(claims.sub)), target: org.stripeCustomerId, req },
       req.log,

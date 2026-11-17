@@ -2,6 +2,10 @@
 // `stripe` SDK to complete the calls routes/billing.ts makes:
 //   POST /v1/customers, POST /v1/checkout/sessions,
 //   POST /v1/billing_portal/sessions, GET /v1/subscriptions/:id
+// A test can register a subscription (`setSubscription`), make its
+// lookup fail (`failSubscription`) and delete a customer
+// (`deleteCustomer`), after which calls naming it answer as Stripe
+// does: 400 resource_missing on the `customer` parameter.
 // Every request is recorded (method, path, parsed form body) so a test
 // can assert on the price id and metadata the API sent. Also exports
 // `signStripeEvent`, which produces the `Stripe-Signature` header the
@@ -27,6 +31,8 @@ export async function startFakeStripe({ port = 0, subscription = {} } = {}) {
   const run = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const state = {
     subscriptions: new Map(),
+    failing: new Set(),
+    deletedCustomers: new Set(),
   };
   const server = createServer((req, res) => {
     let body = "";
@@ -42,6 +48,9 @@ export async function startFakeStripe({ port = 0, subscription = {} } = {}) {
       if (req.method === "POST" && url.pathname === "/v1/customers") {
         const id = "cus_fake_" + run + "_" + ++seq;
         return send(200, { id, object: "customer", email: form.email ?? null, name: form.name ?? null, metadata: { orgId: form["metadata[orgId]"] } });
+      }
+      if (req.method === "POST" && form.customer && state.deletedCustomers.has(form.customer)) {
+        return send(400, { error: { type: "invalid_request_error", code: "resource_missing", param: "customer", message: `No such customer: '${form.customer}'` } });
       }
       if (req.method === "POST" && url.pathname === "/v1/checkout/sessions") {
         const id = "cs_fake_" + run + "_" + ++seq;
@@ -61,6 +70,7 @@ export async function startFakeStripe({ port = 0, subscription = {} } = {}) {
       const subMatch = /^\/v1\/subscriptions\/([^/]+)$/.exec(url.pathname);
       if (req.method === "GET" && subMatch) {
         const id = subMatch[1];
+        if (state.failing.has(id)) return send(500, { error: { type: "api_error", message: "fake stripe: lookup failed" } });
         const sub = state.subscriptions.get(id) ?? {
           id,
           object: "subscription",
@@ -86,6 +96,8 @@ export async function startFakeStripe({ port = 0, subscription = {} } = {}) {
     port: actualPort,
     requests,
     setSubscription(id, obj) { state.subscriptions.set(id, obj); },
+    failSubscription(id, failing = true) { if (failing) state.failing.add(id); else state.failing.delete(id); },
+    deleteCustomer(id) { state.deletedCustomers.add(id); },
     async stop() {
       server.closeAllConnections?.();
       await new Promise((resolve) => server.close(resolve));

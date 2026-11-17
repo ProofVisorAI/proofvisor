@@ -25,8 +25,9 @@ chat-completions format.
   including streaming, tool calls, stop reasons, usage and errors.
   `n > 1` works with every provider (Anthropic gets one request per
   choice). The Anthropic and Gemini adapters are driven end to end
-  against local servers that speak each vendor's wire format; a run
-  against the vendors' live APIs is still owed (section 7). Sixteen presets exist in `pvctl init` (OpenAI, Azure,
+  against local servers that speak each vendor's wire format; both
+  were also driven against the vendors' live APIs on 2026-11-17, which
+  found two defects, since fixed (section 7). Sixteen presets exist in `pvctl init` (OpenAI, Azure,
   Anthropic and Gemini natively, Groq, Mistral, OpenRouter, Together,
   DeepSeek, xAI, Ollama, LM Studio, vLLM, llama.cpp, LiteLLM, custom).
 - **Streaming passes through.** Server-sent events are normally relayed frame
@@ -299,7 +300,47 @@ with demonstration data, which is what the public site shows by default.
   prices and the free-plan limits (2 deployments, 3 members, no SAML or
   SCIM) were proposed during development and need a business decision
   before anyone turns them on; they contradict today's "every
-  governance feature on Free" wording.
+  governance feature on Free" wording. On 2026-11-17 the console API,
+  run locally, was driven once against a real Stripe test sandbox with
+  two placeholder prices: checkout returned a Stripe Checkout page, a
+  payment with Stripe's test card moved the workspace to the team plan
+  through the real signed `checkout.session.completed` webhook, the
+  customer portal opened, cancelling the subscription at Stripe
+  returned the workspace to free, and a forged signature was refused.
+  This was a manual run from a scratch script, with the events
+  forwarded by `stripe listen` (the completed checkout was replayed
+  once, after the forwarder was restarted with the option its current
+  version requires); CI still uses the local stand-in. A second manual
+  run the same day drove 47 scenario checks against the sandbox (access
+  control, input checks, webhook signatures and replay window,
+  duplicate delivery, upgrade, downgrade, cancellation now and at the
+  period end, a failed invoice, a deleted customer, events delivered by
+  hand in a chosen order): 43 held. Three of the four that did not were
+  defects, fixed the same day and covered in `server/ci/billing.test.mjs`;
+  the run then passed 47 of 47 against the sandbox:
+  - **A late event could undo a cancellation.** Stripe does not deliver
+    events in order, and an update sent before a cancellation could
+    arrive after it and restore the paid plan. A subscription event now
+    applies the subscription as Stripe holds it at that moment, not the
+    snapshot it carries; the end of a subscription changes a workspace
+    only when it is the workspace's own; a failed lookup answers 500 so
+    Stripe delivers again.
+  - **A workspace whose Stripe customer was deleted could not pay
+    again.** `customer.deleted` now clears the stored customer, and
+    checkout and the portal recover by themselves when Stripe answers
+    that the customer does not exist (checkout creates a new one, the
+    portal answers 409 `no_billing_customer`).
+  - **Checkout for the other paid plan while one was active** offered a
+    second subscription. It is now refused (409 `already_subscribed`)
+    and the message points to the billing portal, where a plan is
+    changed.
+  - **Still open, a decision: an unpaid subscription keeps the paid
+    limits.** `past_due` and `incomplete` are recorded as `planStatus`,
+    but limits follow `plan` alone, so a workspace whose payment failed
+    keeps team or enterprise limits until Stripe cancels the
+    subscription.
+  Not run against real Stripe: a card declined or needing 3-D Secure on
+  the Checkout page, and delayed payment methods (bank debits).
 - **Budget policies written before this release have no spec.** The
   pre-rename console stored budget policies as text only, so a daemon
   reports such a policy as unsupported ("budget policy has no JSON
@@ -322,10 +363,52 @@ with demonstration data, which is what the public site shows by default.
   yet: the release run rehearsed the upload successfully, and the
   upload itself stopped because the repository has no
   `CARGO_REGISTRY_TOKEN` secret.
-- **Native Anthropic and Gemini have not reached the real APIs yet.**
-  They were tested against local servers that speak each vendor's wire
-  format as documented. A run against api.anthropic.com and the Gemini
-  API needs real keys and makes a few paid requests
+- **Native Anthropic and Gemini were driven against the real APIs on
+  2026-11-17.** The release build of that day passed all eleven checks
+  of the provider drill against api.anthropic.com
+  (`claude-haiku-4-5-20251001`) and the Gemini API
+  (`gemini-3.5-flash-lite`). A longer one-off drill of 41 checks per
+  provider followed (non-streamed and streamed answers, system prompt
+  and history, output limit, stop sequence, unicode, tool calls in both
+  modes with the result sent back, forced tool choice, `n = 2`, JSON
+  mode, provider errors, concurrent streams, a session budget, and the
+  receipt's totals against the sum of every answer's usage): Anthropic
+  passed 40, Gemini 37. It was run by hand from a scratch script and is
+  not part of the repository or of CI. It found two defects, fixed the
+  same day; the drill then passed 41 of 41 on Anthropic and 39 of 41 on
+  Gemini:
+  - **Receipts over-counted prompt tokens after a request the provider
+    refused** (both providers). The estimate made at admission was
+    replaced by the provider's count only when the provider reported
+    usage, and a request refused upstream (HTTP 400 or 404) reports
+    none, so its estimate stayed in the signed total (measured: 71
+    against 15 billed, 64 against 8). An answer with an error status
+    and no usage now takes the whole estimate back
+    (`a_request_the_provider_refused_adds_no_prompt_tokens_to_the_record`
+    in `e2e_process_restart.rs`; live, the receipt equals the provider's
+    count).
+  - **Gemini 3 models could not continue after a tool call.** Google
+    refused the tool's result (`Function call is missing a
+    thought_signature`). The adapter now carries Gemini's
+    `thoughtSignature` in the tool call, at
+    `extra_content.google.thought_signature` as Google's own
+    OpenAI-compatible API does, and sends it back with the history; a
+    first call of a turn that arrives without one gets the placeholder
+    Google documents for unsigned calls
+    (`thought_signatures_travel_with_tool_calls_in_both_directions`).
+    Live, the round trip works with the signature returned, with it
+    dropped by the client, and from a streamed call, on
+    `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite`; two other
+    Gemini models answered 503 at the time and were not tested.
+  - The two checks Gemini still does not pass are Google's:
+    `n = 2` is refused for `gemini-3.5-flash-lite` ("Multiple
+    candidates is not enabled for this model"), and the refusal is
+    passed on as a 400. `n = 2` works on Anthropic.
+  - Expected and confirmed: Anthropic refuses `temperature` together
+    with `top_p` for this model, and `response_format: json_object` is
+    refused for Anthropic with a message naming the limit.
+  The eleven-check drill is repeated with real keys and a few paid
+  requests
   (`scripts/provider-smoke.py --allow-live-request --provider anthropic
   --base-url https://api.anthropic.com --model <model> --output-dir <dir>`,
   or `--provider gemini --base-url https://generativelanguage.googleapis.com`
@@ -369,22 +452,28 @@ with demonstration data, which is what the public site shows by default.
     measured: that needs a labelled set and `pvctl judge-calibrate`.
   - The TypeSafe adapter was built from TypeSafe's published API
     reference and tested against a local stand-in speaking that format.
-    A run against the live API is still owed; it needs an API key
-    (`PV_TYPESAFE_API_KEY_FILE`). Its pin covers the version name only,
+    One call reached the live API on 2026-11-17
+    (`the_live_api_answers_a_pinned_choice` in
+    `crates/pv-judge/tests/typesafe_contract.rs`, built with the `cloud`
+    feature and `PV_TYPESAFE_API_KEY_FILE` set): the answer had the
+    documented shape and the pinned release `jev-1.14.0`, and a wrong
+    key was answered 401. The same day the release build ran three
+    judged tool calls with the live Jev as its judge (the calls of
+    scenario 18): the routine refund was allowed (`mismatch` 0.05), the
+    hijacked one denied (1.0) and the borderline one held for approval
+    (0.59), with judge latencies of 62 to 109 ms. `pvctl
+    judge-calibrate` on the 18 synthetic examples of
+    `crates/pv-judge/tests/fixtures/synthetic_arg_matches_task.jsonl`
+    measured an accuracy of 8 in 18 and an AUROC of 0.71 and 0.74 in two
+    runs, with no failed call: on this small synthetic set Jev does not
+    separate the labels well enough to enforce, and its answers vary
+    between runs. A real labelled set is still needed. Its pin covers the version name only,
     because TypeSafe publishes no weight hash.
-  - No real-binary test covers three situations:
-    - after a restart, outputs that were already judged are not judged
-      again;
-    - an embedded Bridge created by an older build gains the
-      `agent.judge` topic, and a daemon with an operator's own manifest
-      that lacks it refuses to start;
-    - shutdown waits for a background verdict still on its way.
-
-    Tests inside the process cover the code involved, but not these
-    situations end to end.
-  - `console-sync` uploads `agent.judge` events only for sessions that
-    first synced with this `pvctl` version or later; sessions already
-    syncing keep their event numbering and skip them.
+  - `console-sync` uploads `agent.judge` events for every session. A
+    session that was already syncing before `pvctl` knew the topic keeps
+    its event numbering; its judge events are numbered in the slot of
+    `agent.receipt`, which never carries an event. Judge events that an
+    earlier `pvctl` already read and skipped are not uploaded afterwards.
   - Standing rules are put back by exact text, not by a judge
     predicate per rule as the build specification proposed, and not
     through the loop breaker's inject path (a rule belongs with the
@@ -538,11 +627,11 @@ Not closed, and why:
   6; pull request ProofVisorAI/proofvisor#397), and **guardrails over
   model responses, transform policies and the named mid-stream budget
   refusal** after that (section 6, and the table above).
-- **Live Anthropic and Gemini runs** need real keys; none are available
-  on the verification laptop.
+- **Live Anthropic and Gemini runs** were made on 2026-11-17 (see
+  section 7 for what passed and what they found).
 - **Windows hardware, a real Cloud Foundry foundation, Okta and Entra
-  ID, cloud object storage, a live Stripe account and a crates.io
-  release** need resources or approvals this checkout does not have.
+  ID, cloud object storage, a live (not test) Stripe account and a
+  crates.io release** need resources or approvals this checkout does not have.
 
 After these additions, on the same laptop: Rust workspace 1,744 tests
 passed, 0 failed, 3 ignored (ten new); `cargo fmt --check` and `cargo
@@ -638,7 +727,11 @@ local model is bundled.
 | TypeSafe's Jev can be the judge (`kind = "typesafe"`): one choice question per predicate, the redacted request as state, a fixed release pinned and checked on every answer. | `crates/pv-judge/tests/typesafe_contract.rs` (the documented request; missing or extra labels, another release, 401, 429, 529, timeouts and oversized answers all fail closed; nothing secret in failure details), `e2e_judge_edges.rs`; scenario 18 (the release binary against a stand-in of TypeSafe's API) |
 | `pvctl judge-replay` replays recorded decisions from the Bridge: each must follow from its verdicts under the configured thresholds, and other thresholds can be tried on the same records. | `crates/pv-judge/src/replay.rs` unit tests, `e2e_judge_cli.rs` (an edited probability is caught); scenario 17 (the shadow day replays with no mismatch, and stricter thresholds change exactly the borderline calls) |
 | Every failure mode of the specification's table (timeout, malformed answer, saturation, dead judge, model-hash mismatch) is driven against the real binary after a SIGKILL and restart. | `e2e_process_restart.rs` |
-| An embedded Bridge created before the `agent.judge` topic existed gains it at start when `[judge]` is set. | `crates/pv-bridge/tests/embedded_contract.rs` (`missing_topics_are_added_to_an_existing_bridge`) |
+| An embedded Bridge created before the `agent.judge` topic existed gains it at start when `[judge]` is set, and verdicts are recorded there. A daemon whose own manifest lacks the topic refuses to start and names it. | `crates/pv-bridge/tests/embedded_contract.rs` (`missing_topics_are_added_to_an_existing_bridge`); the real binary in `e2e_process_restart.rs` (`an_older_bridge_gains_the_judge_topic_and_a_manifest_without_it_stops_the_boot`) |
+| An answer judged before a SIGKILL is not sent to the judge again when the restarted daemon recovers the session; answers given after the restart are judged. | `e2e_process_restart.rs` (`outputs_judged_before_a_kill_are_not_judged_again_after_the_restart`) |
+| A graceful shutdown waits for a background verdict the judge has not returned yet: the daemon exits 0 with the verdict in the Bridge and in the sealed trajectory. | `e2e_process_restart.rs` (`sigterm_waits_for_a_verdict_still_on_its_way`) |
+| `console-sync` uploads `agent.judge` events under every seq scheme; a session numbered before the topic existed keeps its seqs and numbers judge events in the unused slot of `agent.receipt`. | `crates/pv-cli/src/console_sync.rs` unit tests (`judge_events_upload_under_every_seq_scheme`, `edge_a_scheme_1_session_with_only_judge_records`, `edge_a_receipt_record_never_takes_the_slot_judge_records_use`, `bridge_seq_is_deterministic_and_collision_free`) |
+| A session's seq scheme is fixed by its first acknowledged batch, so a later batch that fails cannot make the next pass post the acknowledged events again under other seqs. | `crates/pv-cli/src/console_sync.rs` (`the_seq_scheme_is_pinned_by_the_first_acknowledged_batch`) |
 
 What is not proven or not built is listed in section 7.
 

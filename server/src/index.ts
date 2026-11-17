@@ -511,6 +511,7 @@ const PROBLEM_DETAIL_COPY: Record<string, string> = {
   policy_name_in_use: "Another policy already has that name.",
   billing_not_configured: "Billing is not enabled on this instance.",
   already_on_plan: "This workspace is already on that plan.",
+  already_subscribed: "This workspace already has a subscription. Change or cancel the plan from the billing portal.",
   no_billing_customer: "This workspace has no billing account yet — upgrade first.",
   membership_deactivated: "Your access to this workspace has been deactivated by its identity provider.",
 };

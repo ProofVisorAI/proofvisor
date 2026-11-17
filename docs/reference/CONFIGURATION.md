@@ -78,7 +78,7 @@ unset or empty, and a warning on stderr names the variables it copied.
 | `config_version` | `1` | Config format version; unknown versions are refused at boot. |
 | `upstream_url` | required | Base URL of the model backend (OpenAI, vLLM, LiteLLM, Ollama, …). For `provider = "anthropic"` use `https://api.anthropic.com`; for `provider = "gemini"` use `https://generativelanguage.googleapis.com`. |
 | `upstream_chat_path` | `/v1/chat/completions` | Path appended to `upstream_url` for chat traffic when `provider = "openai"`. The native adapters own their paths (`/v1/messages` for Anthropic, `/v1beta/models/{model}:generateContent` or `:streamGenerateContent?alt=sse` for Gemini) and ignore this key. |
-| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters, which translate each OpenAI request into the provider's own API and translate the response back into OpenAI chat-completion objects and chunks (see [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md)). The native adapters have been tested only against local stand-ins, not against the live Anthropic or Gemini APIs. |
+| `provider` | `openai` | Upstream wire dialect; selects the `ProviderAdapter` that parses bodies and SSE chunks. `openai` also fits vLLM, LiteLLM, Groq, Together, DeepSeek, OpenRouter, Ollama, LM Studio, llama.cpp, xAI, Mistral and Azure OpenAI; `anthropic` and `gemini` select the native adapters, which translate each OpenAI request into the provider's own API and translate the response back into OpenAI chat-completion objects and chunks (see [OPENAI-COMPATIBILITY.md](OPENAI-COMPATIBILITY.md)). The native adapters are tested against local stand-ins, and were also driven against the live Anthropic and Gemini APIs on 2026-11-17 (`docs/FEATURES.md`, section 7). |
 | `provider_default_max_tokens` | `4096` | Output-token limit sent to Anthropic when a request sets neither `max_tokens` nor `max_completion_tokens`; the Anthropic Messages API refuses requests without one. Must be at least 1. Other providers ignore it. |
 | `upstream_authorization_passthrough` | `false` | Forward the client's `Authorization` header verbatim to the upstream. **Incompatible with `require_identity = true`** (the header carries the NHI identity token there, not an upstream credential) and with the static upstream key options — boot refuses those combinations. |
 | `ignore_client_authorization` | `false` | Accept and DISCARD a client `Authorization` bearer when no identity validator is configured (stock OpenAI SDKs always send a placeholder key; without this a keyless dev upstream 401s the documented quickstart on request one). The header never reaches the upstream. Refused in combination with `require_identity = true` or `upstream_authorization_passthrough = true`. |
@@ -617,7 +617,9 @@ directly, one request per predicate. As of October 2026 TypeSafe offers
 no service-level agreement and no known on-premises option, and its
 latency and pricing are not confirmed: do not promise it to customers. It was built from TypeSafe's
 published reference and tested against a local stand-in that speaks
-that format, not against the live service; a test runs against the live
+that format. It ran against the live service on 2026-11-17 (see
+`docs/FEATURES.md`, section 7, for what was measured); the contract
+test (built with the `cloud` feature of `pv-judge`) runs against the live
 API when `PV_TYPESAFE_API_KEY_FILE` names a file holding a key.
 
 - What is sent: the request rendered with the local classifier's

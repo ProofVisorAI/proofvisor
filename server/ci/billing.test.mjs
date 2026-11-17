@@ -226,3 +226,143 @@ test("a conflicting customer id is a failure Stripe retries, not a silent duplic
   assert.notEqual(retry.data.duplicate, true);
   assert.equal((await orgRow(b.org.id)).plan, "team");
 });
+
+// ── Events out of order, deleted customers, second subscriptions ─────
+// Found by driving a real Stripe test sandbox on 2026-11-17.
+
+function subscription(id, customer, orgId, { status = "active", price = PRICE_TEAM } = {}) {
+  return {
+    id, object: "subscription", customer, status, metadata: { orgId },
+    current_period_end: Math.floor(Date.now() / 1000) + 30 * 86400,
+    items: { object: "list", data: [{ id: "si_" + id, object: "subscription_item", price: { id: price } }] },
+  };
+}
+let idSeq = 0;
+const unique = (prefix) => `${prefix}_${Date.now().toString(36)}_${++idSeq}`;
+
+test("an update that arrives after the cancellation does not bring the paid plan back", async () => {
+  const o = await owner("late-update");
+  const cus = unique("cus_late");
+  const sub = unique("sub_late");
+  stripe.setSubscription(sub, subscription(sub, cus, o.org.id));
+  assert.equal((await webhook(stripeEvent("customer.subscription.created", subscription(sub, cus, o.org.id)))).status, 200);
+  assert.equal((await orgRow(o.org.id)).plan, "team");
+
+  // Stripe cancels; the deletion arrives first, an older update after it.
+  stripe.setSubscription(sub, subscription(sub, cus, o.org.id, { status: "canceled" }));
+  assert.equal((await webhook(stripeEvent("customer.subscription.deleted", subscription(sub, cus, o.org.id, { status: "canceled" })))).status, 200);
+  let row = await orgRow(o.org.id);
+  assert.equal(row.plan, "free");
+  assert.equal(row.stripeSubscriptionId, null);
+  const stale = await webhook(stripeEvent("customer.subscription.updated", subscription(sub, cus, o.org.id, { price: PRICE_ENTERPRISE })));
+  assert.equal(stale.status, 200, JSON.stringify(stale.data));
+  row = await orgRow(o.org.id);
+  assert.equal(row.plan, "free", "a snapshot older than the cancellation must not be applied");
+  assert.equal(row.stripeSubscriptionId, null);
+
+  // A completed checkout for the ended subscription grants nothing either.
+  const lateCheckout = await webhook(stripeEvent("checkout.session.completed", {
+    id: unique("cs_late"), object: "checkout.session", mode: "subscription", payment_status: "paid",
+    customer: cus, subscription: sub, metadata: { orgId: o.org.id, plan: "team" },
+  }));
+  assert.equal(lateCheckout.status, 200);
+  assert.equal((await orgRow(o.org.id)).plan, "free");
+});
+
+test("an update applies what Stripe holds now, not the snapshot the event carries", async () => {
+  const o = await owner("snapshot");
+  const cus = unique("cus_snap");
+  const sub = unique("sub_snap");
+  // Stripe already holds the enterprise price; the event still says team.
+  stripe.setSubscription(sub, subscription(sub, cus, o.org.id, { price: PRICE_ENTERPRISE }));
+  assert.equal((await webhook(stripeEvent("customer.subscription.updated", subscription(sub, cus, o.org.id, { price: PRICE_TEAM })))).status, 200);
+  const row = await orgRow(o.org.id);
+  assert.equal(row.plan, "enterprise");
+  assert.equal(row.stripeSubscriptionId, sub);
+});
+
+test("the end of an older subscription does not cancel the plan a newer one pays for", async () => {
+  const o = await owner("resubscribed");
+  const cus = unique("cus_re");
+  const oldSub = unique("sub_old");
+  const newSub = unique("sub_new");
+  stripe.setSubscription(oldSub, subscription(oldSub, cus, o.org.id, { status: "canceled" }));
+  stripe.setSubscription(newSub, subscription(newSub, cus, o.org.id));
+  assert.equal((await webhook(stripeEvent("customer.subscription.created", subscription(newSub, cus, o.org.id)))).status, 200);
+  assert.equal((await orgRow(o.org.id)).stripeSubscriptionId, newSub);
+  for (const type of ["customer.subscription.deleted", "customer.subscription.updated"]) {
+    const late = await webhook(stripeEvent(type, subscription(oldSub, cus, o.org.id, { status: type.endsWith("deleted") ? "canceled" : "active" })));
+    assert.equal(late.status, 200, JSON.stringify(late.data));
+    const row = await orgRow(o.org.id);
+    assert.equal(row.plan, "team", `${type} of the older subscription must change nothing`);
+    assert.equal(row.stripeSubscriptionId, newSub);
+  }
+});
+
+test("a failed lookup of the subscription answers 500, and the retry is applied", async () => {
+  const o = await owner("lookup-fails");
+  const cus = unique("cus_fail");
+  const sub = unique("sub_fail");
+  stripe.setSubscription(sub, subscription(sub, cus, o.org.id));
+  stripe.failSubscription(sub);
+  const event = stripeEvent("customer.subscription.created", subscription(sub, cus, o.org.id));
+  assert.equal((await webhook(event)).status, 500);
+  assert.equal((await orgRow(o.org.id)).plan, "free");
+  stripe.failSubscription(sub, false);
+  const retry = await webhook(event);
+  assert.equal(retry.status, 200, JSON.stringify(retry.data));
+  assert.notEqual(retry.data.duplicate, true, "the failed delivery was not recorded as done");
+  assert.equal((await orgRow(o.org.id)).plan, "team");
+});
+
+test("a workspace with a running subscription is sent to the portal, not to a second checkout", async () => {
+  const o = await owner("second-sub");
+  const cus = unique("cus_two");
+  const sub = unique("sub_two");
+  stripe.setSubscription(sub, subscription(sub, cus, o.org.id));
+  assert.equal((await webhook(stripeEvent("customer.subscription.created", subscription(sub, cus, o.org.id)))).status, 200);
+  const before = stripe.requests.filter((r) => r.path === "/v1/checkout/sessions").length;
+  const same = await o.client.json("POST", "/api/v1/billing/checkout", { plan: "team" });
+  assert.equal(same.status, 409);
+  assert.match(JSON.stringify(same.data), /already_on_plan/);
+  const other = await o.client.json("POST", "/api/v1/billing/checkout", { plan: "enterprise" });
+  assert.equal(other.status, 409, JSON.stringify(other.data));
+  assert.match(JSON.stringify(other.data), /already_subscribed/);
+  assert.equal(stripe.requests.filter((r) => r.path === "/v1/checkout/sessions").length, before, "no Checkout session was created");
+  assert.equal((await o.client.json("POST", "/api/v1/billing/portal", {})).status, 200);
+});
+
+test("a customer deleted at Stripe is forgotten, and the workspace can check out again", async () => {
+  // Told by the webhook.
+  const o = await owner("customer-deleted");
+  const cus = unique("cus_gone");
+  const sub = unique("sub_gone");
+  stripe.setSubscription(sub, subscription(sub, cus, o.org.id));
+  assert.equal((await webhook(stripeEvent("customer.subscription.created", subscription(sub, cus, o.org.id)))).status, 200);
+  stripe.deleteCustomer(cus);
+  assert.equal((await webhook(stripeEvent("customer.deleted", { id: cus, object: "customer" }))).status, 200);
+  let row = await orgRow(o.org.id);
+  assert.equal(row.plan, "free");
+  assert.equal(row.stripeCustomerId, null);
+  assert.equal(row.stripeSubscriptionId, null);
+  const portal = await o.client.json("POST", "/api/v1/billing/portal", {});
+  assert.equal(portal.status, 409);
+  assert.match(JSON.stringify(portal.data), /no_billing_customer/);
+  const checkout = await o.client.json("POST", "/api/v1/billing/checkout", { plan: "team" });
+  assert.equal(checkout.status, 200, JSON.stringify(checkout.data));
+  row = await orgRow(o.org.id);
+  assert.ok(row.stripeCustomerId && row.stripeCustomerId !== cus, "a new customer was created");
+
+  // Not told: the stored id is simply refused by Stripe.
+  const stored = row.stripeCustomerId;
+  stripe.deleteCustomer(stored);
+  const gone = await o.client.json("POST", "/api/v1/billing/portal", {});
+  assert.equal(gone.status, 409, JSON.stringify(gone.data));
+  assert.match(JSON.stringify(gone.data), /no_billing_customer/);
+  assert.equal((await orgRow(o.org.id)).stripeCustomerId, null);
+  await db.query('UPDATE orgs SET "stripeCustomerId" = $1 WHERE id = $2', [stored, o.org.id]);
+  const again = await o.client.json("POST", "/api/v1/billing/checkout", { plan: "team" });
+  assert.equal(again.status, 200, JSON.stringify(again.data));
+  const fresh = (await orgRow(o.org.id)).stripeCustomerId;
+  assert.ok(fresh && fresh !== stored, "checkout replaced the deleted customer");
+});
